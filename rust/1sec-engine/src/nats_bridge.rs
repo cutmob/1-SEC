@@ -53,7 +53,7 @@ impl NatsBridge {
             subjects: vec!["sec.matches.>".to_string()],
             retention: jetstream::stream::RetentionPolicy::Limits,
             max_age: std::time::Duration::from_secs(7 * 24 * 3600), // 7 days
-            max_bytes: 512 * 1024 * 1024, // 512MB
+            max_bytes: 512 * 1024 * 1024,                           // 512MB
             storage: jetstream::stream::StorageType::File,
             discard: jetstream::stream::DiscardPolicy::Old,
             ..Default::default()
@@ -181,7 +181,10 @@ async fn process_message(
         return;
     }
 
-    let field_refs: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let field_refs: Vec<(&str, &str)> = fields
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
 
     // Run the pattern matcher
     let result = matcher.scan(&event.id, &field_refs);

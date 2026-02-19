@@ -20,7 +20,11 @@ use tracing::info;
 use tracing::warn;
 
 #[derive(Parser, Debug)]
-#[command(name = "1sec-engine", version, about = "1SEC high-performance security engine")]
+#[command(
+    name = "1sec-engine",
+    version,
+    about = "1SEC high-performance security engine"
+)]
 struct Cli {
     /// Path to configuration file
     #[arg(short, long, default_value = "configs/default.yaml")]
@@ -63,15 +67,10 @@ async fn main() -> Result<()> {
             .with_env_filter(env_filter)
             .init();
     } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .init();
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 
-    info!(
-        version = env!("CARGO_PKG_VERSION"),
-        "starting 1sec-engine"
-    );
+    info!(version = env!("CARGO_PKG_VERSION"), "starting 1sec-engine");
 
     // Load config
     let cfg = config::EngineConfig::load(&cli.config)?;

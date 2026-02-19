@@ -112,13 +112,13 @@ impl EngineConfig {
             });
         }
 
-        let contents = std::fs::read_to_string(p)
-            .with_context(|| format!("reading config file: {}", path))?;
+        let contents =
+            std::fs::read_to_string(p).with_context(|| format!("reading config file: {}", path))?;
 
         // The Go config YAML has a `bus:` section with `url:` — extract NATS URL from there
         // and also look for `rust_engine:` section for Rust-specific settings
-        let raw: serde_yaml::Value = serde_yaml::from_str(&contents)
-            .with_context(|| "parsing config YAML")?;
+        let raw: serde_yaml::Value =
+            serde_yaml::from_str(&contents).with_context(|| "parsing config YAML")?;
 
         let nats_url = raw
             .get("bus")

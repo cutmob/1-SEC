@@ -56,7 +56,10 @@ fn sqli_patterns() -> Vec<PatternDef> {
             category: "sqli",
             severity: Severity::Medium,
             regex: r"(?i)(--|#|/\*.*?\*/|;)\s*(drop|alter|delete|update|insert|create|exec|execute)\b",
-            literals: &["drop", "alter", "delete", "update", "insert", "create", "exec", "DROP", "ALTER", "DELETE"],
+            literals: &[
+                "drop", "alter", "delete", "update", "insert", "create", "exec", "DROP", "ALTER",
+                "DELETE",
+            ],
         },
         PatternDef {
             name: "sqli_stacked",
@@ -70,21 +73,40 @@ fn sqli_patterns() -> Vec<PatternDef> {
             category: "sqli",
             severity: Severity::High,
             regex: r"(?i)(sleep\s*\(\s*\d+\s*\)|benchmark\s*\(\s*\d+|waitfor\s+delay\s+')",
-            literals: &["sleep", "benchmark", "waitfor", "SLEEP", "BENCHMARK", "WAITFOR"],
+            literals: &[
+                "sleep",
+                "benchmark",
+                "waitfor",
+                "SLEEP",
+                "BENCHMARK",
+                "WAITFOR",
+            ],
         },
         PatternDef {
             name: "sqli_extract",
             category: "sqli",
             severity: Severity::High,
             regex: r"(?i)(extractvalue|updatexml|load_file|into\s+(out|dump)file)\s*\(",
-            literals: &["extractvalue", "updatexml", "load_file", "outfile", "dumpfile"],
+            literals: &[
+                "extractvalue",
+                "updatexml",
+                "load_file",
+                "outfile",
+                "dumpfile",
+            ],
         },
         PatternDef {
             name: "sqli_information_schema",
             category: "sqli",
             severity: Severity::Critical,
             regex: r"(?i)(information_schema|sys\.objects|sysobjects|syscolumns|pg_catalog)",
-            literals: &["information_schema", "sys.objects", "sysobjects", "syscolumns", "pg_catalog"],
+            literals: &[
+                "information_schema",
+                "sys.objects",
+                "sysobjects",
+                "syscolumns",
+                "pg_catalog",
+            ],
         },
         PatternDef {
             name: "sqli_hex_encode",
@@ -110,7 +132,15 @@ fn xss_patterns() -> Vec<PatternDef> {
             category: "xss",
             severity: Severity::High,
             regex: r"(?i)\bon(error|load|click|mouseover|focus|blur|submit|change|input|keyup|keydown|mouseout|dblclick|contextmenu|drag|drop)\s*=",
-            literals: &["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur", "onsubmit"],
+            literals: &[
+                "onerror",
+                "onload",
+                "onclick",
+                "onmouseover",
+                "onfocus",
+                "onblur",
+                "onsubmit",
+            ],
         },
         PatternDef {
             name: "xss_javascript_uri",
@@ -124,7 +154,9 @@ fn xss_patterns() -> Vec<PatternDef> {
             category: "xss",
             severity: Severity::Medium,
             regex: r"(?i)<\s*(img|iframe|embed|object|svg|math|video|audio|source)\b[^>]*(src|href|data|action)\s*=",
-            literals: &["<img", "<iframe", "<embed", "<object", "<svg", "<math", "<video"],
+            literals: &[
+                "<img", "<iframe", "<embed", "<object", "<svg", "<math", "<video",
+            ],
         },
         PatternDef {
             name: "xss_style_expression",
@@ -138,7 +170,14 @@ fn xss_patterns() -> Vec<PatternDef> {
             category: "xss",
             severity: Severity::High,
             regex: r"(?i)(document\.(cookie|write|location|domain)|window\.(location|open)|\.innerHTML\s*=|eval\s*\()",
-            literals: &["document.cookie", "document.write", "document.location", "window.location", "innerHTML", "eval("],
+            literals: &[
+                "document.cookie",
+                "document.write",
+                "document.location",
+                "window.location",
+                "innerHTML",
+                "eval(",
+            ],
         },
     ]
 }
@@ -150,7 +189,15 @@ fn cmdi_patterns() -> Vec<PatternDef> {
             category: "cmdi",
             severity: Severity::Critical,
             regex: r"(\||\|\||&&|;|`)\s*(cat|ls|dir|whoami|id|uname|pwd|wget|curl|nc|ncat|bash|sh|cmd|powershell|python|perl|ruby|php)\b",
-            literals: &["cat", "whoami", "uname", "wget", "curl", "bash", "powershell"],
+            literals: &[
+                "cat",
+                "whoami",
+                "uname",
+                "wget",
+                "curl",
+                "bash",
+                "powershell",
+            ],
         },
         PatternDef {
             name: "cmdi_subshell",
@@ -183,28 +230,53 @@ fn ssrf_patterns() -> Vec<PatternDef> {
             category: "ssrf",
             severity: Severity::High,
             regex: r"(?i)(https?://)?(127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|0\.0\.0\.0|localhost|0x7f|2130706433)",
-            literals: &["127.", "10.", "172.", "192.168.", "0.0.0.0", "localhost", "0x7f"],
+            literals: &[
+                "127.",
+                "10.",
+                "172.",
+                "192.168.",
+                "0.0.0.0",
+                "localhost",
+                "0x7f",
+            ],
         },
         PatternDef {
             name: "ssrf_cloud_metadata",
             category: "ssrf",
             severity: Severity::Critical,
             regex: r"(?i)(169\.254\.169\.254|metadata\.google\.internal|100\.100\.100\.200)",
-            literals: &["169.254.169.254", "metadata.google.internal", "100.100.100.200"],
+            literals: &[
+                "169.254.169.254",
+                "metadata.google.internal",
+                "100.100.100.200",
+            ],
         },
         PatternDef {
             name: "ssrf_dangerous_scheme",
             category: "ssrf",
             severity: Severity::High,
             regex: r"(?i)(file|gopher|dict|ftp|ldap|tftp)://",
-            literals: &["file://", "gopher://", "dict://", "ftp://", "ldap://", "tftp://"],
+            literals: &[
+                "file://",
+                "gopher://",
+                "dict://",
+                "ftp://",
+                "ldap://",
+                "tftp://",
+            ],
         },
         PatternDef {
             name: "ssrf_dns_rebind",
             category: "ssrf",
             severity: Severity::High,
             regex: r"(?i)(\.burpcollaborator\.net|\.oastify\.com|\.interact\.sh|\.requestbin\.|\.ngrok\.)",
-            literals: &["burpcollaborator", "oastify", "interact.sh", "requestbin", "ngrok"],
+            literals: &[
+                "burpcollaborator",
+                "oastify",
+                "interact.sh",
+                "requestbin",
+                "ngrok",
+            ],
         },
     ]
 }
@@ -235,7 +307,14 @@ fn template_patterns() -> Vec<PatternDef> {
             category: "template_injection",
             severity: Severity::Critical,
             regex: r"\{\{.*?(__|class|mro|subclasses|builtins|import|popen|system|eval|exec|getattr).*?\}\}",
-            literals: &["{{", "__class__", "__mro__", "subclasses", "builtins", "popen"],
+            literals: &[
+                "{{",
+                "__class__",
+                "__mro__",
+                "subclasses",
+                "builtins",
+                "popen",
+            ],
         },
         PatternDef {
             name: "template_expression",
@@ -261,7 +340,9 @@ fn nosql_patterns() -> Vec<PatternDef> {
             category: "nosql_injection",
             severity: Severity::High,
             regex: r#"(?i)(\$gt|\$lt|\$gte|\$lte|\$ne|\$nin|\$in|\$regex|\$where|\$exists|\$or|\$and|\$not|\$nor)\b"#,
-            literals: &["$gt", "$lt", "$ne", "$nin", "$regex", "$where", "$exists", "$or"],
+            literals: &[
+                "$gt", "$lt", "$ne", "$nin", "$regex", "$where", "$exists", "$or",
+            ],
         },
         PatternDef {
             name: "nosql_js_exec",
@@ -287,7 +368,16 @@ fn path_traversal_patterns() -> Vec<PatternDef> {
             category: "path_traversal",
             severity: Severity::Critical,
             regex: r"(?i)(/etc/(passwd|shadow|hosts|crontab)|/proc/self/|/windows/system32/|web\.config|\.env|\.git/config|\.htaccess|wp-config\.php)",
-            literals: &["/etc/passwd", "/etc/shadow", "/proc/self", "web.config", ".env", ".git/config", ".htaccess", "wp-config"],
+            literals: &[
+                "/etc/passwd",
+                "/etc/shadow",
+                "/proc/self",
+                "web.config",
+                ".env",
+                ".git/config",
+                ".htaccess",
+                "wp-config",
+            ],
         },
         PatternDef {
             name: "path_null_byte",
@@ -306,7 +396,12 @@ fn prompt_injection_patterns() -> Vec<PatternDef> {
             category: "prompt_injection",
             severity: Severity::Critical,
             regex: r"(?i)(ignore\s+(all\s+)?(previous|above|prior)\s+(instructions|prompts|rules|context)|disregard\s+(all\s+)?(previous|above|prior))",
-            literals: &["ignore", "disregard", "previous instructions", "prior instructions"],
+            literals: &[
+                "ignore",
+                "disregard",
+                "previous instructions",
+                "prior instructions",
+            ],
         },
         PatternDef {
             name: "prompt_role_override",
@@ -320,7 +415,12 @@ fn prompt_injection_patterns() -> Vec<PatternDef> {
             category: "prompt_injection",
             severity: Severity::High,
             regex: r"(?i)(reveal\s+(your|the)\s+(system|initial|original)\s+(prompt|instructions|message)|what\s+(are|is)\s+your\s+(system|initial)\s+(prompt|instructions)|show\s+me\s+your\s+(prompt|instructions|rules))",
-            literals: &["system prompt", "initial prompt", "reveal your", "show me your"],
+            literals: &[
+                "system prompt",
+                "initial prompt",
+                "reveal your",
+                "show me your",
+            ],
         },
         PatternDef {
             name: "prompt_delimiter_escape",
@@ -341,7 +441,13 @@ fn prompt_injection_patterns() -> Vec<PatternDef> {
             category: "prompt_injection",
             severity: Severity::Critical,
             regex: r"(?i)(DAN\s*mode|do\s+anything\s+now|developer\s+mode\s+(enabled|output)|jailbreak|bypass\s+(safety|content|ethical)\s+(filter|restriction|guideline))",
-            literals: &["DAN", "do anything now", "developer mode", "jailbreak", "bypass safety"],
+            literals: &[
+                "DAN",
+                "do anything now",
+                "developer mode",
+                "jailbreak",
+                "bypass safety",
+            ],
         },
     ]
 }
@@ -353,28 +459,53 @@ fn ransomware_patterns() -> Vec<PatternDef> {
             category: "ransomware",
             severity: Severity::Critical,
             regex: r"(?i)(CryptEncrypt|CryptGenKey|BCryptEncrypt|NCryptEncrypt|CryptoAPI|RtlEncryptMemory)",
-            literals: &["CryptEncrypt", "CryptGenKey", "BCryptEncrypt", "NCryptEncrypt"],
+            literals: &[
+                "CryptEncrypt",
+                "CryptGenKey",
+                "BCryptEncrypt",
+                "NCryptEncrypt",
+            ],
         },
         PatternDef {
             name: "ransomware_shadow_delete",
             category: "ransomware",
             severity: Severity::Critical,
             regex: r"(?i)(vssadmin\s+(delete|resize)\s+shadows|wmic\s+shadowcopy\s+delete|bcdedit\s+/set\s+\{default\}\s+recoveryenabled\s+no)",
-            literals: &["vssadmin", "shadowcopy delete", "bcdedit", "recoveryenabled"],
+            literals: &[
+                "vssadmin",
+                "shadowcopy delete",
+                "bcdedit",
+                "recoveryenabled",
+            ],
         },
         PatternDef {
             name: "ransomware_ransom_note",
             category: "ransomware",
             severity: Severity::High,
             regex: r"(?i)(your\s+files\s+(have\s+been|are)\s+encrypted|pay\s+.*bitcoin|send\s+.*btc|decrypt\s+your\s+files|ransom\s+note)",
-            literals: &["files have been encrypted", "files are encrypted", "bitcoin", "decrypt your files", "ransom"],
+            literals: &[
+                "files have been encrypted",
+                "files are encrypted",
+                "bitcoin",
+                "decrypt your files",
+                "ransom",
+            ],
         },
         PatternDef {
             name: "ransomware_file_extensions",
             category: "ransomware",
             severity: Severity::High,
             regex: r"\.(locked|encrypted|crypt|cry|crypto|enc|locky|cerber|wannacry|petya|ryuk|maze|revil|conti|lockbit|blackcat|alphv)\b",
-            literals: &[".locked", ".encrypted", ".crypt", ".locky", ".cerber", ".wannacry", ".lockbit", ".blackcat"],
+            literals: &[
+                ".locked",
+                ".encrypted",
+                ".crypt",
+                ".locky",
+                ".cerber",
+                ".wannacry",
+                ".lockbit",
+                ".blackcat",
+            ],
         },
     ]
 }
@@ -412,7 +543,7 @@ fn exfiltration_patterns() -> Vec<PatternDef> {
             category: "data_exfiltration",
             severity: Severity::High,
             regex: r"[a-zA-Z0-9]{32,}\.(com|net|org|io|xyz|tk|ml|ga|cf)\b",
-            literals: &[],  // No good literal pre-filter for this one
+            literals: &[], // No good literal pre-filter for this one
         },
         PatternDef {
             name: "exfil_base64_bulk",
@@ -426,7 +557,17 @@ fn exfiltration_patterns() -> Vec<PatternDef> {
             category: "data_exfiltration",
             severity: Severity::Critical,
             regex: r"(?i)(credit.?card|social.?security|ssn|passport.?number|bank.?account|routing.?number|api.?key|secret.?key|private.?key|access.?token)",
-            literals: &["credit", "social security", "ssn", "passport", "bank account", "api key", "secret key", "private key", "access token"],
+            literals: &[
+                "credit",
+                "social security",
+                "ssn",
+                "passport",
+                "bank account",
+                "api key",
+                "secret key",
+                "private key",
+                "access token",
+            ],
         },
     ]
 }

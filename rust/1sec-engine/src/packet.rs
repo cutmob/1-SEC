@@ -47,10 +47,7 @@ impl SourceTracker {
         }
 
         // Track port scan behavior
-        let ports = self
-            .port_scans
-            .entry(src_ip.to_string())
-            .or_default();
+        let ports = self.port_scans.entry(src_ip.to_string()).or_default();
         ports.insert(dst_port);
         if ports.len() >= SUSPICIOUS_PORT_SCAN_THRESHOLD {
             anomalies.push(format!(
@@ -61,10 +58,7 @@ impl SourceTracker {
         }
 
         // Track packet volume
-        let count = self
-            .packet_counts
-            .entry(src_ip.to_string())
-            .or_insert(0);
+        let count = self.packet_counts.entry(src_ip.to_string()).or_insert(0);
         *count += 1;
 
         anomalies
@@ -131,7 +125,10 @@ pub async fn capture_loop(interface: &str, publisher: EventPublisher) -> Result<
                 (
                     format!(
                         "{}.{}.{}.{}",
-                        h.source()[0], h.source()[1], h.source()[2], h.source()[3]
+                        h.source()[0],
+                        h.source()[1],
+                        h.source()[2],
+                        h.source()[3]
                     ),
                     format!(
                         "{}.{}.{}.{}",
@@ -144,7 +141,10 @@ pub async fn capture_loop(interface: &str, publisher: EventPublisher) -> Result<
             }
             Some(NetSlice::Ipv6(ipv6)) => {
                 let h = ipv6.header();
-                (format!("{:?}", h.source()), format!("{:?}", h.destination()))
+                (
+                    format!("{:?}", h.source()),
+                    format!("{:?}", h.destination()),
+                )
             }
             _ => continue,
         };
@@ -183,7 +183,12 @@ pub async fn capture_loop(interface: &str, publisher: EventPublisher) -> Result<
             }
             Some(TransportSlice::Udp(udp)) => {
                 let h = udp.to_header();
-                ("udp".to_string(), h.source_port, h.destination_port, Vec::new())
+                (
+                    "udp".to_string(),
+                    h.source_port,
+                    h.destination_port,
+                    Vec::new(),
+                )
             }
             _ => continue,
         };
@@ -204,7 +209,10 @@ pub async fn capture_loop(interface: &str, publisher: EventPublisher) -> Result<
             if !payload.is_empty() {
                 let len = payload.len().min(MAX_PAYLOAD_PREVIEW);
                 // Only include if it looks like text (printable ASCII)
-                if payload[..len].iter().all(|&b| b >= 0x20 && b < 0x7f || b == b'\n' || b == b'\r' || b == b'\t') {
+                if payload[..len]
+                    .iter()
+                    .all(|&b| b >= 0x20 && b < 0x7f || b == b'\n' || b == b'\r' || b == b'\t')
+                {
                     String::from_utf8_lossy(&payload[..len]).to_string()
                 } else {
                     String::new()
