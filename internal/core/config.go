@@ -21,9 +21,10 @@ type Config struct {
 
 // ServerConfig holds API server settings.
 type ServerConfig struct {
-	Host    string   `yaml:"host"`
-	Port    int      `yaml:"port"`
-	APIKeys []string `yaml:"api_keys"`
+	Host        string   `yaml:"host"`
+	Port        int      `yaml:"port"`
+	APIKeys     []string `yaml:"api_keys"`
+	CORSOrigins []string `yaml:"cors_origins"`
 }
 
 // SyslogConfig holds syslog ingestion settings.

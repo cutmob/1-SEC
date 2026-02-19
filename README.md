@@ -333,19 +333,6 @@ See [1-sec.dev/pricing](https://1-sec.dev/pricing) for details.
 
 ---
 
-## Contributing
-
-PRs welcome. Please:
-
-1. Run `go build ./...` and `go vet ./...` before submitting
-2. Follow standard Go project layout and `gofmt` formatting
-3. New modules must implement the `Module` interface fully — no stubs
-4. Keep zero-config working: new settings must have sane defaults
-
-**Prerequisites:** Go 1.22+, Node.js 20+ (dashboard only)
-
----
-
 ## License
 
 AGPLv3 — see [LICENSE](LICENSE).

@@ -48,6 +48,7 @@ func NewServer(engine *core.Engine) *Server {
 			),
 			s.logger,
 		),
+		engine.Config.Server.CORSOrigins,
 	)
 
 	s.server = &http.Server{
@@ -396,11 +397,30 @@ func rateLimitMiddleware(next http.Handler, requestsPerSecond int) http.Handler 
 	})
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
+func corsMiddleware(next http.Handler, allowedOrigins []string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		allowed := "*"
+		if len(allowedOrigins) > 0 {
+			allowed = ""
+			for _, o := range allowedOrigins {
+				if o == "*" || o == origin {
+					allowed = origin
+					break
+				}
+			}
+			if allowed == "" {
+				// Origin not in allow list — skip CORS headers
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		w.Header().Set("Access-Control-Allow-Origin", allowed)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
+		if len(allowedOrigins) > 0 && allowedOrigins[0] != "*" {
+			w.Header().Set("Vary", "Origin")
+		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
