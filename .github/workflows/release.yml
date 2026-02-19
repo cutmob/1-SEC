@@ -37,6 +37,7 @@ jobs:
   rust-build:
     needs: quality
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -45,7 +46,7 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
             artifact: 1sec-engine-linux-arm64
-          - os: macos-latest
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             artifact: 1sec-engine-darwin-amd64
           - os: macos-latest
@@ -61,7 +62,7 @@ jobs:
 
       - name: Install musl tools (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools libpcap-dev
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Install cross-compilation tools (Linux ARM64)
         if: matrix.target == 'aarch64-unknown-linux-musl'
@@ -83,16 +84,16 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             rust/1sec-engine/target/
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('rust/1sec-engine/Cargo.toml') }}
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('rust/1sec-engine/Cargo.lock', 'rust/1sec-engine/Cargo.toml') }}
 
       - name: Build Rust engine
         working-directory: rust/1sec-engine
         run: cargo build --release --no-default-features --target ${{ matrix.target }}
 
       - name: Test (native targets only)
-        if: matrix.target != 'aarch64-unknown-linux-musl' && matrix.target != 'aarch64-apple-darwin'
+        if: matrix.target != 'aarch64-unknown-linux-musl'
         working-directory: rust/1sec-engine
-        run: cargo test --no-default-features
+        run: cargo test --no-default-features --target ${{ matrix.target }}
 
       - name: Rename artifact
         shell: bash
