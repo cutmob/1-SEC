@@ -13,13 +13,15 @@ import (
 
 // Engine is the main 1SEC engine that orchestrates all components.
 type Engine struct {
-	Config   *Config
-	Bus      *EventBus
-	Registry *ModuleRegistry
-	Pipeline *AlertPipeline
-	Logger   zerolog.Logger
-	ctx      context.Context
-	cancel   context.CancelFunc
+	Config       *Config
+	Bus          *EventBus
+	Registry     *ModuleRegistry
+	Pipeline     *AlertPipeline
+	RustSidecar  *RustSidecar
+	Logger       zerolog.Logger
+	ctx          context.Context
+	cancel       context.CancelFunc
+	configPath   string
 }
 
 // NewEngine creates a new 1SEC engine.
@@ -49,12 +51,13 @@ func NewEngine(cfg *Config) (*Engine, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	engine := &Engine{
-		Config:   cfg,
-		Registry: NewModuleRegistry(logger),
-		Pipeline: NewAlertPipeline(logger, cfg.Alerts.MaxStore),
-		Logger:   logger.With().Str("component", "engine").Logger(),
-		ctx:      ctx,
-		cancel:   cancel,
+		Config:      cfg,
+		Registry:    NewModuleRegistry(logger),
+		Pipeline:    NewAlertPipeline(logger, cfg.Alerts.MaxStore),
+		RustSidecar: NewRustSidecar(&cfg.RustEngine, &cfg.Bus, logger),
+		Logger:      logger.With().Str("component", "engine").Logger(),
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 
 	// Add console alert handler if enabled
@@ -124,6 +127,13 @@ func (e *Engine) Start() error {
 		Int("modules", e.Registry.Count()).
 		Msg("1SEC engine started")
 
+	// Start Rust sidecar if enabled (after bus is ready so it can connect)
+	if e.RustSidecar != nil {
+		if err := e.RustSidecar.Start(e.ctx, e.configPath); err != nil {
+			e.Logger.Warn().Err(err).Msg("failed to start rust engine sidecar")
+		}
+	}
+
 	return nil
 }
 
@@ -152,6 +162,11 @@ func (e *Engine) Shutdown() error {
 	e.Logger.Info().Msg("shutting down 1SEC engine")
 	e.cancel()
 
+	// Stop Rust sidecar first (it depends on the bus)
+	if e.RustSidecar != nil {
+		e.RustSidecar.Stop()
+	}
+
 	e.Registry.StopAll()
 
 	if e.Bus != nil {
@@ -167,6 +182,11 @@ func (e *Engine) Shutdown() error {
 // Context returns the engine's context.
 func (e *Engine) Context() context.Context {
 	return e.ctx
+}
+
+// SetConfigPath stores the config file path for the Rust sidecar to use.
+func (e *Engine) SetConfigPath(path string) {
+	e.configPath = path
 }
 
 // sendWebhook sends an alert to a webhook URL.

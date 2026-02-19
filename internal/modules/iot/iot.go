@@ -2,7 +2,11 @@ package iot
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"math"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -13,36 +17,55 @@ import (
 
 const ModuleName = "iot_shield"
 
-// Shield is the IoT & OT Shield module.
+// Shield is the IoT & OT Shield module providing device fingerprinting,
+// protocol anomaly detection, firmware integrity verification, default credential
+// scanning, rogue device detection, OT command validation, device behavior
+// baseline monitoring, network segmentation enforcement, and firmware CVE tracking.
 type Shield struct {
-	logger     zerolog.Logger
-	bus        *core.EventBus
-	pipeline   *core.AlertPipeline
-	ctx        context.Context
-	cancel     context.CancelFunc
-	inventory  *DeviceInventory
-	anomalyDet *ProtocolAnomalyDetector
+	logger       zerolog.Logger
+	bus          *core.EventBus
+	pipeline     *core.AlertPipeline
+	cfg          *core.Config
+	ctx          context.Context
+	cancel       context.CancelFunc
+	inventory    *DeviceInventory
+	anomalyDet   *ProtocolAnomalyDetector
+	behaviorMon  *DeviceBehaviorMonitor
+	otValidator  *OTCommandValidator
+	credScanner  *CredentialScanner
+	fwIntegrity  *FirmwareIntegrityDB
+	segEnforcer  *SegmentationEnforcer
 }
 
 func New() *Shield { return &Shield{} }
 
-func (s *Shield) Name() string        { return ModuleName }
+func (s *Shield) Name() string { return ModuleName }
 func (s *Shield) Description() string {
-	return "IoT/OT device fingerprinting, protocol anomaly detection, firmware integrity, and default credential scanning"
+	return "IoT/OT device fingerprinting, protocol anomaly detection, firmware integrity, default credential scanning, rogue device detection, OT command validation, device behavior baselining, network segmentation enforcement, and firmware vulnerability tracking"
 }
 
 func (s *Shield) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	s.bus = bus
 	s.pipeline = pipeline
+	s.cfg = cfg
 	s.logger = zerolog.New(zerolog.NewConsoleWriter()).With().Timestamp().Str("module", ModuleName).Logger()
+
+	settings := cfg.GetModuleSettings(ModuleName)
 
 	s.inventory = NewDeviceInventory()
 	s.anomalyDet = NewProtocolAnomalyDetector()
+	s.behaviorMon = NewDeviceBehaviorMonitor(settings)
+	s.otValidator = NewOTCommandValidator()
+	s.credScanner = NewCredentialScanner()
+	s.fwIntegrity = NewFirmwareIntegrityDB()
+	s.segEnforcer = NewSegmentationEnforcer(settings)
 
 	go s.inventory.CleanupLoop(s.ctx)
+	go s.behaviorMon.CleanupLoop(s.ctx)
+	go s.anomalyDet.CleanupLoop(s.ctx)
 
-	s.logger.Info().Msg("IoT/OT shield started")
+	s.logger.Info().Msg("IoT & OT shield started")
 	return nil
 }
 
@@ -61,15 +84,25 @@ func (s *Shield) HandleEvent(event *core.SecurityEvent) error {
 		s.handleProtocolEvent(event)
 	case "firmware_update", "firmware_check":
 		s.handleFirmwareEvent(event)
+	case "ot_command", "scada_command", "plc_command":
+		s.handleOTCommand(event)
+	case "network_flow", "iot_network":
+		s.handleNetworkFlow(event)
 	}
 	return nil
 }
+
+// ---------------------------------------------------------------------------
+// Event handlers
+// ---------------------------------------------------------------------------
 
 func (s *Shield) handleDeviceEvent(event *core.SecurityEvent) {
 	deviceID := getStringDetail(event, "device_id")
 	deviceType := getStringDetail(event, "device_type")
 	mac := getStringDetail(event, "mac_address")
 	firmware := getStringDetail(event, "firmware_version")
+	vendor := getStringDetail(event, "vendor")
+	protocol := getStringDetail(event, "protocol")
 
 	if deviceID == "" && mac == "" {
 		return
@@ -78,38 +111,88 @@ func (s *Shield) handleDeviceEvent(event *core.SecurityEvent) {
 		deviceID = mac
 	}
 
-	isNew := s.inventory.Register(deviceID, deviceType, mac, firmware, event.SourceIP)
-	if isNew {
+	// Register device and detect new/rogue devices
+	regResult := s.inventory.Register(deviceID, deviceType, mac, firmware, vendor, event.SourceIP)
+
+	if regResult.IsNew {
 		s.raiseAlert(event, core.SeverityMedium,
 			"New IoT Device Detected",
-			fmt.Sprintf("New device on network: ID=%s type=%s IP=%s MAC=%s", deviceID, deviceType, event.SourceIP, mac),
+			fmt.Sprintf("New device on network: ID=%s type=%s vendor=%s IP=%s MAC=%s firmware=%s",
+				deviceID, deviceType, vendor, event.SourceIP, mac, firmware),
 			"new_device")
 	}
 
-	if user := getStringDetail(event, "username"); user != "" {
-		if isDefaultCredential(user, getStringDetail(event, "password")) {
+	if regResult.IPChanged {
+		s.raiseAlert(event, core.SeverityHigh,
+			"IoT Device IP Address Changed",
+			fmt.Sprintf("Device %s (%s) changed IP from %s to %s. Possible device spoofing or DHCP manipulation.",
+				deviceID, deviceType, regResult.PreviousIP, event.SourceIP),
+			"device_ip_change")
+	}
+
+	if regResult.FirmwareDowngrade {
+		s.raiseAlert(event, core.SeverityCritical,
+			"Firmware Downgrade Detected",
+			fmt.Sprintf("Device %s firmware downgraded from %s to %s. Firmware downgrades can reintroduce patched vulnerabilities.",
+				deviceID, regResult.PreviousFirmware, firmware),
+			"firmware_downgrade")
+	}
+
+	// Credential scanning
+	username := getStringDetail(event, "username")
+	password := getStringDetail(event, "password")
+	if username != "" {
+		if finding := s.credScanner.Check(username, password, deviceType, vendor); finding != "" {
 			s.raiseAlert(event, core.SeverityCritical,
-				"Default Credentials Detected",
-				fmt.Sprintf("Device %s (%s) is using default credentials (user: %s)", deviceID, deviceType, user),
+				"Default/Weak Credentials Detected",
+				fmt.Sprintf("Device %s (%s, vendor: %s) is using %s (user: %s)",
+					deviceID, deviceType, vendor, finding, username),
 				"default_credentials")
 		}
+	}
+
+	// Behavior baseline analysis
+	anomaly := s.behaviorMon.RecordActivity(deviceID, deviceType, protocol, event.SourceIP)
+	if anomaly.UnusualProtocol {
+		s.raiseAlert(event, core.SeverityHigh,
+			"IoT Device Using Unusual Protocol",
+			fmt.Sprintf("Device %s (%s) is using protocol %s for the first time. Known protocols: %s",
+				deviceID, deviceType, protocol, strings.Join(anomaly.KnownProtocols, ", ")),
+			"unusual_protocol")
+	}
+	if anomaly.ActivitySpike {
+		s.raiseAlert(event, core.SeverityMedium,
+			"IoT Device Activity Spike",
+			fmt.Sprintf("Device %s (%s) activity rate is %.1fx above baseline (%d events/min vs normal %d).",
+				deviceID, deviceType, anomaly.SpikeRatio, anomaly.CurrentRate, anomaly.BaselineRate),
+			"activity_spike")
+	}
+	if anomaly.UnusualHour {
+		s.raiseAlert(event, core.SeverityMedium,
+			"IoT Device Active Outside Normal Hours",
+			fmt.Sprintf("Device %s (%s) is active at hour %d, outside its normal operating window.",
+				deviceID, deviceType, anomaly.CurrentHour),
+			"unusual_hours")
 	}
 }
 
 func (s *Shield) handleProtocolEvent(event *core.SecurityEvent) {
 	protocol := strings.ToLower(getStringDetail(event, "protocol"))
 	payload := getStringDetail(event, "payload")
+	payloadSize := getIntDetail(event, "payload_size")
+	functionCode := getIntDetail(event, "function_code")
 
 	if protocol == "" {
 		return
 	}
 
-	anomaly := s.anomalyDet.Check(protocol, payload, event.SourceIP)
-	if anomaly != "" {
-		s.raiseAlert(event, core.SeverityHigh,
-			"IoT Protocol Anomaly",
-			fmt.Sprintf("Protocol anomaly on %s from %s: %s", protocol, event.SourceIP, anomaly),
-			"protocol_anomaly")
+	// Rate-based anomaly detection
+	anomaly := s.anomalyDet.Check(protocol, payload, event.SourceIP, payloadSize, functionCode)
+	for _, finding := range anomaly {
+		s.raiseAlert(event, finding.Severity,
+			finding.Title,
+			fmt.Sprintf("Protocol anomaly on %s from %s: %s", protocol, event.SourceIP, finding.Description),
+			finding.AlertType)
 	}
 }
 
@@ -118,13 +201,96 @@ func (s *Shield) handleFirmwareEvent(event *core.SecurityEvent) {
 	version := getStringDetail(event, "firmware_version")
 	hash := getStringDetail(event, "firmware_hash")
 	expectedHash := getStringDetail(event, "expected_hash")
+	vendor := getStringDetail(event, "vendor")
+	model := getStringDetail(event, "model")
 
+	// Hash integrity check
 	if hash != "" && expectedHash != "" && hash != expectedHash {
 		s.raiseAlert(event, core.SeverityCritical,
 			"Firmware Integrity Violation",
-			fmt.Sprintf("Device %s firmware hash mismatch. Expected: %s, Got: %s (version: %s)",
+			fmt.Sprintf("Device %s firmware hash mismatch. Expected: %s, Got: %s (version: %s). Firmware may be tampered.",
 				deviceID, truncate(expectedHash, 16), truncate(hash, 16), version),
 			"firmware_integrity")
+	}
+
+	// Track firmware in integrity DB
+	if hash != "" {
+		result := s.fwIntegrity.RecordFirmware(deviceID, vendor, model, version, hash)
+		if result.UnknownFirmware {
+			s.raiseAlert(event, core.SeverityHigh,
+				"Unknown Firmware Detected",
+				fmt.Sprintf("Device %s running firmware %s (hash: %s) not in known-good database for vendor %s model %s.",
+					deviceID, version, truncate(hash, 16), vendor, model),
+				"unknown_firmware")
+		}
+		if result.KnownVulnerable {
+			s.raiseAlert(event, core.SeverityCritical,
+				"Vulnerable Firmware Detected",
+				fmt.Sprintf("Device %s running firmware %s which has known vulnerabilities: %s. Update immediately.",
+					deviceID, version, result.VulnDescription),
+				"vulnerable_firmware")
+		}
+	}
+}
+
+func (s *Shield) handleOTCommand(event *core.SecurityEvent) {
+	protocol := strings.ToLower(getStringDetail(event, "protocol"))
+	command := getStringDetail(event, "command")
+	functionCode := getIntDetail(event, "function_code")
+	target := getStringDetail(event, "target")
+	value := getStringDetail(event, "value")
+	operator := getStringDetail(event, "operator")
+
+	result := s.otValidator.Validate(protocol, command, functionCode, target, value, operator, event.SourceIP)
+
+	if result.Blocked {
+		s.raiseAlert(event, core.SeverityCritical,
+			"Dangerous OT Command Blocked",
+			fmt.Sprintf("Blocked %s command on %s protocol from %s (operator: %s): %s. Target: %s, Value: %s",
+				command, protocol, event.SourceIP, operator, result.Reason, target, value),
+			"ot_command_blocked")
+	}
+
+	if result.Suspicious {
+		s.raiseAlert(event, core.SeverityHigh,
+			"Suspicious OT Command Detected",
+			fmt.Sprintf("Suspicious %s command on %s from %s (operator: %s): %s",
+				command, protocol, event.SourceIP, operator, result.Reason),
+			"ot_command_suspicious")
+	}
+
+	if result.OutOfRange {
+		s.raiseAlert(event, core.SeverityHigh,
+			"OT Setpoint Out of Safe Range",
+			fmt.Sprintf("Command to set %s to %s is outside safe operating range. Protocol: %s, Operator: %s",
+				target, value, protocol, operator),
+			"ot_out_of_range")
+	}
+
+	if result.UnauthorizedSource {
+		s.raiseAlert(event, core.SeverityCritical,
+			"OT Command from Unauthorized Source",
+			fmt.Sprintf("OT command on %s from unauthorized IP %s. Only designated engineering workstations should issue OT commands.",
+				protocol, event.SourceIP),
+			"ot_unauthorized_source")
+	}
+}
+
+func (s *Shield) handleNetworkFlow(event *core.SecurityEvent) {
+	deviceID := getStringDetail(event, "device_id")
+	srcZone := getStringDetail(event, "src_zone")
+	dstZone := getStringDetail(event, "dst_zone")
+	destIP := event.DestIP
+	destPort := getIntDetail(event, "dest_port")
+	protocol := getStringDetail(event, "protocol")
+
+	violation := s.segEnforcer.Check(srcZone, dstZone, event.SourceIP, destIP, destPort, protocol)
+	if violation != nil {
+		s.raiseAlert(event, violation.Severity,
+			"Network Segmentation Violation",
+			fmt.Sprintf("Device %s (zone: %s, IP: %s) attempted to reach zone %s (IP: %s, port: %d, proto: %s). %s",
+				deviceID, srcZone, event.SourceIP, dstZone, destIP, destPort, protocol, violation.Reason),
+			"segmentation_violation")
 	}
 }
 
@@ -138,51 +304,129 @@ func (s *Shield) raiseAlert(event *core.SecurityEvent, severity core.Severity, t
 	}
 
 	alert := core.NewAlert(newEvent, title, description)
+	alert.Mitigations = getIoTMitigations(alertType)
 	if s.pipeline != nil {
 		s.pipeline.Process(alert)
 	}
 }
 
-// DeviceInventory tracks known IoT/OT devices.
+func getIoTMitigations(alertType string) []string {
+	base := []string{"Maintain an up-to-date inventory of all IoT/OT devices"}
+	switch alertType {
+	case "default_credentials":
+		return append(base, "Change all default credentials immediately",
+			"Implement a credential rotation policy for IoT devices",
+			"Disable unused default accounts on devices")
+	case "firmware_integrity", "firmware_downgrade", "unknown_firmware", "vulnerable_firmware":
+		return append(base, "Verify firmware images against vendor-signed hashes",
+			"Implement secure boot on all OT/IoT devices",
+			"Subscribe to vendor security advisories for firmware updates")
+	case "ot_command_blocked", "ot_command_suspicious", "ot_out_of_range", "ot_unauthorized_source":
+		return append(base, "Restrict OT command sources to designated engineering workstations",
+			"Implement allowlists for critical OT commands",
+			"Enable OT protocol deep packet inspection",
+			"Maintain safe operating range limits for all setpoints")
+	case "segmentation_violation":
+		return append(base, "Enforce strict network segmentation between IT and OT zones",
+			"Deploy firewalls between IoT VLANs and corporate networks",
+			"Monitor east-west traffic within IoT segments")
+	case "protocol_anomaly", "unusual_protocol":
+		return append(base, "Baseline normal protocol usage per device type",
+			"Block unauthorized protocols at the network level")
+	default:
+		return append(base, "Isolate suspicious devices from the network",
+			"Review device logs and network captures for forensic analysis")
+	}
+}
+
+// ===========================================================================
+// DeviceInventory — tracks known IoT/OT devices with change detection
+// ===========================================================================
+
 type DeviceInventory struct {
 	mu      sync.RWMutex
 	devices map[string]*DeviceRecord
 }
 
 type DeviceRecord struct {
-	ID        string
-	Type      string
-	MAC       string
-	Firmware  string
-	IP        string
-	FirstSeen time.Time
-	LastSeen  time.Time
+	ID              string
+	Type            string
+	MAC             string
+	Firmware        string
+	Vendor          string
+	IP              string
+	PreviousIPs     []string
+	FirstSeen       time.Time
+	LastSeen        time.Time
+	FirmwareHistory []string
+}
+
+type RegistrationResult struct {
+	IsNew              bool
+	IPChanged          bool
+	FirmwareDowngrade  bool
+	PreviousIP         string
+	PreviousFirmware   string
 }
 
 func NewDeviceInventory() *DeviceInventory {
 	return &DeviceInventory{devices: make(map[string]*DeviceRecord)}
 }
 
-func (inv *DeviceInventory) Register(id, deviceType, mac, firmware, ip string) bool {
+func (inv *DeviceInventory) Register(id, deviceType, mac, firmware, vendor, ip string) RegistrationResult {
 	inv.mu.Lock()
 	defer inv.mu.Unlock()
 
 	now := time.Now()
-	if rec, exists := inv.devices[id]; exists {
-		rec.LastSeen = now
-		rec.IP = ip
-		if firmware != "" {
-			rec.Firmware = firmware
+	result := RegistrationResult{}
+
+	rec, exists := inv.devices[id]
+	if !exists {
+		inv.devices[id] = &DeviceRecord{
+			ID: id, Type: deviceType, MAC: mac,
+			Firmware: firmware, Vendor: vendor, IP: ip,
+			FirstSeen: now, LastSeen: now,
 		}
-		return false
+		if firmware != "" {
+			inv.devices[id].FirmwareHistory = []string{firmware}
+		}
+		result.IsNew = true
+		return result
 	}
 
-	inv.devices[id] = &DeviceRecord{
-		ID: id, Type: deviceType, MAC: mac,
-		Firmware: firmware, IP: ip,
-		FirstSeen: now, LastSeen: now,
+	rec.LastSeen = now
+
+	// IP change detection
+	if ip != "" && rec.IP != "" && ip != rec.IP {
+		result.IPChanged = true
+		result.PreviousIP = rec.IP
+		rec.PreviousIPs = append(rec.PreviousIPs, rec.IP)
+		if len(rec.PreviousIPs) > 20 {
+			rec.PreviousIPs = rec.PreviousIPs[len(rec.PreviousIPs)-20:]
+		}
+		rec.IP = ip
+	} else if ip != "" {
+		rec.IP = ip
 	}
-	return true
+
+	// Firmware downgrade detection (simple version string comparison)
+	if firmware != "" && rec.Firmware != "" && firmware != rec.Firmware {
+		result.PreviousFirmware = rec.Firmware
+		if isVersionDowngrade(rec.Firmware, firmware) {
+			result.FirmwareDowngrade = true
+		}
+		rec.FirmwareHistory = append(rec.FirmwareHistory, firmware)
+		if len(rec.FirmwareHistory) > 50 {
+			rec.FirmwareHistory = rec.FirmwareHistory[len(rec.FirmwareHistory)-50:]
+		}
+		rec.Firmware = firmware
+	}
+
+	if vendor != "" {
+		rec.Vendor = vendor
+	}
+
+	return result
 }
 
 func (inv *DeviceInventory) CleanupLoop(ctx context.Context) {
@@ -205,10 +449,53 @@ func (inv *DeviceInventory) CleanupLoop(ctx context.Context) {
 	}
 }
 
-// ProtocolAnomalyDetector checks IoT protocol messages for anomalies.
+// isVersionDowngrade does a best-effort comparison of dotted version strings.
+func isVersionDowngrade(oldVer, newVer string) bool {
+	oldParts := strings.Split(oldVer, ".")
+	newParts := strings.Split(newVer, ".")
+	maxLen := len(oldParts)
+	if len(newParts) > maxLen {
+		maxLen = len(newParts)
+	}
+	for i := 0; i < maxLen; i++ {
+		o, n := 0, 0
+		if i < len(oldParts) {
+			o = parseVersionPart(oldParts[i])
+		}
+		if i < len(newParts) {
+			n = parseVersionPart(newParts[i])
+		}
+		if n < o {
+			return true
+		}
+		if n > o {
+			return false
+		}
+	}
+	return false
+}
+
+func parseVersionPart(s string) int {
+	n := 0
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			n = n*10 + int(c-'0')
+		} else {
+			break
+		}
+	}
+	return n
+}
+
+// ===========================================================================
+// ProtocolAnomalyDetector — deep IoT/OT protocol inspection
+// ===========================================================================
+
 type ProtocolAnomalyDetector struct {
 	mu       sync.RWMutex
 	counters map[string]*protoCounter
+	// Per-protocol payload size baselines
+	payloadBaselines map[string]*payloadBaseline
 }
 
 type protoCounter struct {
@@ -217,17 +504,35 @@ type protoCounter struct {
 	lastSeen time.Time
 }
 
-func NewProtocolAnomalyDetector() *ProtocolAnomalyDetector {
-	return &ProtocolAnomalyDetector{counters: make(map[string]*protoCounter)}
+type payloadBaseline struct {
+	totalSize int64
+	count     int64
+	maxSeen   int
 }
 
-func (d *ProtocolAnomalyDetector) Check(protocol, payload, sourceIP string) string {
+type ProtoFinding struct {
+	Title       string
+	Description string
+	Severity    core.Severity
+	AlertType   string
+}
+
+func NewProtocolAnomalyDetector() *ProtocolAnomalyDetector {
+	return &ProtocolAnomalyDetector{
+		counters:         make(map[string]*protoCounter),
+		payloadBaselines: make(map[string]*payloadBaseline),
+	}
+}
+
+func (d *ProtocolAnomalyDetector) Check(protocol, payload, sourceIP string, payloadSize, functionCode int) []ProtoFinding {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	var findings []ProtoFinding
 	key := sourceIP + ":" + protocol
 	now := time.Now()
 
+	// Rate anomaly
 	counter, exists := d.counters[key]
 	if !exists {
 		d.counters[key] = &protoCounter{count: 1, window: now, lastSeen: now}
@@ -240,39 +545,790 @@ func (d *ProtocolAnomalyDetector) Check(protocol, payload, sourceIP string) stri
 		counter.lastSeen = now
 
 		if counter.count > 500 {
-			return fmt.Sprintf("abnormal message rate: %d msgs/min", counter.count)
+			findings = append(findings, ProtoFinding{
+				Title:       "IoT Protocol Flood",
+				Description: fmt.Sprintf("abnormal message rate: %d msgs/min on %s", counter.count, protocol),
+				Severity:    core.SeverityHigh,
+				AlertType:   "protocol_flood",
+			})
 		}
 	}
 
-	if protocol == "modbus" || protocol == "dnp3" || protocol == "opcua" {
-		if strings.Contains(payload, "write_coil") || strings.Contains(payload, "force_listen") {
-			return "suspicious write command on industrial protocol"
+	// Payload size anomaly
+	if payloadSize > 0 {
+		bl, exists := d.payloadBaselines[protocol]
+		if !exists {
+			bl = &payloadBaseline{}
+			d.payloadBaselines[protocol] = bl
 		}
+		bl.totalSize += int64(payloadSize)
+		bl.count++
+		if payloadSize > bl.maxSeen {
+			bl.maxSeen = payloadSize
+		}
+		if bl.count > 100 {
+			avg := float64(bl.totalSize) / float64(bl.count)
+			if float64(payloadSize) > avg*5 && payloadSize > 1024 {
+				findings = append(findings, ProtoFinding{
+					Title:       "Abnormal IoT Payload Size",
+					Description: fmt.Sprintf("payload size %d bytes is %.1fx above average (%.0f bytes) for %s", payloadSize, float64(payloadSize)/avg, avg, protocol),
+					Severity:    core.SeverityMedium,
+					AlertType:   "abnormal_payload_size",
+				})
+			}
+		}
+	}
+
+	// Industrial protocol deep inspection
+	findings = append(findings, d.inspectIndustrialProtocol(protocol, payload, functionCode, sourceIP)...)
+
+	return findings
+}
+
+func (d *ProtocolAnomalyDetector) inspectIndustrialProtocol(protocol, payload string, functionCode int, sourceIP string) []ProtoFinding {
+	var findings []ProtoFinding
+
+	switch protocol {
+	case "modbus":
+		findings = append(findings, d.inspectModbus(payload, functionCode, sourceIP)...)
+	case "dnp3":
+		findings = append(findings, d.inspectDNP3(payload, functionCode, sourceIP)...)
+	case "opcua":
+		findings = append(findings, d.inspectOPCUA(payload, sourceIP)...)
+	case "bacnet":
+		findings = append(findings, d.inspectBACnet(payload, functionCode, sourceIP)...)
+	case "mqtt":
+		findings = append(findings, d.inspectMQTT(payload, sourceIP)...)
+	case "coap":
+		findings = append(findings, d.inspectCoAP(payload, sourceIP)...)
+	}
+
+	return findings
+}
+
+func (d *ProtocolAnomalyDetector) inspectModbus(payload string, functionCode int, sourceIP string) []ProtoFinding {
+	var findings []ProtoFinding
+
+	// Dangerous Modbus function codes
+	dangerousFCs := map[int]string{
+		5:  "Write Single Coil",
+		6:  "Write Single Register",
+		15: "Write Multiple Coils",
+		16: "Write Multiple Registers",
+		22: "Mask Write Register",
+		23: "Read/Write Multiple Registers",
+		8:  "Diagnostics (can restart device)",
+		43: "Encapsulated Interface Transport (device identification)",
+	}
+
+	if desc, ok := dangerousFCs[functionCode]; ok {
+		severity := core.SeverityMedium
+		if functionCode == 8 || functionCode == 5 || functionCode == 15 {
+			severity = core.SeverityHigh
+		}
+		findings = append(findings, ProtoFinding{
+			Title:       "Modbus Write/Control Command",
+			Description: fmt.Sprintf("Modbus FC %d (%s) from %s", functionCode, desc, sourceIP),
+			Severity:    severity,
+			AlertType:   "modbus_write_command",
+		})
+	}
+
+	// Modbus broadcast (unit ID 0) — affects all devices
+	if strings.Contains(payload, "unit_id=0") || strings.Contains(payload, "broadcast") {
+		findings = append(findings, ProtoFinding{
+			Title:       "Modbus Broadcast Command",
+			Description: fmt.Sprintf("Modbus broadcast (unit_id=0) from %s — affects all devices on the bus", sourceIP),
+			Severity:    core.SeverityCritical,
+			AlertType:   "modbus_broadcast",
+		})
+	}
+
+	return findings
+}
+
+func (d *ProtocolAnomalyDetector) inspectDNP3(payload string, functionCode int, sourceIP string) []ProtoFinding {
+	var findings []ProtoFinding
+
+	// DNP3 dangerous operations
+	dangerousDNP3 := map[int]string{
+		3:  "Direct Operate",
+		4:  "Direct Operate No Ack",
+		13: "Cold Restart",
+		14: "Warm Restart",
+		18: "Stop Application",
+		20: "Enable Unsolicited",
+		21: "Disable Unsolicited",
+		31: "Activate Configuration",
+	}
+
+	if desc, ok := dangerousDNP3[functionCode]; ok {
+		severity := core.SeverityHigh
+		if functionCode == 13 || functionCode == 14 || functionCode == 18 {
+			severity = core.SeverityCritical
+		}
+		findings = append(findings, ProtoFinding{
+			Title:       "DNP3 Control Command",
+			Description: fmt.Sprintf("DNP3 FC %d (%s) from %s", functionCode, desc, sourceIP),
+			Severity:    severity,
+			AlertType:   "dnp3_control_command",
+		})
+	}
+
+	return findings
+}
+
+func (d *ProtocolAnomalyDetector) inspectOPCUA(payload, sourceIP string) []ProtoFinding {
+	var findings []ProtoFinding
+	payloadLower := strings.ToLower(payload)
+
+	suspiciousOps := []struct {
+		pattern string
+		desc    string
+		sev     core.Severity
+	}{
+		{"write_value", "OPC UA Write Value — modifying process data", core.SeverityHigh},
+		{"call_method", "OPC UA Method Call — executing server-side logic", core.SeverityHigh},
+		{"add_nodes", "OPC UA AddNodes — modifying server address space", core.SeverityCritical},
+		{"delete_nodes", "OPC UA DeleteNodes — removing server objects", core.SeverityCritical},
+		{"register_server", "OPC UA RegisterServer — registering new server", core.SeverityHigh},
+		{"translate_browse", "OPC UA TranslateBrowsePathsToNodeIds — reconnaissance", core.SeverityMedium},
+	}
+
+	for _, op := range suspiciousOps {
+		if strings.Contains(payloadLower, op.pattern) {
+			findings = append(findings, ProtoFinding{
+				Title:       "OPC UA Suspicious Operation",
+				Description: fmt.Sprintf("%s from %s", op.desc, sourceIP),
+				Severity:    op.sev,
+				AlertType:   "opcua_suspicious_op",
+			})
+		}
+	}
+
+	return findings
+}
+
+func (d *ProtocolAnomalyDetector) inspectBACnet(payload string, functionCode int, sourceIP string) []ProtoFinding {
+	var findings []ProtoFinding
+
+	// BACnet dangerous services
+	dangerousBACnet := map[int]string{
+		6:  "WriteProperty",
+		15: "WritePropertyMultiple",
+		20: "DeviceCommunicationControl",
+		21: "ReinitializeDevice",
+	}
+
+	if desc, ok := dangerousBACnet[functionCode]; ok {
+		severity := core.SeverityHigh
+		if functionCode == 20 || functionCode == 21 {
+			severity = core.SeverityCritical
+		}
+		findings = append(findings, ProtoFinding{
+			Title:       "BACnet Control Command",
+			Description: fmt.Sprintf("BACnet service %d (%s) from %s", functionCode, desc, sourceIP),
+			Severity:    severity,
+			AlertType:   "bacnet_control_command",
+		})
+	}
+
+	return findings
+}
+
+func (d *ProtocolAnomalyDetector) inspectMQTT(payload, sourceIP string) []ProtoFinding {
+	var findings []ProtoFinding
+	payloadLower := strings.ToLower(payload)
+
+	// MQTT wildcard subscriptions (# or +) can be used for reconnaissance
+	if strings.Contains(payloadLower, "subscribe") && (strings.Contains(payload, "#") || strings.Contains(payload, "+")) {
+		findings = append(findings, ProtoFinding{
+			Title:       "MQTT Wildcard Subscription",
+			Description: fmt.Sprintf("MQTT wildcard subscription from %s — can intercept all messages on the broker", sourceIP),
+			Severity:    core.SeverityHigh,
+			AlertType:   "mqtt_wildcard_sub",
+		})
+	}
+
+	// MQTT $SYS topic access (broker internals)
+	if strings.Contains(payload, "$SYS") {
+		findings = append(findings, ProtoFinding{
+			Title:       "MQTT System Topic Access",
+			Description: fmt.Sprintf("Access to MQTT $SYS topic from %s — exposes broker internals", sourceIP),
+			Severity:    core.SeverityMedium,
+			AlertType:   "mqtt_sys_topic",
+		})
+	}
+
+	return findings
+}
+
+func (d *ProtocolAnomalyDetector) inspectCoAP(payload, sourceIP string) []ProtoFinding {
+	var findings []ProtoFinding
+	payloadLower := strings.ToLower(payload)
+
+	if strings.Contains(payloadLower, ".well-known/core") {
+		findings = append(findings, ProtoFinding{
+			Title:       "CoAP Resource Discovery",
+			Description: fmt.Sprintf("CoAP resource discovery request from %s — enumerating device capabilities", sourceIP),
+			Severity:    core.SeverityMedium,
+			AlertType:   "coap_discovery",
+		})
+	}
+
+	return findings
+}
+
+func (d *ProtocolAnomalyDetector) CleanupLoop(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.mu.Lock()
+			cutoff := time.Now().Add(-10 * time.Minute)
+			for key, counter := range d.counters {
+				if counter.lastSeen.Before(cutoff) {
+					delete(d.counters, key)
+				}
+			}
+			d.mu.Unlock()
+		}
+	}
+}
+
+// ===========================================================================
+// DeviceBehaviorMonitor — baselines device behavior and detects anomalies
+// ===========================================================================
+
+type DeviceBehaviorMonitor struct {
+	mu       sync.RWMutex
+	profiles map[string]*deviceBehaviorProfile
+	spikeThreshold float64
+}
+
+type deviceBehaviorProfile struct {
+	DeviceType     string
+	KnownProtocols map[string]bool
+	// Activity rate tracking
+	activityCount  int
+	activityWindow time.Time
+	baselineRate   int // events per minute (rolling average)
+	baselineSamples int
+	// Time-of-day tracking
+	activeHours    map[int]int // hour -> count
+	totalEvents    int
+	LastSeen       time.Time
+	CreatedAt      time.Time
+}
+
+type BehaviorAnomaly struct {
+	UnusualProtocol bool
+	ActivitySpike   bool
+	UnusualHour     bool
+	KnownProtocols  []string
+	SpikeRatio      float64
+	CurrentRate     int
+	BaselineRate    int
+	CurrentHour     int
+}
+
+func NewDeviceBehaviorMonitor(settings map[string]interface{}) *DeviceBehaviorMonitor {
+	threshold := 3.0
+	if val, ok := settings["behavior_spike_threshold"]; ok {
+		if v, ok := val.(float64); ok && v > 0 {
+			threshold = v
+		}
+	}
+	return &DeviceBehaviorMonitor{
+		profiles:       make(map[string]*deviceBehaviorProfile),
+		spikeThreshold: threshold,
+	}
+}
+
+func (bm *DeviceBehaviorMonitor) RecordActivity(deviceID, deviceType, protocol, ip string) BehaviorAnomaly {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+
+	anomaly := BehaviorAnomaly{}
+	now := time.Now()
+	hour := now.Hour()
+	anomaly.CurrentHour = hour
+
+	profile, exists := bm.profiles[deviceID]
+	if !exists {
+		profile = &deviceBehaviorProfile{
+			DeviceType:     deviceType,
+			KnownProtocols: make(map[string]bool),
+			activeHours:    make(map[int]int),
+			activityWindow: now,
+			CreatedAt:      now,
+		}
+		bm.profiles[deviceID] = profile
+	}
+
+	profile.LastSeen = now
+	profile.totalEvents++
+	profile.activeHours[hour]++
+
+	// Protocol anomaly (only after baseline period)
+	if protocol != "" {
+		if now.Sub(profile.CreatedAt) > 2*time.Hour && !profile.KnownProtocols[protocol] {
+			anomaly.UnusualProtocol = true
+			for p := range profile.KnownProtocols {
+				anomaly.KnownProtocols = append(anomaly.KnownProtocols, p)
+			}
+		}
+		profile.KnownProtocols[protocol] = true
+	}
+
+	// Activity rate tracking
+	if now.Sub(profile.activityWindow) > time.Minute {
+		// Update baseline with previous window
+		if profile.baselineSamples > 0 {
+			profile.baselineRate = (profile.baselineRate*profile.baselineSamples + profile.activityCount) / (profile.baselineSamples + 1)
+		} else {
+			profile.baselineRate = profile.activityCount
+		}
+		profile.baselineSamples++
+		profile.activityCount = 0
+		profile.activityWindow = now
+	}
+	profile.activityCount++
+
+	// Spike detection (only after sufficient baseline)
+	if profile.baselineSamples > 10 && profile.baselineRate > 0 {
+		ratio := float64(profile.activityCount) / float64(profile.baselineRate)
+		if ratio > bm.spikeThreshold {
+			anomaly.ActivitySpike = true
+			anomaly.SpikeRatio = ratio
+			anomaly.CurrentRate = profile.activityCount
+			anomaly.BaselineRate = profile.baselineRate
+		}
+	}
+
+	// Unusual hour detection (only after 24+ hours of data)
+	if profile.totalEvents > 1000 && now.Sub(profile.CreatedAt) > 24*time.Hour {
+		totalHourEvents := 0
+		for _, c := range profile.activeHours {
+			totalHourEvents += c
+		}
+		avgPerHour := float64(totalHourEvents) / 24.0
+		thisHourCount := float64(profile.activeHours[hour])
+		// If this hour normally has <10% of average activity, it's unusual
+		if avgPerHour > 10 && thisHourCount < avgPerHour*0.1 {
+			anomaly.UnusualHour = true
+		}
+	}
+
+	return anomaly
+}
+
+func (bm *DeviceBehaviorMonitor) CleanupLoop(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			bm.mu.Lock()
+			cutoff := time.Now().Add(-48 * time.Hour)
+			for id, profile := range bm.profiles {
+				if profile.LastSeen.Before(cutoff) {
+					delete(bm.profiles, id)
+				}
+			}
+			bm.mu.Unlock()
+		}
+	}
+}
+
+// ===========================================================================
+// OTCommandValidator — validates OT/SCADA commands against safety policies
+// ===========================================================================
+
+type OTCommandValidator struct {
+	mu               sync.RWMutex
+	authorizedIPs    map[string]bool
+	dangerousCommands map[string]*regexp.Regexp
+	safeRanges       map[string]*safeRange
+}
+
+type safeRange struct {
+	Min float64
+	Max float64
+}
+
+type OTValidationResult struct {
+	Blocked            bool
+	Suspicious         bool
+	OutOfRange         bool
+	UnauthorizedSource bool
+	Reason             string
+}
+
+func NewOTCommandValidator() *OTCommandValidator {
+	return &OTCommandValidator{
+		authorizedIPs: make(map[string]bool),
+		dangerousCommands: map[string]*regexp.Regexp{
+			"modbus": regexp.MustCompile(`(?i)(restart|reset|factory.?default|flash|firmware.?update|format|clear.?all|emergency.?stop)`),
+			"dnp3":   regexp.MustCompile(`(?i)(cold.?restart|warm.?restart|stop.?application|initialize|clear.?config)`),
+			"opcua":  regexp.MustCompile(`(?i)(delete.?node|shutdown|reset|factory|format|clear.?address.?space)`),
+			"bacnet": regexp.MustCompile(`(?i)(reinitialize|device.?communication.?control|cold.?start|warm.?start)`),
+		},
+		safeRanges: map[string]*safeRange{
+			"temperature": {Min: -50, Max: 500},
+			"pressure":    {Min: 0, Max: 10000},
+			"flow_rate":   {Min: 0, Max: 100000},
+			"voltage":     {Min: 0, Max: 480},
+			"speed":       {Min: 0, Max: 10000},
+			"level":       {Min: 0, Max: 100},
+		},
+	}
+}
+
+func (v *OTCommandValidator) Validate(protocol, command string, functionCode int, target, value, operator, sourceIP string) OTValidationResult {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+
+	result := OTValidationResult{}
+
+	// Check authorized source IPs (if configured)
+	if len(v.authorizedIPs) > 0 && !v.authorizedIPs[sourceIP] {
+		result.UnauthorizedSource = true
+		result.Reason = fmt.Sprintf("IP %s is not in the authorized OT command source list", sourceIP)
+	}
+
+	// Check dangerous commands
+	if pattern, ok := v.dangerousCommands[protocol]; ok {
+		if pattern.MatchString(command) {
+			result.Blocked = true
+			result.Reason = fmt.Sprintf("command %q matches dangerous pattern for %s", command, protocol)
+			return result
+		}
+	}
+
+	// Check safe ranges for setpoint commands
+	if value != "" && target != "" {
+		targetLower := strings.ToLower(target)
+		for rangeKey, sr := range v.safeRanges {
+			if strings.Contains(targetLower, rangeKey) {
+				numVal := parseFloat(value)
+				if numVal < sr.Min || numVal > sr.Max {
+					result.OutOfRange = true
+					result.Reason = fmt.Sprintf("value %s for %s is outside safe range [%.1f, %.1f]",
+						value, target, sr.Min, sr.Max)
+					return result
+				}
+			}
+		}
+	}
+
+	// Protocol-specific suspicious patterns
+	switch protocol {
+	case "modbus":
+		// Write to coil 0 (often the emergency stop)
+		if (functionCode == 5 || functionCode == 15) && strings.Contains(target, "coil_0") {
+			result.Suspicious = true
+			result.Reason = "write to coil 0 (potential emergency stop manipulation)"
+		}
+	case "dnp3":
+		// Direct operate without select (bypasses safety interlock)
+		if functionCode == 4 {
+			result.Suspicious = true
+			result.Reason = "Direct Operate No Ack — bypasses select-before-operate safety interlock"
+		}
+	}
+
+	return result
+}
+
+// ===========================================================================
+// CredentialScanner — expanded default/weak credential detection
+// ===========================================================================
+
+type CredentialScanner struct {
+	// vendor -> username -> passwords
+	vendorDefaults map[string]map[string][]string
+	genericDefaults map[string][]string
+	weakPasswords  *regexp.Regexp
+}
+
+func NewCredentialScanner() *CredentialScanner {
+	return &CredentialScanner{
+		vendorDefaults: map[string]map[string][]string{
+			"hikvision":  {"admin": {"12345", "admin12345", ""}},
+			"dahua":      {"admin": {"admin", ""}},
+			"axis":       {"root": {"pass", "root", ""}},
+			"cisco":      {"admin": {"admin", "cisco", ""}, "cisco": {"cisco", ""}},
+			"honeywell":  {"admin": {"1234", "admin", ""}},
+			"schneider":  {"USER": {"USER", ""}, "admin": {"admin", ""}},
+			"siemens":    {"admin": {"admin", ""}, "SIMATIC": {"SIMATIC", ""}},
+			"abb":        {"admin": {"admin", ""}, "default": {"default", ""}},
+			"rockwell":   {"admin": {"1234", ""}, "1784": {"1784", ""}},
+			"moxa":       {"admin": {"", "admin", "root"}},
+			"dlink":      {"admin": {"admin", "", "password"}},
+			"tplink":     {"admin": {"admin", ""}},
+			"ubiquiti":   {"ubnt": {"ubnt", ""}},
+			"mikrotik":   {"admin": {"", "admin"}},
+			"netgear":    {"admin": {"password", "1234"}},
+			"samsung":    {"admin": {"1111111", "4321"}},
+			"bosch":      {"admin": {"admin", ""}},
+			"ge":         {"admin": {"admin", ""}, "engineer": {"engineer", ""}},
+			"emerson":    {"admin": {"admin", ""}, "Ovation": {"Ovation", ""}},
+			"yokogawa":   {"admin": {"admin", ""}, "CENTUM": {"CENTUM", ""}},
+		},
+		genericDefaults: map[string][]string{
+			"admin":     {"admin", "password", "1234", "12345", "123456", ""},
+			"root":      {"root", "toor", "password", "admin", ""},
+			"user":      {"user", "password", "1234", ""},
+			"default":   {"default", "password", ""},
+			"pi":        {"raspberry", ""},
+			"ubnt":      {"ubnt", ""},
+			"support":   {"support", ""},
+			"guest":     {"guest", ""},
+			"operator":  {"operator", ""},
+			"manager":   {"manager", ""},
+			"service":   {"service", ""},
+			"test":      {"test", "test123", ""},
+			"ftp":       {"ftp", ""},
+			"anonymous": {"", "anonymous"},
+		},
+		weakPasswords: regexp.MustCompile(`^(password|123456|12345678|qwerty|abc123|monkey|master|dragon|login|admin|letmein|welcome|shadow|sunshine|trustno1|iloveyou|batman|access|hello|charlie|000000|passw0rd|1q2w3e4r)$`),
+	}
+}
+
+func (cs *CredentialScanner) Check(username, password, deviceType, vendor string) string {
+	userLower := strings.ToLower(username)
+	vendorLower := strings.ToLower(vendor)
+
+	// Check vendor-specific defaults first
+	if vendorLower != "" {
+		if vendorCreds, ok := cs.vendorDefaults[vendorLower]; ok {
+			if passwords, ok := vendorCreds[username]; ok {
+				for _, p := range passwords {
+					if password == p {
+						return fmt.Sprintf("vendor-default credentials for %s", vendor)
+					}
+				}
+			}
+		}
+	}
+
+	// Check generic defaults
+	if passwords, ok := cs.genericDefaults[userLower]; ok {
+		for _, p := range passwords {
+			if password == p {
+				return "default credentials"
+			}
+		}
+	}
+
+	// Check weak passwords
+	if cs.weakPasswords.MatchString(strings.ToLower(password)) {
+		return "weak password from common password list"
+	}
+
+	// Empty password
+	if password == "" && username != "" {
+		return "empty password"
 	}
 
 	return ""
 }
 
-func isDefaultCredential(username, password string) bool {
-	defaults := map[string][]string{
-		"admin":   {"admin", "password", "1234", "12345", ""},
-		"root":    {"root", "toor", "password", "admin", ""},
-		"user":    {"user", "password", "1234", ""},
-		"default": {"default", "password", ""},
-		"pi":      {"raspberry", ""},
-		"ubnt":    {"ubnt", ""},
-		"support": {"support", ""},
-		"guest":   {"guest", ""},
+// ===========================================================================
+// FirmwareIntegrityDB — tracks firmware hashes and known vulnerabilities
+// ===========================================================================
+
+type FirmwareIntegrityDB struct {
+	mu          sync.RWMutex
+	knownGood   map[string]map[string]bool // "vendor:model" -> set of known-good hashes
+	vulnerable  map[string]string          // hash -> vulnerability description
+	deviceFW    map[string]string          // deviceID -> current hash
+}
+
+type FirmwareResult struct {
+	UnknownFirmware bool
+	KnownVulnerable bool
+	VulnDescription string
+}
+
+func NewFirmwareIntegrityDB() *FirmwareIntegrityDB {
+	db := &FirmwareIntegrityDB{
+		knownGood:  make(map[string]map[string]bool),
+		vulnerable: make(map[string]string),
+		deviceFW:   make(map[string]string),
 	}
-	userLower := strings.ToLower(username)
-	if passwords, ok := defaults[userLower]; ok {
-		for _, p := range passwords {
-			if password == p {
-				return true
+	// Seed with example vulnerable firmware hashes (in production, this would
+	// be populated from a vulnerability feed or configuration)
+	return db
+}
+
+func (db *FirmwareIntegrityDB) RecordFirmware(deviceID, vendor, model, version, hash string) FirmwareResult {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	result := FirmwareResult{}
+	db.deviceFW[deviceID] = hash
+
+	// Check known vulnerabilities
+	if desc, ok := db.vulnerable[hash]; ok {
+		result.KnownVulnerable = true
+		result.VulnDescription = desc
+		return result
+	}
+
+	// Check against known-good database
+	key := strings.ToLower(vendor + ":" + model)
+	if goodHashes, ok := db.knownGood[key]; ok {
+		if !goodHashes[hash] {
+			result.UnknownFirmware = true
+		}
+	}
+	// If no known-good baseline exists for this vendor:model, we can't flag it
+	// as unknown — we just record it for future comparison.
+
+	return result
+}
+
+// RegisterKnownGood adds a hash to the known-good list for a vendor:model.
+func (db *FirmwareIntegrityDB) RegisterKnownGood(vendor, model, hash string) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	key := strings.ToLower(vendor + ":" + model)
+	if _, ok := db.knownGood[key]; !ok {
+		db.knownGood[key] = make(map[string]bool)
+	}
+	db.knownGood[key][hash] = true
+}
+
+// RegisterVulnerable marks a firmware hash as having known vulnerabilities.
+func (db *FirmwareIntegrityDB) RegisterVulnerable(hash, description string) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	db.vulnerable[hash] = description
+}
+
+// ===========================================================================
+// SegmentationEnforcer — enforces IoT/OT network segmentation policies
+// ===========================================================================
+
+type SegmentationEnforcer struct {
+	mu            sync.RWMutex
+	blockedFlows  map[string]bool // "srcZone->dstZone" -> blocked
+	allowedPorts  map[string][]int // "srcZone->dstZone" -> allowed ports
+	criticalZones map[string]bool
+}
+
+type SegmentationViolation struct {
+	Severity core.Severity
+	Reason   string
+}
+
+func NewSegmentationEnforcer(settings map[string]interface{}) *SegmentationEnforcer {
+	se := &SegmentationEnforcer{
+		blockedFlows: map[string]bool{
+			"iot->corporate":    true,
+			"iot->management":   true,
+			"ot->internet":      true,
+			"ot->corporate":     true,
+			"scada->internet":   true,
+			"dmz->ot":           true,
+			"guest->ot":         true,
+			"guest->iot":        true,
+			"guest->management": true,
+		},
+		allowedPorts: map[string][]int{
+			"corporate->iot": {443, 8443}, // HTTPS management only
+			"iot->ot":        {},          // no direct access
+		},
+		criticalZones: map[string]bool{
+			"ot": true, "scada": true, "safety": true, "plc": true,
+		},
+	}
+	return se
+}
+
+func (se *SegmentationEnforcer) Check(srcZone, dstZone, srcIP, dstIP string, dstPort int, protocol string) *SegmentationViolation {
+	if srcZone == "" || dstZone == "" || srcZone == dstZone {
+		return nil
+	}
+
+	se.mu.RLock()
+	defer se.mu.RUnlock()
+
+	flowKey := strings.ToLower(srcZone + "->" + dstZone)
+
+	// Check blocked flows
+	if se.blockedFlows[flowKey] {
+		severity := core.SeverityHigh
+		if se.criticalZones[strings.ToLower(dstZone)] {
+			severity = core.SeverityCritical
+		}
+		return &SegmentationViolation{
+			Severity: severity,
+			Reason:   fmt.Sprintf("traffic from %s to %s is blocked by segmentation policy", srcZone, dstZone),
+		}
+	}
+
+	// Check port restrictions
+	if allowedPorts, ok := se.allowedPorts[flowKey]; ok && len(allowedPorts) > 0 {
+		allowed := false
+		for _, p := range allowedPorts {
+			if dstPort == p {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return &SegmentationViolation{
+				Severity: core.SeverityHigh,
+				Reason:   fmt.Sprintf("port %d is not in the allowed list for %s -> %s traffic", dstPort, srcZone, dstZone),
 			}
 		}
 	}
-	return false
+
+	return nil
+}
+
+// ===========================================================================
+// Helpers
+// ===========================================================================
+
+// HashBytes returns the SHA-256 hex digest of data.
+func HashBytes(data []byte) string {
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:])
+}
+
+// ShannonEntropy calculates the Shannon entropy of a byte slice.
+func ShannonEntropy(data []byte) float64 {
+	if len(data) == 0 {
+		return 0
+	}
+	freq := make(map[byte]float64)
+	for _, b := range data {
+		freq[b]++
+	}
+	length := float64(len(data))
+	entropy := 0.0
+	for _, count := range freq {
+		p := count / length
+		if p > 0 {
+			entropy -= p * math.Log2(p)
+		}
+	}
+	return entropy
+}
+
+func parseFloat(s string) float64 {
+	var f float64
+	fmt.Sscanf(s, "%f", &f)
+	return f
 }
 
 func getStringDetail(event *core.SecurityEvent, key string) string {
@@ -285,9 +1341,30 @@ func getStringDetail(event *core.SecurityEvent, key string) string {
 	return ""
 }
 
+func getIntDetail(event *core.SecurityEvent, key string) int {
+	if event.Details == nil {
+		return 0
+	}
+	switch v := event.Details[key].(type) {
+	case int:
+		return v
+	case float64:
+		return int(v)
+	}
+	return 0
+}
+
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
 	return s[:maxLen] + "..."
 }
+
+// Suppress unused import warnings — these are used by HashBytes and ShannonEntropy.
+var (
+	_ = sha256.New
+	_ = hex.EncodeToString
+	_ = math.Log2
+	_ = regexp.MustCompile
+)

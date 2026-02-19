@@ -1,0 +1,62 @@
+[package]
+name = "onesec-engine"
+version = "0.1.0"
+edition = "2021"
+description = "1SEC high-performance security engine — regex matching, packet inspection, crypto operations"
+license = "AGPL-3.0"
+
+[[bin]]
+name = "1sec-engine"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# NATS client
+async-nats = "0.38"
+
+# High-performance regex
+regex = "1"
+aho-corasick = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Packet capture
+pcap = { version = "2", optional = true }
+etherparse = "0.16"
+
+# Post-quantum crypto
+pqcrypto-mlkem = { version = "0.1", optional = true }
+pqcrypto-mldsa = { version = "0.1", optional = true }
+pqcrypto-traits = { version = "0.3", optional = true }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Async utilities
+futures = "0.3"
+
+# Misc
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1"
+thiserror = "2"
+
+[features]
+default = ["pcap-capture"]
+pcap-capture = ["pcap"]
+pqc = ["pqcrypto-mlkem", "pqcrypto-mldsa", "pqcrypto-traits"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

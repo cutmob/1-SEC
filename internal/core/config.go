@@ -11,12 +11,13 @@ import (
 
 // Config holds the entire 1SEC configuration.
 type Config struct {
-	Server  ServerConfig            `yaml:"server"`
-	Bus     BusConfig               `yaml:"bus"`
-	Alerts  AlertConfig             `yaml:"alerts"`
-	Syslog  SyslogConfig            `yaml:"syslog"`
-	Modules map[string]ModuleConfig `yaml:"modules"`
-	Logging LoggingConfig           `yaml:"logging"`
+	Server     ServerConfig            `yaml:"server"`
+	Bus        BusConfig               `yaml:"bus"`
+	Alerts     AlertConfig             `yaml:"alerts"`
+	Syslog     SyslogConfig            `yaml:"syslog"`
+	Modules    map[string]ModuleConfig `yaml:"modules"`
+	Logging    LoggingConfig           `yaml:"logging"`
+	RustEngine RustEngineConfig        `yaml:"rust_engine"`
 }
 
 // ServerConfig holds API server settings.
@@ -61,6 +62,25 @@ type ModuleConfig struct {
 type LoggingConfig struct {
 	Level  string `yaml:"level"`
 	Format string `yaml:"format"`
+}
+
+// RustEngineConfig holds settings for the optional Rust sidecar engine.
+type RustEngineConfig struct {
+	Enabled             bool              `yaml:"enabled"`
+	Binary              string            `yaml:"binary"`
+	Workers             int               `yaml:"workers"`
+	BufferSize          int               `yaml:"buffer_size"`
+	MinScore            float64           `yaml:"min_score"`
+	AhoCorasickPrefilter bool            `yaml:"aho_corasick_prefilter"`
+	Capture             RustCaptureConfig `yaml:"capture"`
+}
+
+// RustCaptureConfig holds packet capture settings for the Rust engine.
+type RustCaptureConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	Interface   string `yaml:"interface"`
+	BPFFilter   string `yaml:"bpf_filter"`
+	Promiscuous bool   `yaml:"promiscuous"`
 }
 
 // DefaultConfig returns a Config with sane defaults — zero-config works out of the box.
@@ -108,6 +128,20 @@ func DefaultConfig() *Config {
 		Logging: LoggingConfig{
 			Level:  "info",
 			Format: "console",
+		},
+		RustEngine: RustEngineConfig{
+			Enabled:              false,
+			Binary:               "1sec-engine",
+			Workers:              0,
+			BufferSize:           10000,
+			MinScore:             0.0,
+			AhoCorasickPrefilter: true,
+			Capture: RustCaptureConfig{
+				Enabled:     false,
+				Interface:   "eth0",
+				BPFFilter:   "",
+				Promiscuous: true,
+			},
 		},
 	}
 }

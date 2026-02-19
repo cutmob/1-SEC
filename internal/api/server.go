@@ -111,12 +111,22 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	rustEngineStatus := "disabled"
+	if s.engine.Config.RustEngine.Enabled {
+		if s.engine.RustSidecar != nil && s.engine.RustSidecar.Running() {
+			rustEngineStatus = "running"
+		} else {
+			rustEngineStatus = "enabled_not_running"
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"version":       "1.0.0",
 		"status":        "running",
 		"bus_connected": s.engine.Bus.IsConnected(),
 		"modules_total": s.engine.Registry.Count(),
 		"alerts_total":  s.engine.Pipeline.Count(),
+		"rust_engine":   rustEngineStatus,
 		"modules":       modules,
 		"timestamp":     time.Now().UTC(),
 	})

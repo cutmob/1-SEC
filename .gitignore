@@ -3,7 +3,7 @@ bin/
 dist/
 vendor/
 1sec.exe
-1sec
+/1sec
 *.test
 *.out
 *.log

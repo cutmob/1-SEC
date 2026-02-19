@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  go-build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -42,3 +42,45 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
+
+  rust-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust/1sec-engine/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/1sec-engine/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Format check
+        working-directory: rust/1sec-engine
+        run: cargo fmt -- --check
+
+      - name: Clippy
+        working-directory: rust/1sec-engine
+        run: cargo clippy --all-features -- -D warnings
+
+      - name: Build
+        working-directory: rust/1sec-engine
+        run: cargo build --release --all-features
+
+      - name: Test
+        working-directory: rust/1sec-engine
+        run: cargo test --all-features

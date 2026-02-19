@@ -19,7 +19,7 @@ services:
         BUILD_DATE: "${BUILD_DATE:-unknown}"
     container_name: 1sec
     restart: unless-stopped
-    user: "65534:65534"
+    user: "1000:1000"
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -55,6 +55,9 @@ services:
 
       # API authentication — set to secure the REST API
       ONESEC_API_KEY: "${ONESEC_API_KEY:-}"
+
+      # Rust engine — set to "true" to enable the high-performance sidecar
+      ONESEC_RUST_ENGINE: "${ONESEC_RUST_ENGINE:-false}"
 
       # Log level: debug | info | warn | error
       ONESEC_LOG_LEVEL: "${ONESEC_LOG_LEVEL:-info}"

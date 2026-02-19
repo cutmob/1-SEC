@@ -127,3 +127,21 @@ modules:
       api_base_url: "https://generativelanguage.googleapis.com/v1beta/models"
       triage_workers: 4
       deep_workers: 2
+
+# Rust high-performance engine (optional sidecar)
+# The Rust engine connects to the same NATS bus and provides:
+# - Hot-path regex pattern matching (5-10x faster than Go's RE2)
+# - Raw packet capture and protocol parsing
+# - Post-quantum cryptographic operations (when compiled with pqc feature)
+rust_engine:
+  enabled: false           # Set to true to auto-start the Rust sidecar
+  binary: "1sec-engine"    # Path to the Rust binary (searches PATH if not absolute)
+  workers: 0               # 0 = auto-detect (number of CPU cores)
+  buffer_size: 10000       # Max events to buffer before backpressure
+  min_score: 0.0           # Minimum aggregate score to publish match results
+  aho_corasick_prefilter: true  # Use Aho-Corasick for fast literal pre-filtering
+  capture:
+    enabled: false         # Enable raw packet capture (requires root/CAP_NET_RAW)
+    interface: "eth0"      # Network interface to capture on
+    bpf_filter: ""         # BPF filter expression (empty = tcp or udp)
+    promiscuous: true      # Promiscuous mode

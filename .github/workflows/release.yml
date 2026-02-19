@@ -34,8 +34,83 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
-  release:
+  rust-build:
     needs: quality
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: 1sec-engine-linux-amd64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            artifact: 1sec-engine-linux-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: 1sec-engine-darwin-amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: 1sec-engine-darwin-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: 1sec-engine-windows-amd64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install musl tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools libpcap-dev
+
+      - name: Install cross-compilation tools (Linux ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust/1sec-engine/target/
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('rust/1sec-engine/Cargo.toml') }}
+
+      - name: Build Rust engine
+        working-directory: rust/1sec-engine
+        run: cargo build --release --no-default-features --target ${{ matrix.target }}
+
+      - name: Test (native targets only)
+        if: matrix.target != 'aarch64-unknown-linux-musl' && matrix.target != 'aarch64-apple-darwin'
+        working-directory: rust/1sec-engine
+        run: cargo test --no-default-features
+
+      - name: Rename artifact
+        shell: bash
+        run: |
+          src="rust/1sec-engine/target/${{ matrix.target }}/release/1sec-engine"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            src="${src}.exe"
+          fi
+          cp "$src" "${{ matrix.artifact }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    needs: [quality, rust-build]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -48,10 +123,27 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Download Rust artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: rust-artifacts
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
           args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attach Rust binaries to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            rust-artifacts/1sec-engine-linux-amd64/1sec-engine-linux-amd64
+            rust-artifacts/1sec-engine-linux-arm64/1sec-engine-linux-arm64
+            rust-artifacts/1sec-engine-darwin-amd64/1sec-engine-darwin-amd64
+            rust-artifacts/1sec-engine-darwin-arm64/1sec-engine-darwin-arm64
+            rust-artifacts/1sec-engine-windows-amd64.exe/1sec-engine-windows-amd64.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

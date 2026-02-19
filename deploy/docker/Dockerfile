@@ -1,5 +1,5 @@
-# ── Stage 1: Build ──────────────────────────────────────────────────────────
-FROM golang:1.22-alpine AS builder
+# ── Stage 1: Build Go binary ─────────────────────────────────────────────────
+FROM golang:1.22-alpine AS go-builder
 
 RUN apk add --no-cache git ca-certificates tzdata
 
@@ -19,8 +19,21 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /bin/1sec \
     ./cmd/1sec
 
-# ── Stage 2: Runtime ─────────────────────────────────────────────────────────
-FROM scratch
+# ── Stage 2: Build Rust engine (optional) ────────────────────────────────────
+FROM rust:1.84-alpine AS rust-builder
+
+RUN apk add --no-cache musl-dev libpcap-dev
+
+WORKDIR /build
+
+COPY rust/1sec-engine/ ./
+
+# Build without pcap by default (add --features pcap-capture for packet capture)
+RUN cargo build --release --no-default-features \
+    && strip target/release/1sec-engine
+
+# ── Stage 3: Runtime ─────────────────────────────────────────────────────────
+FROM alpine:3.21
 
 # OCI image labels
 LABEL org.opencontainers.image.title="1SEC" \
@@ -30,22 +43,21 @@ LABEL org.opencontainers.image.title="1SEC" \
       org.opencontainers.image.vendor="1SEC" \
       org.opencontainers.image.licenses="AGPL-3.0"
 
-# TLS certs + timezone data from builder
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+RUN apk add --no-cache ca-certificates tzdata libpcap \
+    && adduser -D -u 1000 onesec
 
-# Create writable directories for non-root operation
-COPY --from=builder /tmp /tmp
-
-COPY --from=builder /bin/1sec /bin/1sec
+COPY --from=go-builder /bin/1sec /bin/1sec
+COPY --from=rust-builder /build/target/release/1sec-engine /bin/1sec-engine
 
 # Default config — override by mounting /etc/1sec/config.yaml
 COPY configs/default.yaml /etc/1sec/config.yaml
 
+# Create data directory
+RUN mkdir -p /data/nats && chown onesec:onesec /data/nats
+
 WORKDIR /
 
-# Run as non-root (nobody:nogroup)
-USER 65534:65534
+USER onesec
 
 # API port
 EXPOSE 1780
