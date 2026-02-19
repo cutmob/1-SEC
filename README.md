@@ -1,7 +1,7 @@
 
 <div align="center">
-  <img src="web/public/og-image.png" alt="1-SEC Social Preview" width="100%">
-  <h1>⚡ 1-SEC</h1>
+  <img src="docs/og-image.png" alt="1-SEC Social Preview" width="100%">
+  <h1>🛡️ 1-SEC</h1>
   <p><strong>One binary. Total defense.</strong></p>
   <p>The next generation of rapid-deployment security layers. <br/>Auditable, community-driven, and designed for immediate integration.</p>
 
