@@ -1,7 +1,7 @@
 //! NATS JetStream bridge — subscribes to security events from the Go engine,
 //! runs them through the Rust pattern matcher, and publishes results back.
 
-use crate::events::{MatchResult, SecurityEvent};
+use crate::events::SecurityEvent;
 use crate::matcher::PatternMatcher;
 use anyhow::{Context, Result};
 use async_nats::jetstream::{self, consumer::PullConsumer};

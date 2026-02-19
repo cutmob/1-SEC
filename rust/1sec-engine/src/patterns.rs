@@ -48,7 +48,7 @@ fn sqli_patterns() -> Vec<PatternDef> {
             name: "sqli_or_true",
             category: "sqli",
             severity: Severity::High,
-            regex: r"(?i)(\bor\b\s+[\d'""]=\s*[\d'""]+|'\s*or\s*'[^']*'\s*=\s*'[^']*')",
+            regex: r#"(?i)(\bor\b\s+[\d'"]=\s*[\d'"]+|'\s*or\s*'[^']*'\s*=\s*'[^']*')"#,
             literals: &["or", "OR"],
         },
         PatternDef {

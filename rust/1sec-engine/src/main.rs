@@ -15,7 +15,9 @@ mod patterns;
 
 use anyhow::Result;
 use clap::Parser;
-use tracing::{info, warn};
+use tracing::info;
+#[cfg(feature = "pcap-capture")]
+use tracing::warn;
 
 #[derive(Parser, Debug)]
 #[command(name = "1sec-engine", version, about = "1SEC high-performance security engine")]
