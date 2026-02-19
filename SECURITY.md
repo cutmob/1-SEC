@@ -13,7 +13,7 @@ If you discover a security vulnerability in 1SEC, please report it responsibly.
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Instead, email **security@driftrail.com** with:
+Instead, email **support@driftrail.com** with:
 
 - A description of the vulnerability
 - Steps to reproduce
