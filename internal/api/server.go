@@ -1,0 +1,422 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/1sec-project/1sec/internal/core"
+	"github.com/rs/zerolog"
+)
+
+// Server is the 1SEC REST API server.
+type Server struct {
+	engine *core.Engine
+	server *http.Server
+	logger zerolog.Logger
+}
+
+// NewServer creates a new API server.
+func NewServer(engine *core.Engine) *Server {
+	s := &Server{
+		engine: engine,
+		logger: engine.Logger.With().Str("component", "api_server").Logger(),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/status", s.handleStatus)
+	mux.HandleFunc("/api/v1/modules", s.handleModules)
+	mux.HandleFunc("/api/v1/alerts", s.handleAlerts)
+	mux.HandleFunc("/api/v1/config", s.handleConfig)
+	mux.HandleFunc("/api/v1/events", s.handleIngestEvent)
+	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/api/v1/shutdown", s.handleShutdown)
+
+	// Build middleware chain: CORS -> logging -> rate limit -> auth -> handler
+	handler := corsMiddleware(
+		loggingMiddleware(
+			rateLimitMiddleware(
+				authMiddleware(mux, engine.Config, s.logger),
+				100, // 100 requests per second per IP
+			),
+			s.logger,
+		),
+	)
+
+	s.server = &http.Server{
+		Addr:         fmt.Sprintf("%s:%d", engine.Config.Server.Host, engine.Config.Server.Port),
+		Handler:      handler,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	return s
+}
+
+// Start begins serving the API.
+func (s *Server) Start() error {
+	s.logger.Info().Str("addr", s.server.Addr).Msg("API server starting")
+	if s.engine.Config.AuthEnabled() {
+		s.logger.Info().Int("keys", len(s.engine.Config.Server.APIKeys)).Msg("API authentication enabled")
+	} else {
+		s.logger.Warn().Msg("API authentication disabled — set api_keys in config or ONESEC_API_KEY env var")
+	}
+	go func() {
+		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.logger.Error().Err(err).Msg("API server error")
+		}
+	}()
+	return nil
+}
+
+// Stop gracefully shuts down the API server.
+func (s *Server) Stop() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return s.server.Shutdown(ctx)
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":    "healthy",
+		"timestamp": time.Now().UTC(),
+	})
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	modules := make([]map[string]interface{}, 0)
+	for _, mod := range s.engine.Registry.All() {
+		modules = append(modules, map[string]interface{}{
+			"name":        mod.Name(),
+			"description": mod.Description(),
+			"enabled":     s.engine.Config.IsModuleEnabled(mod.Name()),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"version":       "1.0.0",
+		"status":        "running",
+		"bus_connected": s.engine.Bus.IsConnected(),
+		"modules_total": s.engine.Registry.Count(),
+		"alerts_total":  s.engine.Pipeline.Count(),
+		"modules":       modules,
+		"timestamp":     time.Now().UTC(),
+	})
+}
+
+func (s *Server) handleModules(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	modules := make([]map[string]interface{}, 0)
+	for _, mod := range s.engine.Registry.All() {
+		modules = append(modules, map[string]interface{}{
+			"name":        mod.Name(),
+			"description": mod.Description(),
+			"enabled":     s.engine.Config.IsModuleEnabled(mod.Name()),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"modules": modules,
+		"total":   len(modules),
+	})
+}
+
+func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	limitStr := r.URL.Query().Get("limit")
+	limit := 100
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	severityStr := r.URL.Query().Get("min_severity")
+	minSeverity := core.SeverityInfo
+	switch severityStr {
+	case "LOW":
+		minSeverity = core.SeverityLow
+	case "MEDIUM":
+		minSeverity = core.SeverityMedium
+	case "HIGH":
+		minSeverity = core.SeverityHigh
+	case "CRITICAL":
+		minSeverity = core.SeverityCritical
+	}
+
+	alerts := s.engine.Pipeline.GetAlerts(minSeverity, limit)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"alerts": alerts,
+		"total":  len(alerts),
+	})
+}
+
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Redact API keys from the response
+	safeCfg := *s.engine.Config
+	safeCfg.Server.APIKeys = nil
+	writeJSON(w, http.StatusOK, safeCfg)
+}
+
+func (s *Server) handleIngestEvent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var event core.SecurityEvent
+	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid event JSON: " + err.Error()})
+		return
+	}
+
+	if event.ID == "" {
+		event.ID = "ext-" + time.Now().Format("20060102150405.000")
+	}
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now().UTC()
+	}
+	if event.Source == "" {
+		event.Source = "external"
+	}
+
+	if err := s.engine.Bus.PublishEvent(&event); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to publish event"})
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"status":   "accepted",
+		"event_id": event.ID,
+	})
+}
+
+func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":  "shutting_down",
+		"message": "1SEC engine is shutting down gracefully",
+	})
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		s.logger.Info().Msg("shutdown requested via API")
+		// Send SIGINT to self so the main signal handler performs full cleanup
+		// (syslog stop, API server stop, engine shutdown) in the correct order.
+		p, err := os.FindProcess(os.Getpid())
+		if err != nil {
+			s.logger.Error().Err(err).Msg("failed to find own process for shutdown signal")
+			os.Exit(0)
+		}
+		if err := p.Signal(syscall.SIGINT); err != nil {
+			s.logger.Error().Err(err).Msg("failed to send shutdown signal")
+			os.Exit(0)
+		}
+	}()
+}
+
+// ---------------------------------------------------------------------------
+// Middleware
+// ---------------------------------------------------------------------------
+
+func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(data)
+}
+
+// authMiddleware enforces API key authentication on all endpoints except /health.
+// Keys are read from config (server.api_keys) or env (ONESEC_API_KEY).
+// If no keys are configured, all requests are allowed (open mode with warning logged on startup).
+func authMiddleware(next http.Handler, cfg *core.Config, logger zerolog.Logger) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Always allow health checks without auth
+		if r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// If no API keys configured, allow all (open mode)
+		if !cfg.AuthEnabled() {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Extract key from Authorization header: "Bearer <key>"
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			// Also check X-API-Key header as fallback
+			authHeader = r.Header.Get("X-API-Key")
+			if authHeader == "" {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{
+					"error": "missing authentication — provide Authorization: Bearer <key> or X-API-Key header",
+				})
+				return
+			}
+			// X-API-Key is the raw key
+			if !cfg.ValidateAPIKey(authHeader) {
+				logger.Warn().Str("path", r.URL.Path).Str("ip", r.RemoteAddr).Msg("invalid API key")
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid API key"})
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Parse "Bearer <key>"
+		key := authHeader
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			key = authHeader[7:]
+		}
+
+		if !cfg.ValidateAPIKey(key) {
+			logger.Warn().Str("path", r.URL.Path).Str("ip", r.RemoteAddr).Msg("invalid API key")
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid API key"})
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// rateLimitMiddleware implements a simple per-IP token bucket rate limiter.
+type ipLimiter struct {
+	mu      sync.Mutex
+	buckets map[string]*tokenBucket
+	rate    int
+}
+
+type tokenBucket struct {
+	tokens    float64
+	maxTokens float64
+	lastTime  time.Time
+}
+
+func (b *tokenBucket) allow(rate float64) bool {
+	now := time.Now()
+	elapsed := now.Sub(b.lastTime).Seconds()
+	b.lastTime = now
+	b.tokens += elapsed * rate
+	if b.tokens > b.maxTokens {
+		b.tokens = b.maxTokens
+	}
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
+
+func rateLimitMiddleware(next http.Handler, requestsPerSecond int) http.Handler {
+	limiter := &ipLimiter{
+		buckets: make(map[string]*tokenBucket),
+		rate:    requestsPerSecond,
+	}
+
+	// Cleanup stale buckets every 5 minutes
+	go func() {
+		for {
+			time.Sleep(5 * time.Minute)
+			limiter.mu.Lock()
+			cutoff := time.Now().Add(-10 * time.Minute)
+			for ip, bucket := range limiter.buckets {
+				if bucket.lastTime.Before(cutoff) {
+					delete(limiter.buckets, ip)
+				}
+			}
+			limiter.mu.Unlock()
+		}
+	}()
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip rate limiting for health checks
+		if r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		ip := r.RemoteAddr
+		if idx := strings.LastIndex(ip, ":"); idx != -1 {
+			ip = ip[:idx]
+		}
+
+		limiter.mu.Lock()
+		bucket, exists := limiter.buckets[ip]
+		if !exists {
+			bucket = &tokenBucket{
+				tokens:    float64(requestsPerSecond),
+				maxTokens: float64(requestsPerSecond * 2), // burst = 2x rate
+				lastTime:  time.Now(),
+			}
+			limiter.buckets[ip] = bucket
+		}
+		allowed := bucket.allow(float64(requestsPerSecond))
+		limiter.mu.Unlock()
+
+		if !allowed {
+			w.Header().Set("Retry-After", "1")
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{
+				"error": "rate limit exceeded — try again shortly",
+			})
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func loggingMiddleware(next http.Handler, logger zerolog.Logger) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		next.ServeHTTP(w, r)
+		logger.Debug().
+			Str("method", r.Method).
+			Str("path", r.URL.Path).
+			Dur("duration", time.Since(start)).
+			Msg("request")
+	})
+}

@@ -1,0 +1,42 @@
+# Go / Build
+bin/
+dist/
+vendor/
+1sec.exe
+1sec
+*.test
+*.out
+*.log
+
+# Environment / Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+
+# Web directory (private — lives in separate repo)
+web/
+
+# Terraform / Infrastructure
+.terraform/
+*.tfstate
+*.tfstate.backup
+
+# Runtime data
+data/
+
+# IDEs / System
+.vscode/
+.idea/
+.kiro/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Temporary
+tmp/
+temp/
+coverage/

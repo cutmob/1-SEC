@@ -1,0 +1,122 @@
+# 1SEC Default Configuration
+# All modules are enabled by default with sane defaults.
+# Override any setting below or pass --config <path> to use a custom file.
+
+server:
+  host: "0.0.0.0"
+  port: 1780
+  # API key authentication — set one or more keys to secure the REST API.
+  # If empty, the API runs in open mode (no auth required).
+  # Can also be set via ONESEC_API_KEY environment variable.
+  # api_keys:
+  #   - "your-secret-api-key-here"
+
+bus:
+  url: "nats://127.0.0.1:4222"
+  embedded: true
+  data_dir: "./data/nats"
+  port: 4222
+  cluster_id: "1sec-cluster"
+
+alerts:
+  max_store: 10000
+  enable_console: true
+  # webhook_urls:
+  #   - "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+
+# Syslog ingestion — receive events from syslog sources (firewalls, servers, etc.)
+syslog:
+  enabled: false
+  protocol: "udp"    # "udp", "tcp", or "both"
+  host: "0.0.0.0"
+  port: 1514
+
+logging:
+  level: "info"       # debug, info, warn, error
+  format: "console"   # console, json
+
+modules:
+  network_guardian:
+    enabled: true
+    settings:
+      max_requests_per_minute: 1000
+      burst_size: 100
+      # geo_mode: "block"
+      # blocked_countries: "XX,YY"
+
+  api_fortress:
+    enabled: true
+    settings:
+      api_max_rpm: 200
+
+  iot_shield:
+    enabled: true
+
+  injection_shield:
+    enabled: true
+
+  supply_chain:
+    enabled: true
+
+  ransomware:
+    enabled: true
+    settings:
+      encryption_threshold: 10
+      exfil_mb_threshold: 100
+
+  auth_fortress:
+    enabled: true
+    settings:
+      max_failures_per_minute: 10
+      lockout_duration_seconds: 300
+      stuffing_threshold: 50
+
+  deepfake_shield:
+    enabled: true
+
+  identity_monitor:
+    enabled: true
+
+  llm_firewall:
+    enabled: true
+    settings:
+      token_budget_per_hour: 100000
+
+  ai_containment:
+    enabled: true
+
+  data_poisoning:
+    enabled: true
+
+  quantum_crypto:
+    enabled: true
+
+  runtime_watcher:
+    enabled: true
+    settings:
+      scan_interval_seconds: 300
+      # watch_paths:
+      #   - "/etc"
+      #   - "/usr/bin"
+
+  cloud_posture:
+    enabled: true
+
+  ai_analysis_engine:
+    enabled: true
+    settings:
+      # Single key:
+      # gemini_api_key: "YOUR_GEMINI_API_KEY"
+      #
+      # Multiple keys for rotation (rate limits are per-key):
+      # gemini_api_keys:
+      #   - "KEY_1"
+      #   - "KEY_2"
+      #   - "KEY_3"
+      #
+      # Also reads from env: GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3, GEMINI_API_KEY_4
+      triage_model: "gemini-2.5-flash-lite"
+      deep_model: "gemini-3-flash"
+      api_base_url: "https://generativelanguage.googleapis.com/v1beta/models"
+      triage_workers: 4
+      deep_workers: 2
