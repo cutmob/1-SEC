@@ -1,0 +1,93 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "1sec.fullname" . }}-config
+  labels:
+    {{- include "1sec.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- if .Values.config }}
+    {{- .Values.config | nindent 4 }}
+    {{- else }}
+    # 1SEC Default Configuration — override via values.yaml .config key
+    server:
+      host: "0.0.0.0"
+      port: {{ .Values.service.apiPort }}
+
+    bus:
+      url: "nats://127.0.0.1:{{ .Values.service.natsPort }}"
+      embedded: true
+      data_dir: "{{ .Values.persistence.mountPath }}"
+      port: {{ .Values.service.natsPort }}
+      cluster_id: "1sec-cluster"
+
+    alerts:
+      max_store: 10000
+      enable_console: true
+
+    syslog:
+      enabled: false
+      protocol: "udp"
+      host: "0.0.0.0"
+      port: {{ .Values.service.syslogPort }}
+
+    logging:
+      level: "info"
+      format: "json"
+
+    modules:
+      network_guardian:
+        enabled: true
+        settings:
+          max_requests_per_minute: 1000
+          burst_size: 100
+      api_fortress:
+        enabled: true
+        settings:
+          api_max_rpm: 200
+      iot_shield:
+        enabled: true
+      injection_shield:
+        enabled: true
+      supply_chain:
+        enabled: true
+      ransomware:
+        enabled: true
+        settings:
+          encryption_threshold: 10
+          exfil_mb_threshold: 100
+      auth_fortress:
+        enabled: true
+        settings:
+          max_failures_per_minute: 10
+          lockout_duration_seconds: 300
+          stuffing_threshold: 50
+      deepfake_shield:
+        enabled: true
+      identity_monitor:
+        enabled: true
+      llm_firewall:
+        enabled: true
+        settings:
+          token_budget_per_hour: 100000
+      ai_containment:
+        enabled: true
+      data_poisoning:
+        enabled: true
+      quantum_crypto:
+        enabled: true
+      runtime_watcher:
+        enabled: true
+        settings:
+          scan_interval_seconds: 300
+      cloud_posture:
+        enabled: true
+      ai_analysis_engine:
+        enabled: true
+        settings:
+          triage_model: "gemini-flash-lite-latest"
+          deep_model: "gemini-flash-latest"
+          api_base_url: "https://generativelanguage.googleapis.com/v1beta/models"
+          triage_workers: 4
+          deep_workers: 2
+    {{- end }}

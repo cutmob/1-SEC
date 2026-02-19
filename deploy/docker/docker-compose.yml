@@ -1,0 +1,87 @@
+# ── 1SEC — Single-binary deployment ─────────────────────────────────────────
+# Usage:
+#   docker compose up -d
+#   docker compose logs -f
+#   docker compose exec 1sec 1sec status
+#
+# Override any setting via environment variables or by mounting a custom config:
+#   docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
+
+services:
+  1sec:
+    image: ghcr.io/cutmob/1-sec:latest
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        VERSION: "${VERSION:-dev}"
+        COMMIT: "${COMMIT:-unknown}"
+        BUILD_DATE: "${BUILD_DATE:-unknown}"
+    container_name: 1sec
+    restart: unless-stopped
+    user: "65534:65534"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
+    ports:
+      # REST API
+      - "${ONESEC_API_PORT:-1780}:1780"
+      # NATS JetStream (expose only if you need external NATS clients)
+      # - "4222:4222"
+      # Syslog ingestion
+      - "${ONESEC_SYSLOG_PORT:-1514}:1514/udp"
+      - "${ONESEC_SYSLOG_PORT:-1514}:1514/tcp"
+
+    volumes:
+      # Persist NATS JetStream data across restarts
+      - nats_data:/data/nats
+      # Writable tmp directory (read-only root filesystem)
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 64M
+      # Mount a custom config (optional — remove to use the built-in default)
+      # - ./config.yaml:/etc/1sec/config.yaml:ro
+
+    environment:
+      # AI Analysis Engine — set your Gemini key(s) here or in a .env file
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      GEMINI_API_KEY_2: "${GEMINI_API_KEY_2:-}"
+      GEMINI_API_KEY_3: "${GEMINI_API_KEY_3:-}"
+
+      # Cloud dashboard integration (Pro/Enterprise)
+      ONESEC_CLOUD_KEY: "${ONESEC_CLOUD_KEY:-}"
+
+      # API authentication — set to secure the REST API
+      ONESEC_API_KEY: "${ONESEC_API_KEY:-}"
+
+      # Log level: debug | info | warn | error
+      ONESEC_LOG_LEVEL: "${ONESEC_LOG_LEVEL:-info}"
+
+    # Resource limits — tune for your environment
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 64M
+
+    healthcheck:
+      test: ["/bin/1sec", "status", "--host", "127.0.0.1", "--port", "1780", "--timeout", "3s"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  nats_data:
+    driver: local

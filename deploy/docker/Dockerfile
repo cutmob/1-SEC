@@ -22,14 +22,30 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM scratch
 
+# OCI image labels
+LABEL org.opencontainers.image.title="1SEC" \
+      org.opencontainers.image.description="All-in-one cybersecurity defense platform" \
+      org.opencontainers.image.url="https://1-sec.dev" \
+      org.opencontainers.image.source="https://github.com/cutmob/1-SEC" \
+      org.opencontainers.image.vendor="1SEC" \
+      org.opencontainers.image.licenses="AGPL-3.0"
+
 # TLS certs + timezone data from builder
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+
+# Create writable directories for non-root operation
+COPY --from=builder /tmp /tmp
 
 COPY --from=builder /bin/1sec /bin/1sec
 
 # Default config — override by mounting /etc/1sec/config.yaml
 COPY configs/default.yaml /etc/1sec/config.yaml
+
+WORKDIR /
+
+# Run as non-root (nobody:nogroup)
+USER 65534:65534
 
 # API port
 EXPOSE 1780

@@ -1,0 +1,17 @@
+# Build context exclusions — keep Docker builds fast and small
+.git
+.github
+.kiro
+.vscode
+web
+docs
+tmp
+data
+deploy
+*.exe
+*.md
+!README.md
+LICENSE
+.gitignore
+.goreleaser.yaml
+install.sh

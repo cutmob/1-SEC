@@ -20,7 +20,7 @@ const ModuleName = "ai_analysis_engine"
 // Engine is the cross-cutting AI Analysis Engine (Module 16).
 // It implements a two-tier LLM pipeline:
 //   Tier 1: Gemini Flash Lite — fast triage, false positive filtering
-//   Tier 2: Gemini 3 Flash — deep threat classification, cross-module correlation
+//   Tier 2: Gemini Flash — deep threat classification, cross-module correlation
 type Engine struct {
 	logger     zerolog.Logger
 	bus        *core.EventBus
@@ -56,7 +56,7 @@ func New() *Engine {
 
 func (e *Engine) Name() string { return ModuleName }
 func (e *Engine) Description() string {
-	return "Two-tier AI analysis: Gemini Flash Lite for triage, Gemini 3 Flash for deep threat classification and cross-module correlation"
+	return "Two-tier AI analysis: Gemini Flash Lite for triage, Gemini Flash for deep threat classification and cross-module correlation"
 }
 
 func (e *Engine) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
@@ -72,8 +72,8 @@ func (e *Engine) Start(ctx context.Context, bus *core.EventBus, pipeline *core.A
 	keys := collectAPIKeys(settings)
 	e.keyMgr = NewKeyManager(keys, e.logger)
 
-	e.triageModel = getStringSetting(settings, "triage_model", "gemini-2.5-flash-lite")
-	e.deepModel = getStringSetting(settings, "deep_model", "gemini-3-flash")
+	e.triageModel = getStringSetting(settings, "triage_model", "gemini-flash-lite-latest")
+	e.deepModel = getStringSetting(settings, "deep_model", "gemini-flash-latest")
 
 	baseURL := getStringSetting(settings, "api_base_url", "https://generativelanguage.googleapis.com/v1beta/models")
 	e.triageURL = fmt.Sprintf("%s/%s:generateContent", baseURL, e.triageModel)
@@ -177,7 +177,7 @@ func (e *Engine) triageWorker() {
 	}
 }
 
-// deepAnalysisWorker runs Tier 2 analysis using Gemini 3 Flash.
+// deepAnalysisWorker runs Tier 2 analysis using Gemini Flash.
 // Full threat classification with cross-module correlation context.
 func (e *Engine) deepAnalysisWorker() {
 	for {

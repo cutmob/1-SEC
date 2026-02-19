@@ -1,0 +1,21 @@
+1SEC has been deployed.
+
+Get the API address:
+{{- if .Values.ingress.enabled }}
+  https://{{ (index .Values.ingress.hosts 0).host }}/api/v1/status
+{{- else if eq .Values.service.type "LoadBalancer" }}
+  export SVC_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "1sec.fullname" . }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+  curl http://$SVC_IP:{{ .Values.service.apiPort }}/api/v1/status
+{{- else }}
+  kubectl port-forward --namespace {{ .Release.Namespace }} svc/{{ include "1sec.fullname" . }} {{ .Values.service.apiPort }}:{{ .Values.service.apiPort }}
+  curl http://localhost:{{ .Values.service.apiPort }}/api/v1/status
+{{- end }}
+
+Check engine status:
+  kubectl exec --namespace {{ .Release.Namespace }} deploy/{{ include "1sec.fullname" . }} -- /bin/1sec status
+
+View logs:
+  kubectl logs --namespace {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "1sec.name" . }} -f
+
+Run pre-flight diagnostics:
+  kubectl exec --namespace {{ .Release.Namespace }} deploy/{{ include "1sec.fullname" . }} -- /bin/1sec check

@@ -115,8 +115,8 @@ modules:
       #   - "KEY_3"
       #
       # Also reads from env: GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3, GEMINI_API_KEY_4
-      triage_model: "gemini-2.5-flash-lite"
-      deep_model: "gemini-3-flash"
+      triage_model: "gemini-flash-lite-latest"
+      deep_model: "gemini-flash-latest"
       api_base_url: "https://generativelanguage.googleapis.com/v1beta/models"
       triage_workers: 4
       deep_workers: 2
