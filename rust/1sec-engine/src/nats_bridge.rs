@@ -40,7 +40,12 @@ impl EventPublisher {
 
 impl NatsBridge {
     /// Connect to NATS and start consuming security events.
-    pub async fn connect(url: &str, matcher: PatternMatcher, buffer_size: usize, workers: usize) -> Result<Self> {
+    pub async fn connect(
+        url: &str,
+        matcher: PatternMatcher,
+        buffer_size: usize,
+        workers: usize,
+    ) -> Result<Self> {
         info!(url = %url, buffer_size = buffer_size, workers = workers, "connecting to NATS");
 
         let client = async_nats::connect(url)
@@ -122,7 +127,11 @@ impl NatsBridge {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(workers));
 
         tokio::spawn(async move {
-            info!(workers = workers, batch_size = batch_size, "event consumer started");
+            info!(
+                workers = workers,
+                batch_size = batch_size,
+                "event consumer started"
+            );
             loop {
                 tokio::select! {
                     _ = shutdown.notified() => {

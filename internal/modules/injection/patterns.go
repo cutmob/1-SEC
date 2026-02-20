@@ -93,6 +93,44 @@ func compilePatterns() []Pattern {
 			Regex: regexp.MustCompile(`(?i)(/etc/(passwd|shadow|hosts|crontab)|/proc/self/|/windows/system32/|web\.config|\.env|\.git/config|\.htaccess|wp-config\.php)`)},
 		{Name: "path_null_byte", Category: "path", Severity: core.SeverityHigh,
 			Regex: regexp.MustCompile(`(%00|\\x00|\\0)`)},
+
+		// Zip Slip / Archive Path Traversal patterns
+		// Detects path traversal within archive file names targeting extraction paths
+		{Name: "zipslip_archive_traversal", Category: "path", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile(`(?i)(\.\.[\\/]){1,}.*(\.jsp|\.php|\.sh|\.exe|\.dll|\.py|\.rb|\.war|\.jar|\.aspx|\.bat|\.ps1|\.cgi)`)},
+		{Name: "zipslip_webroot_escape", Category: "path", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile(`(?i)\.\.[\\/].*(WEB-INF|META-INF|wwwroot|htdocs|public_html|www|webapps|inetpub)`)},
+		{Name: "zipslip_symlink_abuse", Category: "path", Severity: core.SeverityHigh,
+			Regex: regexp.MustCompile(`(?i)(symlink|\.lnk).*(\.\.[\\/])`)},
+
+		// File Upload Abuse patterns
+		// Detects malicious file names in upload contexts (double extensions, polyglot)
+		{Name: "upload_double_extension", Category: "upload", Severity: core.SeverityHigh,
+			Regex: regexp.MustCompile(`(?i)\.(jpg|png|gif|bmp|pdf|doc|txt)\.(php|jsp|asp|aspx|exe|sh|py|pl|cgi|bat|ps1|war)`)},
+		{Name: "upload_null_byte_ext", Category: "upload", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile(`(?i)\.(jpg|png|gif|pdf)(%00|\\x00)\.(php|jsp|asp|exe|sh)`)},
+		{Name: "upload_php_wrapper", Category: "upload", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile(`(?i)(php://|phar://|zip://|data://text/plain|expect://)`)},
+
+		// Deserialization RCE patterns — addresses Bosch Rexroth (CVE-2025-60035/60037/60038) and similar XML/binary deserialization attacks
+		{Name: "deser_java_gadget", Category: "deser", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile(`(?i)(ObjectInputStream|readObject|readUnshared|XMLDecoder|xstream|ysoserial|commons-collections|InvokerTransformer|ChainedTransformer|ConstantTransformer|LazyMap)`)},
+		{Name: "deser_dotnet", Category: "deser", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile(`(?i)(BinaryFormatter|ObjectStateFormatter|SoapFormatter|LosFormatter|NetDataContractSerializer|TypeNameHandling|JavaScriptSerializer)`)},
+		{Name: "deser_xml_entity", Category: "deser", Severity: core.SeverityHigh,
+			Regex: regexp.MustCompile(`(?i)(<!ENTITY\s+|<!DOCTYPE\s+[^>]*\[|SYSTEM\s+["']file://|SYSTEM\s+["']http)`)},
+		{Name: "deser_php", Category: "deser", Severity: core.SeverityHigh,
+			Regex: regexp.MustCompile(`(?i)(O:\d+:"[^"]+"|a:\d+:\{|unserialize\s*\(|__wakeup|__destruct)`)},
+		{Name: "deser_python_pickle", Category: "deser", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile(`(?i)(pickle\.loads|cPickle\.loads|yaml\.load\s*\(|yaml\.unsafe_load|__reduce__|__reduce_ex__)`)},
+
+		// Blind SQLi patterns — addresses the explicit gap in the capability audit
+		{Name: "sqli_blind_boolean", Category: "sqli", Severity: core.SeverityHigh,
+			Regex: regexp.MustCompile(`(?i)(\bAND\b\s+\d+\s*=\s*\d+|\bAND\b\s+['"][^'"]*['"]\s*=\s*['"]|substr(ing)?\s*\(.*,\s*\d+\s*,\s*\d+\s*\)\s*=)`)},
+		{Name: "sqli_blind_time", Category: "sqli", Severity: core.SeverityHigh,
+			Regex: regexp.MustCompile(`(?i)(pg_sleep\s*\(\s*\d+|dbms_pipe\.receive_message|RANDOMBLOB\s*\(\s*\d{6,}|LIKE\s*'ABCDEFG)`)},
+		{Name: "sqli_blind_error", Category: "sqli", Severity: core.SeverityHigh,
+			Regex: regexp.MustCompile(`(?i)(convert\s*\(\s*int\s*,|cast\s*\(\s*\(.*\)\s+as\s+int\)|cond\s*\(\s*\d+\s*=\s*\d+)`)},
 	}
 
 	return patterns

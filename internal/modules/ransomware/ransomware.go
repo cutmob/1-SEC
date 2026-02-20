@@ -45,7 +45,7 @@ func (i *Interceptor) Start(ctx context.Context, bus *core.EventBus, pipeline *c
 	i.logger = zerolog.New(zerolog.NewConsoleWriter()).With().Timestamp().Str("module", ModuleName).Logger()
 
 	settings := cfg.GetModuleSettings(ModuleName)
-	encryptionThreshold := getIntSetting(settings, "encryption_threshold", 10)
+	encryptionThreshold := getIntSetting(settings, "encryption_threshold", 5)
 	exfilMBThreshold := getIntSetting(settings, "exfil_mb_threshold", 100)
 
 	i.fileTracker = NewFileActivityTracker(encryptionThreshold)

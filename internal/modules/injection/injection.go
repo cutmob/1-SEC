@@ -21,28 +21,31 @@ type Pattern struct {
 
 // Shield is the Injection Shield module.
 type Shield struct {
-	logger   zerolog.Logger
-	bus      *core.EventBus
-	pipeline *core.AlertPipeline
-	patterns []Pattern
-	mu       sync.RWMutex
-	ctx      context.Context
-	cancel   context.CancelFunc
-	stats    Stats
+	logger       zerolog.Logger
+	bus          *core.EventBus
+	pipeline     *core.AlertPipeline
+	patterns     []Pattern
+	mu           sync.RWMutex
+	ctx          context.Context
+	cancel       context.CancelFunc
+	stats        Stats
+	fileSentinel *FileSentinel
 }
 
 // Stats tracks detection statistics.
 type Stats struct {
-	mu            sync.Mutex
-	TotalScanned  int64
-	SQLiDetected  int64
-	XSSDetected   int64
-	CMDiDetected  int64
-	SSRFDetected  int64
-	LDAPiDetected int64
-	TemplDetected int64
-	NoSQLDetected int64
-	PathDetected  int64
+	mu             sync.Mutex
+	TotalScanned   int64
+	SQLiDetected   int64
+	XSSDetected    int64
+	CMDiDetected   int64
+	SSRFDetected   int64
+	LDAPiDetected  int64
+	TemplDetected  int64
+	NoSQLDetected  int64
+	PathDetected   int64
+	UploadDetected int64
+	DeserDetected  int64
 }
 
 func New() *Shield {
@@ -60,6 +63,7 @@ func (s *Shield) Start(ctx context.Context, bus *core.EventBus, pipeline *core.A
 	s.pipeline = pipeline
 	s.logger = zerolog.New(zerolog.NewConsoleWriter()).With().Timestamp().Str("module", ModuleName).Logger()
 	s.patterns = compilePatterns()
+	s.fileSentinel = &FileSentinel{}
 	return nil
 }
 
@@ -74,6 +78,10 @@ func (s *Shield) HandleEvent(event *core.SecurityEvent) error {
 	// Process events that contain request data
 	if event.Type == "http_request" || event.Type == "api_request" || event.Type == "query" {
 		s.analyzeEvent(event)
+	}
+	// Process file upload events for binary structure analysis
+	if event.Type == "file_upload" {
+		s.analyzeFileUpload(event)
 	}
 	return nil
 }

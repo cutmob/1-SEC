@@ -12,6 +12,8 @@ mod nats_bridge;
 #[cfg(feature = "pcap-capture")]
 mod packet;
 mod patterns;
+#[cfg(test)]
+mod tests;
 
 use anyhow::Result;
 use clap::Parser;

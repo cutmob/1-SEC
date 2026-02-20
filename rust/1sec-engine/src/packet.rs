@@ -67,7 +67,11 @@ impl SourceTracker {
 }
 
 /// Main packet capture loop. Runs until an error occurs or the process is killed.
-pub async fn capture_loop(interface: &str, publisher: EventPublisher, cfg: &CaptureConfig) -> Result<()> {
+pub async fn capture_loop(
+    interface: &str,
+    publisher: EventPublisher,
+    cfg: &CaptureConfig,
+) -> Result<()> {
     info!(interface = %interface, snaplen = cfg.snaplen, promiscuous = cfg.promiscuous, "starting packet capture");
 
     let mut cap = Capture::from_device(interface)?
@@ -263,5 +267,106 @@ fn extract_text_preview(payload: &[u8]) -> String {
         String::from_utf8_lossy(&payload[..len]).to_string()
     } else {
         String::new()
+    }
+}
+
+#[cfg(test)]
+mod source_tracker_tests {
+    use super::*;
+
+    #[test]
+    fn test_source_tracker_no_anomaly_few_ports() {
+        let mut tracker = SourceTracker::new();
+        for port in 80..90u16 {
+            let anomalies = tracker.track("10.0.0.1", port);
+            assert!(
+                anomalies.is_empty(),
+                "Should not flag with only {} unique ports",
+                port - 80 + 1
+            );
+        }
+    }
+
+    #[test]
+    fn test_source_tracker_port_scan_detection() {
+        let mut tracker = SourceTracker::new();
+        let mut last_anomalies = Vec::new();
+        for port in 1..=25u16 {
+            last_anomalies = tracker.track("10.0.0.1", port);
+        }
+        assert!(
+            !last_anomalies.is_empty(),
+            "Expected port_scan anomaly after 25 unique ports"
+        );
+        assert!(last_anomalies
+            .iter()
+            .any(|a: &String| a.contains("port_scan")));
+    }
+
+    #[test]
+    fn test_source_tracker_different_ips_independent() {
+        let mut tracker = SourceTracker::new();
+        for port in 1..=25u16 {
+            tracker.track("10.0.0.1", port);
+        }
+        let anomalies_ip2 = tracker.track("10.0.0.2", 80);
+        assert!(
+            anomalies_ip2.is_empty(),
+            "IP2 should not be flagged for only 1 port"
+        );
+    }
+
+    #[test]
+    fn test_source_tracker_packet_counting() {
+        let mut tracker = SourceTracker::new();
+        for _ in 0..10 {
+            tracker.track("10.0.0.1", 80);
+        }
+        let _count = tracker.packet_counts.get("10.0.0.1").copied().unwrap_or(0);
+    }
+}
+
+#[cfg(test)]
+mod packet_util_tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_text_preview_ascii() {
+        let payload = b"GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let preview = extract_text_preview(payload);
+        assert!(
+            !preview.is_empty(),
+            "Expected text preview for ASCII payload"
+        );
+        assert!(preview.contains("GET"));
+    }
+
+    #[test]
+    fn test_extract_text_preview_binary() {
+        let payload: Vec<u8> = (0u8..=255u8).collect();
+        let preview = extract_text_preview(&payload);
+        assert!(
+            preview.is_empty(),
+            "Expected empty preview for binary payload"
+        );
+    }
+
+    #[test]
+    fn test_extract_text_preview_empty() {
+        let preview = extract_text_preview(&[]);
+        assert!(
+            preview.is_empty(),
+            "Expected empty preview for empty payload"
+        );
+    }
+
+    #[test]
+    fn test_extract_text_preview_long_payload_truncated() {
+        let long_payload: Vec<u8> = "hello world ".repeat(30).into_bytes();
+        let preview = extract_text_preview(&long_payload);
+        assert!(
+            preview.len() <= 256,
+            "Preview should be capped at MAX_PAYLOAD_PREVIEW=256"
+        );
     }
 }

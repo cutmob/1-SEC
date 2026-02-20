@@ -457,8 +457,21 @@ func isSequentialIDs(ids []string) bool {
 	}
 	for i := 1; i < len(nums); i++ {
 		diff := nums[i] - nums[i-1]
-		if diff < 1 || diff > 3 { // allow small gaps (1, 2, or 3)
+		// Allow forward sequential (1,2,3) and reverse sequential (-1,-2,-3)
+		// with small gaps up to 3
+		absDiff := diff
+		if absDiff < 0 {
+			absDiff = -absDiff
+		}
+		if absDiff < 1 || absDiff > 3 {
 			return false
+		}
+		// All diffs must go the same direction
+		if i > 1 {
+			prevDiff := nums[i-1] - nums[i-2]
+			if (diff > 0 && prevDiff < 0) || (diff < 0 && prevDiff > 0) {
+				return false
+			}
 		}
 	}
 	return true

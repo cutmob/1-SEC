@@ -733,6 +733,54 @@ func (d *ProtocolAnomalyDetector) inspectBACnet(payload string, functionCode int
 		})
 	}
 
+	// BACnet file access services — CVE-2026-21878 vector
+	// AtomicReadFile (6), AtomicWriteFile (7) can be abused for arbitrary file ops
+	fileAccessServices := map[int]string{
+		6: "AtomicReadFile",
+		7: "AtomicWriteFile",
+	}
+	if desc, ok := fileAccessServices[functionCode]; ok {
+		findings = append(findings, ProtoFinding{
+			Title:       "BACnet File Access Operation",
+			Description: fmt.Sprintf("BACnet file service %d (%s) from %s — potential arbitrary file read/write via BACnet stack (ref: CVE-2026-21878)", functionCode, desc, sourceIP),
+			Severity:    core.SeverityCritical,
+			AlertType:   "bacnet_file_access",
+		})
+	}
+
+	// Detect oversized BACnet payloads (potential buffer overflow / heap overflow)
+	if len(payload) > 1476 { // BACnet max APDU is typically 1476 bytes
+		findings = append(findings, ProtoFinding{
+			Title:       "BACnet Oversized Payload",
+			Description: fmt.Sprintf("BACnet payload from %s exceeds max APDU size (%d bytes) — potential buffer overflow attempt", sourceIP, len(payload)),
+			Severity:    core.SeverityHigh,
+			AlertType:   "bacnet_oversized_payload",
+		})
+	}
+
+	// Detect rapid BACnet Who-Is broadcasts (reconnaissance)
+	if functionCode == 8 { // Who-Is
+		d.mu.Lock()
+		key := "bacnet_whois_" + sourceIP
+		counter, exists := d.counters[key]
+		if !exists || time.Since(counter.window) > 5*time.Minute {
+			counter = &protoCounter{window: time.Now()}
+			d.counters[key] = counter
+		}
+		counter.count++
+		counter.lastSeen = time.Now()
+		count := counter.count
+		d.mu.Unlock()
+		if count > 50 {
+			findings = append(findings, ProtoFinding{
+				Title:       "BACnet Reconnaissance Detected",
+				Description: fmt.Sprintf("Excessive Who-Is broadcasts (%d) from %s — possible BACnet device enumeration", count, sourceIP),
+				Severity:    core.SeverityMedium,
+				AlertType:   "bacnet_recon",
+			})
+		}
+	}
+
 	return findings
 }
 
@@ -1080,6 +1128,10 @@ func NewCredentialScanner() *CredentialScanner {
 			"ge":        {"admin": {"admin", ""}, "engineer": {"engineer", ""}},
 			"emerson":   {"admin": {"admin", ""}, "Ovation": {"Ovation", ""}},
 			"yokogawa":  {"admin": {"admin", ""}, "CENTUM": {"CENTUM", ""}},
+			"dell":      {"admin": {"admin", ""}, "root": {"calvin", ""}, "recoverpoint": {"recoverpoint", "boxmgmt", ""}},
+			"hpe":       {"admin": {"admin", ""}, "root": {"hpinvent", ""}},
+			"lenovo":    {"admin": {"admin", ""}, "USERID": {"PASSW0RD", ""}},
+			"supermicro": {"ADMIN": {"ADMIN", ""}},
 		},
 		genericDefaults: map[string][]string{
 			"admin":     {"admin", "password", "1234", "12345", "123456", ""},

@@ -118,7 +118,10 @@ impl PatternMatcher {
 
     /// Returns the number of patterns backed by Aho-Corasick pre-filtering.
     pub fn ac_prefiltered_count(&self) -> usize {
-        self.patterns.iter().filter(|p| !p.ac_indices.is_empty()).count()
+        self.patterns
+            .iter()
+            .filter(|p| !p.ac_indices.is_empty())
+            .count()
     }
 
     /// Match all patterns against the given input fields.

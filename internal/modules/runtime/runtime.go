@@ -121,6 +121,8 @@ func (w *Watcher) handleProcessEvent(event *core.SecurityEvent) {
 		return
 	}
 
+	cmdLower := strings.ToLower(cmdLine)
+
 	// LOLBin detection — Living Off the Land Binaries
 	if lolbin := w.procMon.IsLOLBin(processName, cmdLine, parentProcess); lolbin.Detected {
 		w.raiseAlert(event, core.SeverityHigh,
@@ -131,6 +133,35 @@ func (w *Watcher) handleProcessEvent(event *core.SecurityEvent) {
 				processName, lolbin.Technique, truncate(cmdLine, 150),
 				parentProcess, lolbin.MitreID),
 			"lolbin_abuse")
+	}
+
+	// Symlink / Link-following privilege escalation detection
+	// Addresses BeyondTrust LPE (CVE-2026-1731) and Fortinet FortiClient LPE
+	symlinkPatterns := []string{
+		"mklink", "new-item -itemtype symboliclink", "new-item -type symboliclink",
+		"ln -s", "ln -sf", "junction", "linkd",
+	}
+	for _, pattern := range symlinkPatterns {
+		if strings.Contains(cmdLower, pattern) {
+			// Check if the symlink targets a sensitive path
+			if isSensitiveCmdTarget(cmdLower) {
+				w.raiseAlert(event, core.SeverityCritical,
+					"Symlink Attack on Sensitive Path Detected",
+					fmt.Sprintf("Symlink creation targeting sensitive path via %s: %s. Parent: %s. "+
+						"Link-following attacks exploit path resolution to escalate privileges. "+
+						"MITRE ATT&CK T1547.",
+						processName, truncate(cmdLine, 200), parentProcess),
+					"symlink_privilege_escalation")
+				break
+			}
+			w.raiseAlert(event, core.SeverityMedium,
+				"Symlink Creation Detected",
+				fmt.Sprintf("Symlink created via %s: %s. Parent: %s. "+
+					"Monitor for potential link-following privilege escalation.",
+					processName, truncate(cmdLine, 200), parentProcess),
+				"symlink_creation")
+			break
+		}
 	}
 
 	// Suspicious process detection
@@ -398,6 +429,46 @@ func (w *Watcher) handleFilelessEvent(event *core.SecurityEvent) {
 					"MITRE ATT&CK T1562.001.",
 					processName, truncate(cmdLine, 200)),
 				"amsi_bypass")
+			return
+		}
+	}
+
+	// ETW bypass / logging evasion — ClickFix campaign technique
+	etwPatterns := []string{
+		"etweventwrite", "nttracevent", "etwprovider",
+		"patch etw", "etw bypass", "etwi",
+		"reflection.assembly", "[ref].assembly",
+		"set-mppreference -disableioavprotection",
+		"set-mppreference -disablescriptscanning",
+	}
+	for _, pattern := range etwPatterns {
+		if strings.Contains(cmdLower, pattern) || strings.Contains(scriptLower, pattern) {
+			w.raiseAlert(event, core.SeverityCritical,
+				"ETW/Logging Evasion Detected",
+				fmt.Sprintf("ETW bypass via %s: %s. "+
+					"Attacker is disabling event tracing to evade detection. "+
+					"MITRE ATT&CK T1562.006.",
+					processName, truncate(cmdLine, 200)),
+				"etw_bypass")
+			return
+		}
+	}
+
+	// Lua-based shellcode loader — ClickFix campaign technique
+	luaShellcodePatterns := []string{
+		"luajit", "lua51.dll", "lua52.dll", "lua53.dll", "lua54.dll",
+		"ffi.cast", "ffi.new", "ffi.copy", "ffi.string",
+		"loadstring", "load(", "dofile",
+	}
+	for _, pattern := range luaShellcodePatterns {
+		if strings.Contains(cmdLower, pattern) || strings.Contains(scriptLower, pattern) {
+			w.raiseAlert(event, core.SeverityHigh,
+				"Lua-Based Shellcode Loader Detected",
+				fmt.Sprintf("Lua shellcode loading via %s: %s. Parent: %s. "+
+					"Lua FFI is used by ClickFix and similar campaigns to load shellcode in memory. "+
+					"MITRE ATT&CK T1059.",
+					processName, truncate(cmdLine, 200), parentProcess),
+				"lua_shellcode_loader")
 			return
 		}
 	}
@@ -835,10 +906,40 @@ func isSensitivePath(path string) bool {
 		"/etc/pam.d/", "/etc/ld.so.preload",
 		"/boot/grub/grub.cfg", "/boot/efi/",
 		"/sys/firmware/efi/",
+		// Developer tool configs — sandbox escape vectors (CVE-2026-26268)
+		".git/config", ".git/hooks/",
+		".vscode/settings.json", ".vscode/tasks.json", ".vscode/launch.json",
+		".idea/", ".cursor/",
+		".npmrc", ".yarnrc", ".pypirc",
+		".docker/config.json",
+		".kube/config",
+		".aws/credentials", ".aws/config",
 	}
 	pathLower := strings.ToLower(filepath.ToSlash(path))
 	for _, sp := range sensitivePaths {
 		if strings.Contains(pathLower, strings.ToLower(filepath.ToSlash(sp))) {
+			return true
+		}
+	}
+	return false
+}
+// isSensitiveCmdTarget checks if a command line string references sensitive system
+// paths, used for detecting symlink/link-following privilege escalation attacks
+// (CVE-2026-1731, Fortinet FortiClient LPE).
+func isSensitiveCmdTarget(cmdLower string) bool {
+	sensitiveTargets := []string{
+		"/etc/passwd", "/etc/shadow", "/etc/sudoers", "/etc/ssh",
+		"/etc/pam.d", "/etc/ld.so.preload", "/etc/crontab",
+		"/root/.ssh", "/var/spool/cron",
+		"c:\\windows\\system32\\config",
+		"c:\\windows\\system32\\drivers",
+		"c:\\programdata",
+		".aws/credentials", ".kube/config", ".docker/config.json",
+		".git/config", ".git/hooks",
+		"/boot/grub", "/boot/efi", "/sys/firmware",
+	}
+	for _, target := range sensitiveTargets {
+		if strings.Contains(cmdLower, target) {
 			return true
 		}
 	}
