@@ -73,12 +73,12 @@ helm install 1sec ./deploy/helm \
 
 | # | Module | What it covers | Tier |
 |---|--------|---------------|------|
-| 1 | **Network Guardian** | DDoS, rate limiting, IP reputation, geo-fencing, DNS tunneling, C2 beaconing, lateral movement (PtH, Kerberoasting, Golden Ticket, DCSync), port scan detection | 1 |
+| 1 | **Network Guardian** | DDoS, rate limiting, IP reputation, geo-fencing, DNS tunneling, C2 beaconing, lateral movement (PtH, Kerberoasting, Golden Ticket, DCSync), port scan detection, dynamic IP threat scoring (auto-blocks repeat offenders across modules) | 1 |
 | 2 | **API Fortress** | BOLA detection, schema validation, shadow API discovery, per-endpoint rate limiting | 1 |
-| 3 | **IoT & OT Shield** | Device fingerprinting, protocol anomaly (MQTT/CoAP/Modbus), firmware integrity, default credential detection | 1 |
-| 4 | **Injection Shield** | SQLi, XSS, SSRF, command injection, template injection, NoSQL injection, path traversal — with evasion decoding | 2 |
+| 3 | **IoT & OT Shield** | Device fingerprinting, protocol anomaly (MQTT/CoAP/Modbus/DNP3/BACnet/OPC UA), firmware integrity, default credential detection (Dell, HPE, Lenovo, Supermicro), OT command validation, device behavior baselining, network segmentation enforcement | 1 |
+| 4 | **Injection Shield** | SQLi (including blind boolean/time/error-based), XSS, SSRF, command injection, template injection, NoSQL injection, path traversal, Zip Slip archive traversal, deserialization RCE (Java/PHP/.NET/Python pickle), canary token detection, 8-phase input normalization pipeline | 2 |
 | 5 | **Supply Chain Sentinel** | SBOM generation, package integrity, typosquatting (Levenshtein), dependency confusion, CI/CD hardening | 2 |
-| 6 | **Ransomware Interceptor** | Encryption detection, canary files, exfiltration monitoring, wiper detection (MBR/GPT), shadow copy deletion, compound attack correlation | 2 |
+| 6 | **Ransomware Interceptor** | Encryption detection (threshold: 5 files), canary files, exfiltration monitoring, wiper detection (MBR/GPT), shadow copy deletion, compound attack correlation | 2 |
 | 7 | **Auth Fortress** | Brute force, credential stuffing, session hijack, impossible travel, MFA fatigue, OAuth consent phishing, password spray, stolen token detection | 3 |
 | 8 | **Deepfake Shield** | Synthetic voice/video detection (DFT-based), AI phishing, domain homoglyph spoofing, BEC detection | 3 |
 | 9 | **Identity Fabric Monitor** | Synthetic identity detection, privilege escalation, service account anomaly, bulk creation detection | 3 |
@@ -86,9 +86,10 @@ helm install 1sec ./deploy/helm \
 | 11 | **AI Agent Containment** | Action sandboxing, tool-use monitoring, shadow AI detection, scope escalation, policy enforcement | 4 |
 | 12 | **Data Poisoning Guard** | Training data integrity, RAG pipeline validation, adversarial input detection, model drift monitoring | 4 |
 | 13 | **Quantum-Ready Crypto** | Crypto inventory, PQC migration readiness, TLS auditing, cert expiry, HNDL attack detection | 5 |
-| 14 | **Runtime Watcher** | FIM, container escape, LOLBin detection (40+), memory injection (process hollowing, DLL injection), persistence mechanisms, UEFI/bootkit, fileless malware | 6 |
+| 14 | **Runtime Watcher** | FIM, container escape, LOLBin detection (40+), memory injection (process hollowing, DLL injection), persistence mechanisms, UEFI/bootkit, fileless malware, symlink privilege escalation, ETW/logging evasion, Lua shellcode loader detection | 6 |
 | 15 | **Cloud Posture Manager** | Config drift, misconfiguration (public buckets, open SGs, wildcard IAM), secrets sprawl | 6 |
 | 16 | **AI Analysis Engine** | Two-tier Gemini pipeline: Flash Lite for triage, Flash for deep classification and cross-module correlation | X |
+| — | **Threat Correlator** | Cross-module attack chain detection — automatically correlates alerts from multiple modules targeting the same source IP into unified incident alerts. 9 pre-defined attack chains (kill chain, credential→lateral, injection→persistence, etc.) | Core |
 
 ---
 
@@ -256,12 +257,13 @@ The Helm chart includes:
 ├────┬────┬────┬────┬────┬────┬────┬────┬────┬────┤
 │Net │API │IoT │Inj │SC  │Ran │Auth│DF  │...│CP  │
 └────┴────┴────┴────┴────┴────┴────┴────┴────┴────┘
-              │                    │
-       ┌──────┴──────┐      ┌──────┴──────┐
-       │ AI Engine   │      │  Dashboard  │
-       │ Tier 1: Lite│      │  Next.js    │
-       │ Tier 2: Flash│     │  1-sec.dev  │
-       └─────────────┘      └─────────────┘
+         │              │                │
+  ┌──────┴──────┐ ┌─────┴──────┐  ┌─────┴──────┐
+  │ Threat      │ │ AI Engine  │  │  Dashboard │
+  │ Correlator  │ │ Tier 1:Lite│  │  Next.js   │
+  │ (attack     │ │ Tier 2:Flash│ │  1-sec.dev │
+  │  chains)    │ └────────────┘  └────────────┘
+  └─────────────┘
 ```
 
 Each module implements a single Go interface:

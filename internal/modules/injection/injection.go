@@ -46,6 +46,7 @@ type Stats struct {
 	PathDetected   int64
 	UploadDetected int64
 	DeserDetected  int64
+	CanaryDetected int64
 }
 
 func New() *Shield {

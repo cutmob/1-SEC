@@ -706,3 +706,157 @@ var _ core.Module = (*Guardian)(nil)
 
 // Suppress unused import
 var _ = time.Now
+
+// ─── Dynamic IP Threat Scoring ────────────────────────────────────────────────
+
+func TestIPReputation_RecordThreat_BelowThreshold(t *testing.T) {
+	rep := NewIPReputation()
+	// Single threat from one module should not auto-block
+	blocked := rep.RecordThreat("10.0.0.1", "injection_shield", core.SeverityHigh)
+	if blocked {
+		t.Error("should not auto-block from single module")
+	}
+	if rep.IsMalicious("10.0.0.1") {
+		t.Error("IP should not be malicious yet")
+	}
+}
+
+func TestIPReputation_RecordThreat_AutoBlock(t *testing.T) {
+	rep := NewIPReputation()
+	// Accumulate 30 points from injection_shield (3x CRITICAL = 60 points)
+	rep.RecordThreat("10.0.0.1", "injection_shield", core.SeverityCritical)
+	rep.RecordThreat("10.0.0.1", "injection_shield", core.SeverityCritical)
+	rep.RecordThreat("10.0.0.1", "injection_shield", core.SeverityCritical)
+
+	// Still not blocked — only 1 module
+	if rep.IsMalicious("10.0.0.1") {
+		t.Error("should not auto-block from single module even with high points")
+	}
+
+	// Now add a second module — should trigger auto-block (60 points + 20 = 80, 2 modules)
+	blocked := rep.RecordThreat("10.0.0.1", "auth_fortress", core.SeverityCritical)
+	if !blocked {
+		t.Error("expected auto-block after 2 modules and 80 points")
+	}
+	if !rep.IsMalicious("10.0.0.1") {
+		t.Error("IP should be malicious after auto-block")
+	}
+}
+
+func TestIPReputation_RecordThreat_DifferentIPs_Independent(t *testing.T) {
+	rep := NewIPReputation()
+	rep.RecordThreat("10.0.0.1", "injection_shield", core.SeverityCritical)
+	rep.RecordThreat("10.0.0.1", "auth_fortress", core.SeverityCritical)
+	rep.RecordThreat("10.0.0.1", "network_guardian", core.SeverityCritical)
+
+	// IP1 should be blocked
+	if !rep.IsMalicious("10.0.0.1") {
+		t.Error("10.0.0.1 should be blocked")
+	}
+
+	// IP2 should NOT be blocked
+	if rep.IsMalicious("10.0.0.2") {
+		t.Error("10.0.0.2 should not be blocked")
+	}
+}
+
+func TestIPReputation_GetThreatScore(t *testing.T) {
+	rep := NewIPReputation()
+	rep.RecordThreat("10.0.0.1", "injection_shield", core.SeverityHigh)   // 10 points
+	rep.RecordThreat("10.0.0.1", "injection_shield", core.SeverityMedium) // 5 points
+	rep.RecordThreat("10.0.0.1", "auth_fortress", core.SeverityLow)       // 2 points
+
+	points, modules := rep.GetThreatScore("10.0.0.1")
+	if points != 17 {
+		t.Errorf("expected 17 points, got %d", points)
+	}
+	if modules != 2 {
+		t.Errorf("expected 2 modules, got %d", modules)
+	}
+}
+
+func TestIPReputation_GetThreatScore_Unknown(t *testing.T) {
+	rep := NewIPReputation()
+	points, modules := rep.GetThreatScore("unknown-ip")
+	if points != 0 || modules != 0 {
+		t.Errorf("expected 0/0 for unknown IP, got %d/%d", points, modules)
+	}
+}
+
+func TestIPReputation_CleanupScores(t *testing.T) {
+	rep := NewIPReputation()
+	rep.RecordThreat("10.0.0.1", "injection_shield", core.SeverityHigh)
+
+	// Verify score exists
+	points, _ := rep.GetThreatScore("10.0.0.1")
+	if points == 0 {
+		t.Fatal("expected non-zero points before cleanup")
+	}
+
+	// Wait a tiny bit then cleanup with very short maxAge
+	time.Sleep(2 * time.Millisecond)
+	rep.CleanupScores(1 * time.Millisecond)
+
+	points, _ = rep.GetThreatScore("10.0.0.1")
+	if points != 0 {
+		t.Errorf("expected 0 points after cleanup, got %d", points)
+	}
+}
+
+func TestIPReputation_SeverityScoring(t *testing.T) {
+	// Test each severity level's point value
+	cases := []struct {
+		severity core.Severity
+		expected int
+	}{
+		{core.SeverityCritical, 20},
+		{core.SeverityHigh, 10},
+		{core.SeverityMedium, 5},
+		{core.SeverityLow, 2},
+		{core.SeverityInfo, 1},
+	}
+
+	for _, tc := range cases {
+		rep2 := NewIPReputation()
+		rep2.RecordThreat("test-ip", "test_module", tc.severity)
+		points, _ := rep2.GetThreatScore("test-ip")
+		if points != tc.expected {
+			t.Errorf("severity %s: expected %d points, got %d", tc.severity.String(), tc.expected, points)
+		}
+	}
+}
+
+func TestGuardian_HandleEvent_DynamicIPScoring(t *testing.T) {
+	cp := makeCapturingPipeline()
+	g := startedModuleWithPipeline(t, cp)
+	defer g.Stop()
+
+	// Send multiple high-severity events from different modules to the same IP
+	// The network guardian should score them and eventually auto-block
+	for i := 0; i < 3; i++ {
+		event := core.NewSecurityEvent("injection_shield", "injection_detected", core.SeverityCritical,
+			"SQLi detected")
+		event.SourceIP = "10.99.99.99"
+		_ = g.HandleEvent(event)
+	}
+
+	// Now send from a second module to trigger the 2-module requirement
+	event := core.NewSecurityEvent("auth_fortress", "brute_force", core.SeverityCritical,
+		"Brute force detected")
+	event.SourceIP = "10.99.99.99"
+	_ = g.HandleEvent(event)
+
+	// Check that a dynamic_ip_block alert was generated
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	found := false
+	for _, a := range cp.alerts {
+		if a.Type == "dynamic_ip_block" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected dynamic_ip_block alert after cross-module scoring")
+	}
+}

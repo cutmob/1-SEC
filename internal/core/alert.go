@@ -56,7 +56,7 @@ type Alert struct {
 
 // NewAlert creates a new Alert from a SecurityEvent.
 func NewAlert(event *SecurityEvent, title, description string) *Alert {
-	return &Alert{
+	a := &Alert{
 		ID:          uuid.New().String(),
 		Timestamp:   time.Now().UTC(),
 		Module:      event.Module,
@@ -68,6 +68,11 @@ func NewAlert(event *SecurityEvent, title, description string) *Alert {
 		EventIDs:    []string{event.ID},
 		Metadata:    make(map[string]interface{}),
 	}
+	// Carry source IP into metadata for cross-module correlation
+	if event.SourceIP != "" {
+		a.Metadata["source_ip"] = event.SourceIP
+	}
+	return a
 }
 
 // Marshal serializes the alert to JSON.

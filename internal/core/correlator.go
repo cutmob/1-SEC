@@ -1,0 +1,293 @@
+package core
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/rs/zerolog"
+)
+
+// ThreatCorrelator watches the alert pipeline for multi-module attack patterns
+// and generates high-confidence "attack chain" alerts when multiple modules
+// detect activity from the same source within a time window.
+//
+// This is the #1 feature that separates XDR platforms (CrowdStrike, SentinelOne)
+// from standalone tools. Without it, each module is an island. With it, a brute
+// force attempt (auth) + SQL injection (injection_shield) + data exfiltration
+// (ransomware) from the same IP becomes a single correlated incident.
+//
+// Pure Go, zero external dependencies.
+type ThreatCorrelator struct {
+	mu       sync.Mutex
+	logger   zerolog.Logger
+	pipeline *AlertPipeline
+	bus      *EventBus
+
+	// sourceAlerts tracks recent alerts per source IP
+	sourceAlerts map[string]*sourceAlertWindow
+
+	// Attack chain definitions — when these module combinations fire
+	// for the same source, we generate a correlated alert
+	chains []attackChain
+
+	// Config
+	windowDuration time.Duration // how long to track alerts per source
+	minModules     int           // minimum distinct modules to trigger correlation
+}
+
+type sourceAlertWindow struct {
+	alerts    []*Alert
+	modules   map[string]int // module -> count
+	firstSeen time.Time
+	lastSeen  time.Time
+}
+
+type attackChain struct {
+	Name        string
+	Description string
+	Modules     []string // required modules (all must fire)
+	Severity    Severity
+	MitreIDs    []string
+}
+
+// NewThreatCorrelator creates a correlator that watches the alert pipeline.
+func NewThreatCorrelator(logger zerolog.Logger, pipeline *AlertPipeline, bus *EventBus) *ThreatCorrelator {
+	tc := &ThreatCorrelator{
+		logger:         logger.With().Str("component", "threat_correlator").Logger(),
+		pipeline:       pipeline,
+		bus:            bus,
+		sourceAlerts:   make(map[string]*sourceAlertWindow),
+		windowDuration: 15 * time.Minute,
+		minModules:     2,
+	}
+	tc.chains = tc.buildChainDefinitions()
+	return tc
+}
+
+func (tc *ThreatCorrelator) buildChainDefinitions() []attackChain {
+	return []attackChain{
+		{
+			Name:        "Full Kill Chain: Recon → Exploit → Exfil",
+			Description: "Attacker performed reconnaissance (network), exploited a vulnerability (injection), and exfiltrated data (ransomware/network). This is a complete attack lifecycle.",
+			Modules:     []string{"network_guardian", "injection_shield", "ransomware"},
+			Severity:    SeverityCritical,
+			MitreIDs:    []string{"TA0043", "TA0001", "TA0010"},
+		},
+		{
+			Name:        "Credential Attack → Lateral Movement",
+			Description: "Brute force or credential stuffing (auth) followed by lateral movement indicators (network). Attacker likely obtained valid credentials and is moving through the network.",
+			Modules:     []string{"auth_fortress", "network_guardian"},
+			Severity:    SeverityCritical,
+			MitreIDs:    []string{"T1110", "TA0008"},
+		},
+		{
+			Name:        "Injection → Persistence",
+			Description: "Injection attack (SQLi/RCE) followed by runtime persistence indicators. Attacker exploited a vulnerability and is establishing persistence.",
+			Modules:     []string{"injection_shield", "runtime_watcher"},
+			Severity:    SeverityCritical,
+			MitreIDs:    []string{"TA0001", "TA0003"},
+		},
+		{
+			Name:        "Supply Chain → Runtime Compromise",
+			Description: "Supply chain anomaly followed by suspicious runtime activity. A compromised dependency may be executing malicious code.",
+			Modules:     []string{"supply_chain", "runtime_watcher"},
+			Severity:    SeverityCritical,
+			MitreIDs:    []string{"T1195", "TA0002"},
+		},
+		{
+			Name:        "Auth Bypass → Data Destruction",
+			Description: "Authentication attack followed by ransomware/wiper activity. Attacker gained access and is destroying data.",
+			Modules:     []string{"auth_fortress", "ransomware"},
+			Severity:    SeverityCritical,
+			MitreIDs:    []string{"T1110", "T1486"},
+		},
+		{
+			Name:        "API Abuse → Injection → Exfil",
+			Description: "API abuse detected alongside injection attempts and data exfiltration. Coordinated API-layer attack.",
+			Modules:     []string{"api_fortress", "injection_shield", "ransomware"},
+			Severity:    SeverityCritical,
+			MitreIDs:    []string{"T1190", "TA0010"},
+		},
+		{
+			Name:        "IoT Compromise → Lateral Movement",
+			Description: "IoT/OT device anomaly followed by network lateral movement. Compromised IoT device being used as pivot point.",
+			Modules:     []string{"iot_shield", "network_guardian"},
+			Severity:    SeverityCritical,
+			MitreIDs:    []string{"T1200", "TA0008"},
+		},
+		{
+			Name:        "LLM Prompt Injection → Agent Escape",
+			Description: "LLM prompt injection detected alongside AI agent containment breach. Attacker is exploiting AI systems to escape sandboxes.",
+			Modules:     []string{"llm_firewall", "ai_containment"},
+			Severity:    SeverityCritical,
+			MitreIDs:    []string{"T1059", "TA0004"},
+		},
+		{
+			Name:        "Multi-Vector Assault",
+			Description: "Three or more distinct security modules triggered by the same source. This indicates a sophisticated, multi-vector attack campaign.",
+			Modules:     []string{}, // special case: any 3+ modules
+			Severity:    SeverityCritical,
+			MitreIDs:    []string{"TA0001", "TA0002", "TA0040"},
+		},
+	}
+}
+
+// Ingest processes a new alert and checks for cross-module correlations.
+// Called by the alert pipeline as a handler.
+func (tc *ThreatCorrelator) Ingest(alert *Alert) {
+	// Extract source IP from alert metadata
+	sourceIP := ""
+	if ip, ok := alert.Metadata["source_ip"].(string); ok && ip != "" {
+		sourceIP = ip
+	}
+	if sourceIP == "" {
+		return // can't correlate without a source
+	}
+
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	now := time.Now()
+
+	window, exists := tc.sourceAlerts[sourceIP]
+	if !exists || now.Sub(window.lastSeen) > tc.windowDuration {
+		window = &sourceAlertWindow{
+			modules:   make(map[string]int),
+			firstSeen: now,
+		}
+		tc.sourceAlerts[sourceIP] = window
+	}
+
+	window.alerts = append(window.alerts, alert)
+	window.modules[alert.Module]++
+	window.lastSeen = now
+
+	// Check for attack chain matches
+	tc.checkChains(sourceIP, window)
+}
+
+func (tc *ThreatCorrelator) checkChains(sourceIP string, window *sourceAlertWindow) {
+	moduleCount := len(window.modules)
+
+	for _, chain := range tc.chains {
+		// Special case: multi-vector (any 3+ modules)
+		if len(chain.Modules) == 0 && moduleCount >= 3 {
+			tc.fireCorrelatedAlert(sourceIP, window, chain)
+			continue
+		}
+
+		// Check if all required modules in the chain have fired
+		if len(chain.Modules) == 0 {
+			continue
+		}
+		allPresent := true
+		for _, reqModule := range chain.Modules {
+			if window.modules[reqModule] == 0 {
+				allPresent = false
+				break
+			}
+		}
+		if allPresent {
+			tc.fireCorrelatedAlert(sourceIP, window, chain)
+		}
+	}
+}
+
+func (tc *ThreatCorrelator) fireCorrelatedAlert(sourceIP string, window *sourceAlertWindow, chain attackChain) {
+	// Deduplicate: don't fire the same chain for the same source twice
+	dedupeKey := fmt.Sprintf("correlated:%s:%s", sourceIP, chain.Name)
+	for _, a := range window.alerts {
+		if a.Type == dedupeKey {
+			return
+		}
+	}
+
+	// Collect all module names that fired
+	var modules []string
+	for mod := range window.modules {
+		modules = append(modules, mod)
+	}
+
+	// Collect all event IDs from constituent alerts
+	var eventIDs []string
+	for _, a := range window.alerts {
+		eventIDs = append(eventIDs, a.EventIDs...)
+	}
+
+	duration := window.lastSeen.Sub(window.firstSeen)
+
+	event := NewSecurityEvent("threat_correlator", dedupeKey, chain.Severity,
+		fmt.Sprintf("CORRELATED ATTACK CHAIN: %s — %d alerts from %d modules (%s) targeting source %s over %s. %s",
+			chain.Name, len(window.alerts), len(modules),
+			strings.Join(modules, ", "), sourceIP, duration.Round(time.Second), chain.Description))
+	event.SourceIP = sourceIP
+	event.Details["chain_name"] = chain.Name
+	event.Details["module_count"] = len(modules)
+	event.Details["alert_count"] = len(window.alerts)
+	event.Details["modules"] = modules
+	event.Details["mitre_ids"] = chain.MitreIDs
+	event.Details["window_duration"] = duration.String()
+	event.Details["constituent_event_ids"] = eventIDs
+
+	if tc.bus != nil {
+		_ = tc.bus.PublishEvent(event)
+	}
+
+	alert := NewAlert(event,
+		fmt.Sprintf("⚠ ATTACK CHAIN: %s", chain.Name),
+		event.Summary)
+	alert.Type = dedupeKey
+	alert.Mitigations = []string{
+		"Immediately isolate source IP " + sourceIP + " at the network level",
+		"Review all " + fmt.Sprintf("%d", len(window.alerts)) + " constituent alerts for full attack timeline",
+		"Check for lateral movement from this source to other internal hosts",
+		"Preserve forensic evidence across all affected modules",
+		"Escalate to incident response — this is a multi-stage attack",
+	}
+	alert.Metadata["source_ip"] = sourceIP
+	alert.Metadata["chain_name"] = chain.Name
+	alert.Metadata["modules"] = modules
+
+	if tc.pipeline != nil {
+		tc.pipeline.Process(alert)
+	}
+
+	tc.logger.Warn().
+		Str("chain", chain.Name).
+		Str("source_ip", sourceIP).
+		Int("alerts", len(window.alerts)).
+		Int("modules", len(modules)).
+		Msg("CORRELATED ATTACK CHAIN DETECTED")
+}
+
+// Start begins the correlator's background cleanup loop.
+func (tc *ThreatCorrelator) Start(ctx context.Context) {
+	go tc.cleanupLoop(ctx)
+	tc.logger.Info().
+		Dur("window", tc.windowDuration).
+		Int("chains", len(tc.chains)).
+		Msg("threat correlator started")
+}
+
+func (tc *ThreatCorrelator) cleanupLoop(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			tc.mu.Lock()
+			cutoff := time.Now().Add(-tc.windowDuration)
+			for ip, window := range tc.sourceAlerts {
+				if window.lastSeen.Before(cutoff) {
+					delete(tc.sourceAlerts, ip)
+				}
+			}
+			tc.mu.Unlock()
+		}
+	}
+}

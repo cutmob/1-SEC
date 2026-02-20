@@ -722,3 +722,102 @@ func TestFileSentinel_CleanArchive(t *testing.T) {
 		}
 	}
 }
+
+// ─── Canary Token / Leaked Credential Detection ──────────────────────────────
+
+func TestAnalyzeInput_Canary_AWSKey(t *testing.T) {
+	s := startedShield(t)
+	detections := s.AnalyzeInput("AKIAIOSFODNN7EXAMPLE", "header")
+	if len(detections) == 0 {
+		t.Fatal("expected canary_aws_key detection")
+	}
+	found := false
+	for _, d := range detections {
+		if d.Category == "canary" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected category 'canary' for AWS key detection")
+	}
+}
+
+func TestAnalyzeInput_Canary_GitHubToken(t *testing.T) {
+	s := startedShield(t)
+	// ghp_ format (classic PAT)
+	detections := s.AnalyzeInput("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij", "header")
+	if len(detections) == 0 {
+		t.Fatal("expected canary_github_token detection for ghp_ token")
+	}
+	hasCanary := false
+	for _, d := range detections {
+		if d.Category == "canary" {
+			hasCanary = true
+		}
+	}
+	if !hasCanary {
+		t.Error("expected canary category for GitHub token")
+	}
+}
+
+func TestAnalyzeInput_Canary_SlackToken(t *testing.T) {
+	s := startedShield(t)
+	token := "xoxb-" + "0000000000" + "-" + "0000000000" + "-" + "ABCDEFGHIJKLMNOPQRSTUVWX"
+	detections := s.AnalyzeInput(token, "header")
+	if len(detections) == 0 {
+		t.Fatal("expected canary_slack_token detection")
+	}
+}
+
+func TestAnalyzeInput_Canary_PrivateKey(t *testing.T) {
+	s := startedShield(t)
+	detections := s.AnalyzeInput("-----BEGIN RSA PRIVATE KEY-----", "body")
+	if len(detections) == 0 {
+		t.Fatal("expected canary_private_key detection")
+	}
+}
+
+func TestAnalyzeInput_Canary_JWT(t *testing.T) {
+	s := startedShield(t)
+	// Minimal JWT-like structure
+	jwt := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+	detections := s.AnalyzeInput(jwt, "header")
+	if len(detections) == 0 {
+		t.Fatal("expected canary_jwt_token detection")
+	}
+}
+
+func TestAnalyzeInput_Canary_GCPServiceAccount(t *testing.T) {
+	s := startedShield(t)
+	detections := s.AnalyzeInput(`{"type": "service_account", "project_id": "test"}`, "body")
+	if len(detections) == 0 {
+		t.Fatal("expected canary_gcp_service_account detection")
+	}
+}
+
+func TestAnalyzeInput_Canary_CleanInput_NoFalsePositive(t *testing.T) {
+	s := startedShield(t)
+	// Normal strings that should NOT trigger canary detection
+	cleanInputs := []string{
+		"This is a normal API response",
+		"Authorization: Bearer some-short-token",
+		"The user's account type is premium",
+	}
+	for _, input := range cleanInputs {
+		detections := s.AnalyzeInput(input, "body")
+		for _, d := range detections {
+			if d.Category == "canary" {
+				t.Errorf("false positive canary detection on clean input %q: %s", input, d.PatternName)
+			}
+		}
+	}
+}
+
+// ─── Category Label Tests (updated) ──────────────────────────────────────────
+
+func TestCategoryLabel_Canary(t *testing.T) {
+	label := categoryLabel("canary")
+	if label != "Canary Token / Leaked Credential" {
+		t.Errorf("expected 'Canary Token / Leaked Credential', got %q", label)
+	}
+}

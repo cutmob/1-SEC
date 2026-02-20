@@ -18,6 +18,7 @@ type Engine struct {
 	Registry    *ModuleRegistry
 	Pipeline    *AlertPipeline
 	RustSidecar *RustSidecar
+	Correlator  *ThreatCorrelator
 	Logger      zerolog.Logger
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -106,6 +107,14 @@ func (e *Engine) Start() error {
 			e.Logger.Error().Err(err).Str("alert_id", alert.ID).Msg("failed to publish alert to bus")
 		}
 	})
+
+	// Start cross-module threat correlator — watches alerts from all modules
+	// and detects multi-stage attack chains (e.g., recon → exploit → exfil)
+	e.Correlator = NewThreatCorrelator(e.Logger, e.Pipeline, e.Bus)
+	e.Pipeline.AddHandler(func(alert *Alert) {
+		e.Correlator.Ingest(alert)
+	})
+	e.Correlator.Start(e.ctx)
 
 	// Start all enabled modules
 	if err := e.Registry.StartAll(e.ctx, e.Bus, e.Pipeline, e.Config); err != nil {

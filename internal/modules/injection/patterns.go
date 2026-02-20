@@ -131,6 +131,23 @@ func compilePatterns() []Pattern {
 			Regex: regexp.MustCompile(`(?i)(pg_sleep\s*\(\s*\d+|dbms_pipe\.receive_message|RANDOMBLOB\s*\(\s*\d{6,}|LIKE\s*'ABCDEFG)`)},
 		{Name: "sqli_blind_error", Category: "sqli", Severity: core.SeverityHigh,
 			Regex: regexp.MustCompile(`(?i)(convert\s*\(\s*int\s*,|cast\s*\(\s*\(.*\)\s+as\s+int\)|cond\s*\(\s*\d+\s*=\s*\d+)`)},
+
+		// Honeypot / canary token detection — detects when attackers use leaked
+		// credentials or tokens that are known canary/honeypot markers. This is a
+		// zero-cost deception layer: if someone submits a canary AWS key or known
+		// test credential, they're probing with stolen/leaked data.
+		{Name: "canary_aws_key", Category: "canary", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile(`AKIA[0-9A-Z]{16}`)},
+		{Name: "canary_github_token", Category: "canary", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile(`(ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59})`)},
+		{Name: "canary_slack_token", Category: "canary", Severity: core.SeverityHigh,
+			Regex: regexp.MustCompile(`xox[bpors]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24,34}`)},
+		{Name: "canary_private_key", Category: "canary", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile(`-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----`)},
+		{Name: "canary_jwt_token", Category: "canary", Severity: core.SeverityHigh,
+			Regex: regexp.MustCompile(`eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}`)},
+		{Name: "canary_gcp_service_account", Category: "canary", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile(`"type"\s*:\s*"service_account"`)},
 	}
 
 	return patterns

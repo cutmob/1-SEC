@@ -32,6 +32,9 @@ pub fn all_patterns() -> Vec<PatternDef> {
     patterns.extend(ransomware_patterns());
     patterns.extend(auth_patterns());
     patterns.extend(exfiltration_patterns());
+    patterns.extend(deserialization_patterns());
+    patterns.extend(canary_token_patterns());
+    patterns.extend(zipslip_patterns());
     patterns
 }
 
@@ -114,6 +117,28 @@ fn sqli_patterns() -> Vec<PatternDef> {
             severity: Severity::High,
             regex: r"(?i)(0x[0-9a-f]{8,}|char\s*\(\s*\d+(\s*,\s*\d+)+\s*\)|concat\s*\()",
             literals: &["0x", "char(", "concat(", "CHAR(", "CONCAT("],
+        },
+        // Blind SQLi patterns
+        PatternDef {
+            name: "sqli_blind_boolean",
+            category: "sqli",
+            severity: Severity::High,
+            regex: r"(?i)(\bAND\b\s+\d+\s*=\s*\d+|\bAND\b\s+['\x22][^'\x22]*['\x22]\s*=\s*['\x22]|substr(ing)?\s*\(.*,\s*\d+\s*,\s*\d+\s*\)\s*=)",
+            literals: &["AND", "substr", "substring"],
+        },
+        PatternDef {
+            name: "sqli_blind_time",
+            category: "sqli",
+            severity: Severity::High,
+            regex: r"(?i)(pg_sleep\s*\(\s*\d+|dbms_pipe\.receive_message|RANDOMBLOB\s*\(\s*\d{6,}|LIKE\s*'ABCDEFG)",
+            literals: &["pg_sleep", "dbms_pipe", "RANDOMBLOB"],
+        },
+        PatternDef {
+            name: "sqli_blind_error",
+            category: "sqli",
+            severity: Severity::High,
+            regex: r"(?i)(convert\s*\(\s*int\s*,|cast\s*\(\s*\(.*\)\s+as\s+int\)|cond\s*\(\s*\d+\s*=\s*\d+)",
+            literals: &["convert", "cast", "cond"],
         },
     ]
 }
@@ -568,6 +593,111 @@ fn exfiltration_patterns() -> Vec<PatternDef> {
                 "private key",
                 "access token",
             ],
+        },
+    ]
+}
+
+fn deserialization_patterns() -> Vec<PatternDef> {
+    vec![
+        PatternDef {
+            name: "deser_java_gadget",
+            category: "deserialization",
+            severity: Severity::Critical,
+            regex: r"(?i)(ObjectInputStream|readObject|readUnshared|XMLDecoder|xstream|ysoserial|commons-collections|InvokerTransformer|ChainedTransformer|ConstantTransformer|LazyMap)",
+            literals: &[
+                "ObjectInputStream", "readObject", "XMLDecoder", "xstream",
+                "ysoserial", "InvokerTransformer", "ChainedTransformer", "LazyMap",
+            ],
+        },
+        PatternDef {
+            name: "deser_dotnet",
+            category: "deserialization",
+            severity: Severity::Critical,
+            regex: r"(?i)(BinaryFormatter|ObjectStateFormatter|SoapFormatter|LosFormatter|NetDataContractSerializer|TypeNameHandling|JavaScriptSerializer)",
+            literals: &[
+                "BinaryFormatter", "ObjectStateFormatter", "SoapFormatter",
+                "LosFormatter", "NetDataContractSerializer", "TypeNameHandling",
+            ],
+        },
+        PatternDef {
+            name: "deser_xml_entity",
+            category: "deserialization",
+            severity: Severity::High,
+            regex: r#"(?i)(<!ENTITY\s+|<!DOCTYPE\s+[^>]*\[|SYSTEM\s+["\x27]file://|SYSTEM\s+["\x27]http)"#,
+            literals: &["<!ENTITY", "<!DOCTYPE", "SYSTEM"],
+        },
+        PatternDef {
+            name: "deser_php",
+            category: "deserialization",
+            severity: Severity::High,
+            regex: r#"(?i)(O:\d+:"[^"]+"|a:\d+:\{|unserialize\s*\(|__wakeup|__destruct)"#,
+            literals: &["unserialize", "__wakeup", "__destruct"],
+        },
+        PatternDef {
+            name: "deser_python_pickle",
+            category: "deserialization",
+            severity: Severity::Critical,
+            regex: r"(?i)(pickle\.loads|cPickle\.loads|yaml\.load\s*\(|yaml\.unsafe_load|__reduce__|__reduce_ex__)",
+            literals: &["pickle.loads", "cPickle.loads", "yaml.load", "__reduce__"],
+        },
+    ]
+}
+
+fn canary_token_patterns() -> Vec<PatternDef> {
+    vec![
+        PatternDef {
+            name: "canary_aws_key",
+            category: "canary_token",
+            severity: Severity::Critical,
+            regex: r"AKIA[0-9A-Z]{16}",
+            literals: &["AKIA"],
+        },
+        PatternDef {
+            name: "canary_github_token",
+            category: "canary_token",
+            severity: Severity::Critical,
+            regex: r"(ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59})",
+            literals: &["ghp_", "github_pat_"],
+        },
+        PatternDef {
+            name: "canary_slack_token",
+            category: "canary_token",
+            severity: Severity::High,
+            regex: r"xox[bpors]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24,34}",
+            literals: &["xoxb-", "xoxp-", "xoxo-", "xoxr-", "xoxs-"],
+        },
+        PatternDef {
+            name: "canary_private_key",
+            category: "canary_token",
+            severity: Severity::Critical,
+            regex: r"-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
+            literals: &["-----BEGIN", "PRIVATE KEY"],
+        },
+        PatternDef {
+            name: "canary_gcp_service_account",
+            category: "canary_token",
+            severity: Severity::Critical,
+            regex: r#""type"\s*:\s*"service_account""#,
+            literals: &["service_account"],
+        },
+    ]
+}
+
+fn zipslip_patterns() -> Vec<PatternDef> {
+    vec![
+        PatternDef {
+            name: "zipslip_archive_traversal",
+            category: "path_traversal",
+            severity: Severity::Critical,
+            regex: r"(?i)(\.\.[\\/]){1,}.*(\.jsp|\.php|\.sh|\.exe|\.dll|\.py|\.rb|\.war|\.jar|\.aspx|\.bat|\.ps1|\.cgi)",
+            literals: &["../", "..\\"],
+        },
+        PatternDef {
+            name: "zipslip_webroot_escape",
+            category: "path_traversal",
+            severity: Severity::Critical,
+            regex: r"(?i)\.\.[\\/].*(WEB-INF|META-INF|wwwroot|htdocs|public_html|www|webapps|inetpub)",
+            literals: &["WEB-INF", "META-INF", "wwwroot", "htdocs", "webapps"],
         },
     ]
 }

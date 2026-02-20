@@ -516,6 +516,8 @@ func (s *Shield) incrementStat(category string) {
 		s.stats.UploadDetected++
 	case "deser":
 		s.stats.DeserDetected++
+	case "canary":
+		s.stats.CanaryDetected++
 	}
 }
 
@@ -541,6 +543,8 @@ func categoryLabel(cat string) string {
 		return "Malicious File Upload"
 	case "deser":
 		return "Deserialization Attack"
+	case "canary":
+		return "Canary Token / Leaked Credential"
 	default:
 		return cat
 	}

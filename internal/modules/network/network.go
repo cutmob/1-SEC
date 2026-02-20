@@ -62,6 +62,20 @@ func (g *Guardian) Start(ctx context.Context, bus *core.EventBus, pipeline *core
 	g.portScanDet = NewPortScanDetector()
 
 	// Cleanup loops replaced by bounded LRU caches
+	// Start dynamic IP threat score cleanup
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-g.ctx.Done():
+				return
+			case <-ticker.C:
+				g.ipReputation.CleanupScores(1 * time.Hour)
+			}
+		}
+	}()
+
 	g.logger.Info().
 		Int("max_rpm", maxReqPerMin).
 		Int("burst", burstSize).
@@ -77,6 +91,22 @@ func (g *Guardian) Stop() error {
 }
 
 func (g *Guardian) HandleEvent(event *core.SecurityEvent) error {
+	// Cross-module dynamic IP threat scoring: when ANY module fires an alert-worthy
+	// event with a source IP, accumulate threat points. IPs that trigger multiple
+	// modules get auto-blocked. This replaces the need for external TI feeds.
+	if event.SourceIP != "" && event.Module != ModuleName && event.Severity >= core.SeverityMedium {
+		newlyBlocked := g.ipReputation.RecordThreat(event.SourceIP, event.Module, event.Severity)
+		if newlyBlocked {
+			points, modules := g.ipReputation.GetThreatScore(event.SourceIP)
+			g.raiseAlert(event, core.SeverityCritical,
+				"IP Auto-Blocked by Dynamic Threat Scoring",
+				fmt.Sprintf("IP %s auto-blocked after accumulating %d threat points from %d modules. "+
+					"Multiple security modules flagged this source — high confidence malicious actor.",
+					event.SourceIP, points, modules),
+				"dynamic_ip_block")
+		}
+	}
+
 	// Route specialized event types first
 	switch event.Type {
 	case "dns_query", "dns_response":
@@ -485,10 +515,27 @@ type IPReputation struct {
 	mu        sync.RWMutex
 	malicious map[string]bool
 	bogons    []*net.IPNet
+	// Dynamic threat scoring — IPs accumulate threat points from cross-module
+	// alerts and auto-promote to malicious when they exceed the threshold.
+	// This replaces the need for external threat intelligence feeds.
+	scores         map[string]*ipThreatScore
+	autoBlockThresh int
+}
+
+type ipThreatScore struct {
+	Points    int
+	Modules   map[string]int // which modules flagged this IP
+	FirstSeen time.Time
+	LastSeen  time.Time
+	Blocked   bool
 }
 
 func NewIPReputation() *IPReputation {
-	rep := &IPReputation{malicious: make(map[string]bool)}
+	rep := &IPReputation{
+		malicious:       make(map[string]bool),
+		scores:          make(map[string]*ipThreatScore),
+		autoBlockThresh: 50, // 50 points = auto-block
+	}
 	bogonCIDRs := []string{
 		"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24",
 		"198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24",
@@ -526,6 +573,76 @@ func (r *IPReputation) AddMalicious(ips ...string) {
 	defer r.mu.Unlock()
 	for _, ip := range ips {
 		r.malicious[ip] = true
+	}
+}
+
+// RecordThreat adds threat points for an IP based on alert severity and module.
+// When an IP accumulates enough points across modules, it's auto-blocked.
+// Severity scoring: CRITICAL=20, HIGH=10, MEDIUM=5, LOW=2, INFO=1
+func (r *IPReputation) RecordThreat(ip, module string, severity core.Severity) bool {
+	if ip == "" {
+		return false
+	}
+
+	points := 1
+	switch severity {
+	case core.SeverityCritical:
+		points = 20
+	case core.SeverityHigh:
+		points = 10
+	case core.SeverityMedium:
+		points = 5
+	case core.SeverityLow:
+		points = 2
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now()
+	score, exists := r.scores[ip]
+	if !exists {
+		score = &ipThreatScore{
+			Modules:   make(map[string]int),
+			FirstSeen: now,
+		}
+		r.scores[ip] = score
+	}
+
+	score.Points += points
+	score.Modules[module]++
+	score.LastSeen = now
+
+	// Auto-block if threshold exceeded and multiple modules flagged it
+	if !score.Blocked && score.Points >= r.autoBlockThresh && len(score.Modules) >= 2 {
+		score.Blocked = true
+		r.malicious[ip] = true
+		return true // newly blocked
+	}
+
+	return false
+}
+
+// GetThreatScore returns the current threat score for an IP.
+func (r *IPReputation) GetThreatScore(ip string) (int, int) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	score, exists := r.scores[ip]
+	if !exists {
+		return 0, 0
+	}
+	return score.Points, len(score.Modules)
+}
+
+// CleanupScores removes stale threat scores older than the given duration.
+func (r *IPReputation) CleanupScores(maxAge time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cutoff := time.Now().Add(-maxAge)
+	for ip, score := range r.scores {
+		if score.LastSeen.Before(cutoff) {
+			delete(r.scores, ip)
+		}
 	}
 }
 
