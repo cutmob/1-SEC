@@ -93,25 +93,25 @@ func TestEscalationManager_EscalatesOnTimeout(t *testing.T) {
 	em := NewEscalationManager(logger, cfg, pipeline)
 	defer em.Stop()
 
-	var escalationEvent *EscalationEvent
+	eventCh := make(chan *EscalationEvent, 1)
 	em.AddHandler(func(event *EscalationEvent, alert *Alert) {
-		escalationEvent = event
+		eventCh <- event
 	})
 
 	alert := makeAlertForEscalation(SeverityMedium)
 	pipeline.Process(alert)
 	em.Track(alert)
 
-	time.Sleep(500 * time.Millisecond)
-
-	if escalationEvent == nil {
-		t.Fatal("expected escalation event")
-	}
-	if escalationEvent.OldSeverity != "MEDIUM" {
-		t.Errorf("expected old severity MEDIUM, got %s", escalationEvent.OldSeverity)
-	}
-	if escalationEvent.NewSeverity != "HIGH" {
-		t.Errorf("expected new severity HIGH, got %s", escalationEvent.NewSeverity)
+	select {
+	case escalationEvent := <-eventCh:
+		if escalationEvent.OldSeverity != "MEDIUM" {
+			t.Errorf("expected old severity MEDIUM, got %s", escalationEvent.OldSeverity)
+		}
+		if escalationEvent.NewSeverity != "HIGH" {
+			t.Errorf("expected new severity HIGH, got %s", escalationEvent.NewSeverity)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for escalation event")
 	}
 }
 

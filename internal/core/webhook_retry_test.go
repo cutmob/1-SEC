@@ -146,9 +146,9 @@ func TestWebhookDispatcher_RetryDeadLetter(t *testing.T) {
 }
 
 func TestWebhookDispatcher_CustomHeaders(t *testing.T) {
-	var gotHeader string
+	headerCh := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHeader = r.Header.Get("X-Custom")
+		headerCh <- r.Header.Get("X-Custom")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -161,17 +161,23 @@ func TestWebhookDispatcher_CustomHeaders(t *testing.T) {
 	defer d.Stop()
 
 	d.Enqueue(server.URL, map[string]interface{}{}, map[string]string{"X-Custom": "test-value"})
-	time.Sleep(500 * time.Millisecond)
 
-	if gotHeader != "test-value" {
-		t.Errorf("expected custom header 'test-value', got %q", gotHeader)
+	select {
+	case gotHeader := <-headerCh:
+		if gotHeader != "test-value" {
+			t.Errorf("expected custom header 'test-value', got %q", gotHeader)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for webhook delivery")
 	}
 }
 
 func TestWebhookDispatcher_PayloadIntegrity(t *testing.T) {
-	var receivedPayload map[string]interface{}
+	payloadCh := make(chan map[string]interface{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&receivedPayload)
+		var p map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&p)
+		payloadCh <- p
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -188,9 +194,13 @@ func TestWebhookDispatcher_PayloadIntegrity(t *testing.T) {
 		"severity": "CRITICAL",
 	}
 	d.Enqueue(server.URL, payload, nil)
-	time.Sleep(500 * time.Millisecond)
 
-	if receivedPayload["alert_id"] != "test-123" {
-		t.Errorf("payload mismatch: %v", receivedPayload)
+	select {
+	case receivedPayload := <-payloadCh:
+		if receivedPayload["alert_id"] != "test-123" {
+			t.Errorf("payload mismatch: %v", receivedPayload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for webhook delivery")
 	}
 }

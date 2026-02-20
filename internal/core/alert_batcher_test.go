@@ -129,19 +129,22 @@ func TestAlertBatcher_SeverityTracking(t *testing.T) {
 	batcher := NewAlertBatcher(logger, cfg)
 	defer batcher.Stop()
 
-	var highestSev Severity
+	highestSevCh := make(chan Severity, 1)
 	batcher.AddHandler(func(batch *BatchedNotification) {
-		highestSev = batch.HighestSev
+		highestSevCh <- batch.HighestSev
 	})
 
 	batcher.Ingest(makeAlertForBatcher("test", "10.0.0.1", SeverityLow))
 	batcher.Ingest(makeAlertForBatcher("test", "10.0.0.1", SeverityCritical))
 	batcher.Ingest(makeAlertForBatcher("test", "10.0.0.1", SeverityMedium))
 
-	time.Sleep(500 * time.Millisecond)
-
-	if highestSev != SeverityCritical {
-		t.Errorf("expected highest severity CRITICAL, got %s", highestSev.String())
+	select {
+	case highestSev := <-highestSevCh:
+		if highestSev != SeverityCritical {
+			t.Errorf("expected highest severity CRITICAL, got %s", highestSev.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for batch flush")
 	}
 }
 
