@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/og-image.png" alt="1-SEC" width="100%">
+  <img src="https://1-sec.dev/og-image.png" alt="1-SEC" width="100%">
 
   <h1>🛡️ 1-SEC</h1>
   <p><strong>One binary. Total defense.</strong></p>
