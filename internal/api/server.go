@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/1sec-project/1sec/internal/core"
+	"github.com/1sec-project/1sec/internal/modules/network"
 	"github.com/rs/zerolog"
 )
 
@@ -40,6 +41,9 @@ func NewServer(engine *core.Engine) *Server {
 	mux.HandleFunc("/api/v1/config", s.handleConfig)
 	mux.HandleFunc("/api/v1/events", s.handleIngestEvent)
 	mux.HandleFunc("/api/v1/logs", s.handleLogs)
+	mux.HandleFunc("/api/v1/correlator", s.handleCorrelator)
+	mux.HandleFunc("/api/v1/threats", s.handleThreats)
+	mux.HandleFunc("/api/v1/rust", s.handleRustStatus)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/api/v1/shutdown", s.handleShutdown)
 
@@ -350,6 +354,87 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		"logs":  entries,
 		"total": len(entries),
 	})
+}
+
+func (s *Server) handleCorrelator(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.engine.Correlator == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status": "not_started",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.engine.Correlator.Status())
+}
+
+func (s *Server) handleThreats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Find the network_guardian module and get its IP reputation data
+	var threats []network.IPThreatInfo
+	for _, mod := range s.engine.Registry.All() {
+		if mod.Name() == "network_guardian" {
+			if g, ok := mod.(*network.Guardian); ok {
+				rep := g.GetIPReputation()
+				if rep != nil {
+					threats = rep.AllThreats()
+				}
+			}
+			break
+		}
+	}
+
+	if threats == nil {
+		threats = []network.IPThreatInfo{}
+	}
+
+	blocked := 0
+	for _, t := range threats {
+		if t.Blocked {
+			blocked++
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"threats":       threats,
+		"total":         len(threats),
+		"blocked_count": blocked,
+	})
+}
+
+func (s *Server) handleRustStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	status := map[string]interface{}{
+		"enabled": s.engine.Config.RustEngine.Enabled,
+	}
+
+	if !s.engine.Config.RustEngine.Enabled {
+		status["status"] = "disabled"
+	} else if s.engine.RustSidecar != nil && s.engine.RustSidecar.Running() {
+		status["status"] = "running"
+		status["binary"] = s.engine.Config.RustEngine.Binary
+		status["workers"] = s.engine.Config.RustEngine.Workers
+		status["buffer_size"] = s.engine.Config.RustEngine.BufferSize
+		status["aho_corasick"] = s.engine.Config.RustEngine.AhoCorasickPrefilter
+		status["capture_enabled"] = s.engine.Config.RustEngine.Capture.Enabled
+		if s.engine.Config.RustEngine.Capture.Enabled {
+			status["capture_interface"] = s.engine.Config.RustEngine.Capture.Interface
+		}
+	} else {
+		status["status"] = "stopped"
+	}
+
+	writeJSON(w, http.StatusOK, status)
 }
 
 // ---------------------------------------------------------------------------

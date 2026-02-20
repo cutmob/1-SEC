@@ -40,7 +40,7 @@ _1sec_completions() {
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    commands="up stop status alerts scan modules config check logs events export profile dashboard init docker completions version help"
+    commands="up stop status alerts scan modules config check logs events export profile dashboard init docker correlator threats rust completions version help"
 
     case "${prev}" in
         1sec)
@@ -61,6 +61,18 @@ _1sec_completions() {
             ;;
         docker)
             COMPREPLY=( $(compgen -W "up down logs status build pull" -- "${cur}") )
+            return 0
+            ;;
+        correlator)
+            COMPREPLY=( $(compgen -W "--format --json --profile --timeout" -- "${cur}") )
+            return 0
+            ;;
+        threats)
+            COMPREPLY=( $(compgen -W "--format --json --blocked --profile --timeout" -- "${cur}") )
+            return 0
+            ;;
+        rust)
+            COMPREPLY=( $(compgen -W "--format --json --profile --timeout" -- "${cur}") )
             return 0
             ;;
         completions)
@@ -135,6 +147,9 @@ _1sec() {
         'dashboard:Launch a live TUI dashboard'
         'init:Generate a starter configuration file'
         'docker:Manage the 1SEC Docker deployment'
+        'correlator:Inspect the threat correlator state'
+        'threats:Query dynamic IP threat scoring'
+        'rust:Check Rust sidecar engine status'
         'completions:Generate shell completion scripts'
         'version:Print version and build info'
         'help:Show help for a command'
@@ -169,6 +184,15 @@ _1sec() {
                     local -a docker_cmds
                     docker_cmds=('up:Start containers' 'down:Stop containers' 'logs:View logs' 'status:Container status' 'build:Build image' 'pull:Pull image')
                     _describe 'subcommand' docker_cmds
+                    ;;
+                correlator)
+                    _arguments '--format[Output format]:format:(table json)' '--json[JSON output]' '--profile[Named profile]:profile:' '--timeout[Request timeout]:timeout:'
+                    ;;
+                threats)
+                    _arguments '--format[Output format]:format:(table json csv)' '--json[JSON output]' '--blocked[Show only blocked IPs]' '--profile[Named profile]:profile:' '--timeout[Request timeout]:timeout:'
+                    ;;
+                rust)
+                    _arguments '--format[Output format]:format:(table json)' '--json[JSON output]' '--profile[Named profile]:profile:' '--timeout[Request timeout]:timeout:'
                     ;;
                 export)
                     _arguments '--type[Export type]:type:(alerts events)' '--format[Output format]:format:(json csv sarif)'
@@ -215,6 +239,9 @@ complete -c 1sec -n '__fish_use_subcommand' -a profile -d 'Manage profiles'
 complete -c 1sec -n '__fish_use_subcommand' -a dashboard -d 'Live TUI dashboard'
 complete -c 1sec -n '__fish_use_subcommand' -a init -d 'Generate config file'
 complete -c 1sec -n '__fish_use_subcommand' -a docker -d 'Docker deployment'
+complete -c 1sec -n '__fish_use_subcommand' -a correlator -d 'Inspect threat correlator'
+complete -c 1sec -n '__fish_use_subcommand' -a threats -d 'Query IP threat scoring'
+complete -c 1sec -n '__fish_use_subcommand' -a rust -d 'Rust sidecar status'
 complete -c 1sec -n '__fish_use_subcommand' -a completions -d 'Shell completions'
 complete -c 1sec -n '__fish_use_subcommand' -a version -d 'Print version'
 complete -c 1sec -n '__fish_use_subcommand' -a help -d 'Show help'
@@ -281,6 +308,9 @@ Register-ArgumentCompleter -Native -CommandName 1sec -ScriptBlock {
         'dashboard' = 'Live TUI dashboard'
         'init' = 'Generate config file'
         'docker' = 'Docker deployment'
+        'correlator' = 'Inspect threat correlator'
+        'threats' = 'Query IP threat scoring'
+        'rust' = 'Rust sidecar status'
         'completions' = 'Shell completions'
         'version' = 'Print version'
         'help' = 'Show help'
@@ -307,6 +337,21 @@ Register-ArgumentCompleter -Native -CommandName 1sec -ScriptBlock {
             }
             'docker' {
                 @('up', 'down', 'logs', 'status', 'build', 'pull') | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
+                    [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+                }
+            }
+            'correlator' {
+                @('--format', '--json', '--profile', '--timeout') | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
+                    [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+                }
+            }
+            'threats' {
+                @('--format', '--json', '--blocked', '--profile', '--timeout') | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
+                    [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+                }
+            }
+            'rust' {
+                @('--format', '--json', '--profile', '--timeout') | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
                     [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
                 }
             }

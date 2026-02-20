@@ -291,3 +291,70 @@ func (tc *ThreatCorrelator) cleanupLoop(ctx context.Context) {
 		}
 	}
 }
+
+// CorrelatorStatus represents the current state of the threat correlator for API exposure.
+type CorrelatorStatus struct {
+	ActiveSources int                    `json:"active_sources"`
+	WindowMinutes int                    `json:"window_minutes"`
+	ChainCount    int                    `json:"chain_count"`
+	Sources       []CorrelatorSourceInfo `json:"sources,omitempty"`
+	Chains        []CorrelatorChainInfo  `json:"chains"`
+}
+
+// CorrelatorSourceInfo represents a tracked source IP.
+type CorrelatorSourceInfo struct {
+	IP         string         `json:"ip"`
+	AlertCount int            `json:"alert_count"`
+	Modules    map[string]int `json:"modules"`
+	FirstSeen  time.Time      `json:"first_seen"`
+	LastSeen   time.Time      `json:"last_seen"`
+}
+
+// CorrelatorChainInfo represents an attack chain definition.
+type CorrelatorChainInfo struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Modules     []string `json:"modules"`
+	Severity    string   `json:"severity"`
+	MitreIDs    []string `json:"mitre_ids,omitempty"`
+}
+
+// Status returns the current correlator state.
+func (tc *ThreatCorrelator) Status() CorrelatorStatus {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	sources := make([]CorrelatorSourceInfo, 0, len(tc.sourceAlerts))
+	for ip, window := range tc.sourceAlerts {
+		modules := make(map[string]int)
+		for k, v := range window.modules {
+			modules[k] = v
+		}
+		sources = append(sources, CorrelatorSourceInfo{
+			IP:         ip,
+			AlertCount: len(window.alerts),
+			Modules:    modules,
+			FirstSeen:  window.firstSeen,
+			LastSeen:   window.lastSeen,
+		})
+	}
+
+	chains := make([]CorrelatorChainInfo, 0, len(tc.chains))
+	for _, c := range tc.chains {
+		chains = append(chains, CorrelatorChainInfo{
+			Name:        c.Name,
+			Description: c.Description,
+			Modules:     c.Modules,
+			Severity:    c.Severity.String(),
+			MitreIDs:    c.MitreIDs,
+		})
+	}
+
+	return CorrelatorStatus{
+		ActiveSources: len(tc.sourceAlerts),
+		WindowMinutes: int(tc.windowDuration.Minutes()),
+		ChainCount:    len(tc.chains),
+		Sources:       sources,
+		Chains:        chains,
+	}
+}

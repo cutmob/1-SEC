@@ -9,6 +9,8 @@ mod config;
 mod events;
 mod matcher;
 mod nats_bridge;
+mod normalize;
+mod analytics;
 #[cfg(feature = "pcap-capture")]
 mod packet;
 mod patterns;

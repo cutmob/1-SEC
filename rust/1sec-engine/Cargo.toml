@@ -50,6 +50,9 @@ uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 thiserror = "2"
 
+# Fast hashing for file integrity
+blake3 = "1"
+
 [features]
 default = ["pcap-capture"]
 pcap-capture = ["pcap"]

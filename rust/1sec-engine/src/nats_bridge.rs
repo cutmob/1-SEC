@@ -3,6 +3,7 @@
 
 use crate::events::SecurityEvent;
 use crate::matcher::PatternMatcher;
+use crate::normalize;
 use anyhow::{Context, Result};
 use async_nats::jetstream::{self, consumer::PullConsumer};
 use std::sync::Arc;
@@ -201,13 +202,52 @@ async fn process_message(
         return;
     }
 
+    // Dual-pass scan: raw fields first, then normalized fields.
+    // This mirrors the Go engine's AnalyzeInput dual-pass approach.
     let field_refs: Vec<(&str, &str)> = fields
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
 
-    // Run the pattern matcher
-    let result = matcher.scan(&event.id, &field_refs);
+    let mut result = matcher.scan(&event.id, &field_refs);
+
+    // Second pass: normalize all fields and scan again for evasion-encoded payloads
+    let normalized_fields: Vec<(String, String)> = fields
+        .iter()
+        .map(|(k, v)| {
+            let norm = normalize::normalize(v);
+            (format!("{}.normalized", k), norm)
+        })
+        .filter(|(_, v)| !v.is_empty())
+        .collect();
+
+    if !normalized_fields.is_empty() {
+        let norm_refs: Vec<(&str, &str)> = normalized_fields
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+
+        let norm_result = matcher.scan(&event.id, &norm_refs);
+
+        // Merge normalized matches (deduplicate by pattern name)
+        let existing: std::collections::HashSet<String> =
+            result.matches.iter().map(|m| m.pattern_name.clone()).collect();
+        for m in norm_result.matches {
+            if !existing.contains(&m.pattern_name) {
+                if m.severity > result.highest_severity {
+                    result.highest_severity = m.severity;
+                }
+                result.matches.push(m);
+            }
+        }
+
+        // Recalculate aggregate score
+        if !result.matches.is_empty() {
+            let sum: f64 = result.matches.iter().map(|m| m.severity.score()).sum();
+            let max_possible = result.matches.len() as f64;
+            result.aggregate_score = (sum / max_possible).min(1.0);
+        }
+    }
 
     // Only publish if we found matches
     if result.matches.is_empty() {

@@ -43,6 +43,11 @@ func (g *Guardian) Description() string {
 	return "DDoS mitigation, rate limiting, IP reputation, geo-fencing, DNS tunneling detection, C2 covert channel detection, lateral movement detection, and port scan detection"
 }
 
+// GetIPReputation returns the IP reputation tracker for external access (API).
+func (g *Guardian) GetIPReputation() *IPReputation {
+	return g.ipReputation
+}
+
 func (g *Guardian) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
 	g.ctx, g.cancel = context.WithCancel(ctx)
 	g.bus = bus
@@ -644,6 +649,38 @@ func (r *IPReputation) CleanupScores(maxAge time.Duration) {
 			delete(r.scores, ip)
 		}
 	}
+}
+
+// IPThreatInfo represents a tracked IP for API exposure.
+type IPThreatInfo struct {
+	IP        string         `json:"ip"`
+	Points    int            `json:"points"`
+	Modules   map[string]int `json:"modules"`
+	Blocked   bool           `json:"blocked"`
+	FirstSeen time.Time      `json:"first_seen"`
+	LastSeen  time.Time      `json:"last_seen"`
+}
+
+// AllThreats returns all tracked IP threat scores.
+func (r *IPReputation) AllThreats() []IPThreatInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := make([]IPThreatInfo, 0, len(r.scores))
+	for ip, score := range r.scores {
+		modules := make(map[string]int)
+		for k, v := range score.Modules {
+			modules[k] = v
+		}
+		result = append(result, IPThreatInfo{
+			IP:        ip,
+			Points:    score.Points,
+			Modules:   modules,
+			Blocked:   score.Blocked,
+			FirstSeen: score.FirstSeen,
+			LastSeen:  score.LastSeen,
+		})
+	}
+	return result
 }
 
 // ---------------------------------------------------------------------------

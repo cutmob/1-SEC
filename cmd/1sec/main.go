@@ -87,6 +87,12 @@ func main() {
 	case "version":
 		printVersion(os.Stdout)
 		os.Exit(0)
+	case "correlator":
+		cmdCorrelator(args)
+	case "threats":
+		cmdThreats(args)
+	case "rust":
+		cmdRust(args)
 	default:
 		fmt.Fprintf(os.Stderr, red("error: ")+"unknown command %q\n\n", subcmd)
 		if s := suggest(subcmd); s != "" {
