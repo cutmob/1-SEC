@@ -842,3 +842,41 @@ func TestDeviceInventory_CleanupLoop_Cancellation(t *testing.T) {
 		t.Error("CleanupLoop did not exit after context cancellation")
 	}
 }
+
+// ─── New Vendor Default Credential Tests ──────────────────────────────────────
+
+func TestCredentialScanner_DellDefaults(t *testing.T) {
+	cs := NewCredentialScanner()
+	result := cs.Check("root", "calvin", "server", "dell")
+	if result == "" {
+		t.Error("expected credential detection for Dell root/calvin")
+	}
+	result = cs.Check("recoverpoint", "boxmgmt", "appliance", "dell")
+	if result == "" {
+		t.Error("expected credential detection for Dell recoverpoint/boxmgmt (CVE-2026-22769)")
+	}
+}
+
+func TestCredentialScanner_HPEDefaults(t *testing.T) {
+	cs := NewCredentialScanner()
+	result := cs.Check("root", "hpinvent", "server", "hpe")
+	if result == "" {
+		t.Error("expected credential detection for HPE root/hpinvent")
+	}
+}
+
+func TestCredentialScanner_LenovoDefaults(t *testing.T) {
+	cs := NewCredentialScanner()
+	result := cs.Check("USERID", "PASSW0RD", "server", "lenovo")
+	if result == "" {
+		t.Error("expected credential detection for Lenovo USERID/PASSW0RD")
+	}
+}
+
+func TestCredentialScanner_SupermicroDefaults(t *testing.T) {
+	cs := NewCredentialScanner()
+	result := cs.Check("ADMIN", "ADMIN", "server", "supermicro")
+	if result == "" {
+		t.Error("expected credential detection for Supermicro ADMIN/ADMIN")
+	}
+}

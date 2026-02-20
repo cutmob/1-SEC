@@ -518,3 +518,207 @@ func TestShield_HandleEvent(t *testing.T) {
 		t.Error("expected alert for SQL injection in http_request")
 	}
 }
+
+// ─── Deserialization Pattern Tests ────────────────────────────────────────────
+
+func TestAnalyzeInput_Deser_JavaGadget(t *testing.T) {
+	s := startedShield(t)
+	cases := []string{
+		"ObjectInputStream.readObject()",
+		"org.apache.commons.collections.functors.InvokerTransformer",
+		"ysoserial payload CommonsCollections1",
+		"ChainedTransformer(new ConstantTransformer(Runtime.class))",
+	}
+	for _, input := range cases {
+		detections := s.AnalyzeInput(input, "body")
+		if !hasCategory(detections, "deser") {
+			t.Errorf("expected deser detection for %q", input)
+		}
+	}
+}
+
+func TestAnalyzeInput_Deser_DotNet(t *testing.T) {
+	s := startedShield(t)
+	cases := []string{
+		"BinaryFormatter.Deserialize(stream)",
+		"TypeNameHandling.All",
+		"new ObjectStateFormatter().Deserialize(data)",
+	}
+	for _, input := range cases {
+		detections := s.AnalyzeInput(input, "body")
+		if !hasCategory(detections, "deser") {
+			t.Errorf("expected deser detection for %q", input)
+		}
+	}
+}
+
+func TestAnalyzeInput_Deser_XMLEntity(t *testing.T) {
+	s := startedShield(t)
+	cases := []string{
+		`<!ENTITY xxe SYSTEM "file:///etc/passwd">`,
+		`<!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://evil.com">]>`,
+	}
+	for _, input := range cases {
+		detections := s.AnalyzeInput(input, "body")
+		if !hasCategory(detections, "deser") {
+			t.Errorf("expected deser detection for %q", input)
+		}
+	}
+}
+
+func TestAnalyzeInput_Deser_PHP(t *testing.T) {
+	s := startedShield(t)
+	detections := s.AnalyzeInput(`O:8:"Exploiter":1:{s:4:"cmd";s:6:"whoami";}`, "body")
+	if !hasCategory(detections, "deser") {
+		t.Error("expected deser detection for PHP serialized object")
+	}
+}
+
+func TestAnalyzeInput_Deser_PythonPickle(t *testing.T) {
+	s := startedShield(t)
+	cases := []string{
+		"pickle.loads(user_data)",
+		"yaml.unsafe_load(config)",
+		"__reduce__ exploit",
+	}
+	for _, input := range cases {
+		detections := s.AnalyzeInput(input, "body")
+		if !hasCategory(detections, "deser") {
+			t.Errorf("expected deser detection for %q", input)
+		}
+	}
+}
+
+// ─── Blind SQLi Pattern Tests ─────────────────────────────────────────────────
+
+func TestAnalyzeInput_SQLi_BlindBoolean(t *testing.T) {
+	s := startedShield(t)
+	cases := []string{
+		"1 AND 1=1",
+		"admin' AND '1'='1",
+		"id=1 AND substring(username,1,1)='a'",
+	}
+	for _, input := range cases {
+		detections := s.AnalyzeInput(input, "query")
+		if !hasCategory(detections, "sqli") {
+			t.Errorf("expected sqli detection for blind boolean: %q", input)
+		}
+	}
+}
+
+func TestAnalyzeInput_SQLi_BlindTime(t *testing.T) {
+	s := startedShield(t)
+	cases := []string{
+		"1; SELECT pg_sleep(5)",
+		"1 AND dbms_pipe.receive_message('a',5)=0",
+	}
+	for _, input := range cases {
+		detections := s.AnalyzeInput(input, "query")
+		if !hasCategory(detections, "sqli") {
+			t.Errorf("expected sqli detection for blind time: %q", input)
+		}
+	}
+}
+
+func TestAnalyzeInput_SQLi_BlindError(t *testing.T) {
+	s := startedShield(t)
+	detections := s.AnalyzeInput("convert(int, @@version)", "query")
+	if !hasCategory(detections, "sqli") {
+		t.Error("expected sqli detection for error-based blind SQLi")
+	}
+}
+
+// ─── Zip Slip Pattern Tests ───────────────────────────────────────────────────
+
+func TestAnalyzeInput_ZipSlip(t *testing.T) {
+	s := startedShield(t)
+	cases := []string{
+		"../../etc/cron.d/backdoor.sh",
+		"../../../webapps/ROOT/shell.jsp",
+		"..\\..\\wwwroot\\cmd.aspx",
+	}
+	for _, input := range cases {
+		detections := s.AnalyzeInput(input, "archive_entry")
+		if !hasCategory(detections, "path") {
+			t.Errorf("expected path detection for zip slip: %q", input)
+		}
+	}
+}
+
+// ─── Dual-Pass Scanning Test ──────────────────────────────────────────────────
+
+func TestAnalyzeInput_DualPass_OriginalAndNormalized(t *testing.T) {
+	s := startedShield(t)
+	// %00 is a null byte in URL encoding — the normalizer decodes and strips it,
+	// but the original input should still match the path_null_byte pattern
+	detections := s.AnalyzeInput("file.php%00.jpg", "filename")
+	if !hasCategory(detections, "path") {
+		t.Error("expected path detection for null byte in original input (dual-pass)")
+	}
+}
+
+func TestAnalyzeInput_NormalizationCatchesEncoded(t *testing.T) {
+	s := startedShield(t)
+	// HTML-encoded XSS — only detectable after normalization
+	detections := s.AnalyzeInput("&#60;script&#62;alert(1)&#60;/script&#62;", "body")
+	if !hasCategory(detections, "xss") {
+		t.Error("expected xss detection after HTML entity normalization")
+	}
+}
+
+func TestAnalyzeInput_SQLCommentEvasion(t *testing.T) {
+	s := startedShield(t)
+	// SQL comment splitting — UN/**/ION SEL/**/ECT should normalize to UNION SELECT
+	detections := s.AnalyzeInput("1 UN/**/ION SEL/**/ECT username FROM users", "query")
+	if !hasCategory(detections, "sqli") {
+		t.Error("expected sqli detection after SQL comment stripping")
+	}
+}
+
+// ─── FileSentinel Archive Traversal Test ──────────────────────────────────────
+
+func TestFileSentinel_CheckArchiveTraversal(t *testing.T) {
+	fs := &FileSentinel{}
+
+	// Build a minimal ZIP with a traversal entry name: ../../evil.jsp
+	// ZIP local file header: PK\x03\x04 + 26 bytes + filename
+	entryName := "../../evil.jsp"
+	header := make([]byte, 30+len(entryName))
+	// Signature
+	header[0], header[1], header[2], header[3] = 0x50, 0x4B, 0x03, 0x04
+	// Filename length at offset 26 (little-endian)
+	header[26] = byte(len(entryName))
+	header[27] = 0
+	copy(header[30:], entryName)
+
+	findings := fs.Analyze(header, ".zip", "application/zip")
+	found := false
+	for _, f := range findings {
+		if f.Type == "zip_slip_traversal" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected zip_slip_traversal finding for archive with ../../evil.jsp entry")
+	}
+}
+
+func TestFileSentinel_CleanArchive(t *testing.T) {
+	fs := &FileSentinel{}
+
+	// Build a minimal ZIP with a clean entry name
+	entryName := "images/photo.jpg"
+	header := make([]byte, 30+len(entryName))
+	header[0], header[1], header[2], header[3] = 0x50, 0x4B, 0x03, 0x04
+	header[26] = byte(len(entryName))
+	header[27] = 0
+	copy(header[30:], entryName)
+
+	findings := fs.Analyze(header, ".zip", "application/zip")
+	for _, f := range findings {
+		if f.Type == "zip_slip_traversal" {
+			t.Error("did not expect zip_slip_traversal for clean archive entry")
+		}
+	}
+}

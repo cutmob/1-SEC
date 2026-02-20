@@ -789,3 +789,164 @@ var _ core.Module = (*Watcher)(nil)
 
 // Suppress unused import
 var _ = time.Now
+
+// ─── Symlink / Link-Following Detection Tests ─────────────────────────────────
+
+func TestWatcher_HandleEvent_SymlinkSensitivePath(t *testing.T) {
+	cp := makeCapturingPipeline()
+	w := startedModuleWithPipeline(t, cp)
+	defer w.Stop()
+
+	ev := core.NewSecurityEvent("test", "process_start", core.SeverityInfo, "mklink")
+	ev.Details["process_name"] = "cmd.exe"
+	ev.Details["command_line"] = `mklink /D C:\Windows\System32\config\link C:\temp\payload`
+	ev.Details["parent_process"] = "explorer.exe"
+	ev.SourceIP = "10.0.0.1"
+
+	w.HandleEvent(ev)
+
+	titles := cp.alertTitles()
+	found := false
+	for _, title := range titles {
+		if title == "Symlink Attack on Sensitive Path Detected" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected symlink sensitive path alert, got: %v", titles)
+	}
+}
+
+func TestWatcher_HandleEvent_SymlinkNonSensitive(t *testing.T) {
+	cp := makeCapturingPipeline()
+	w := startedModuleWithPipeline(t, cp)
+	defer w.Stop()
+
+	ev := core.NewSecurityEvent("test", "process_start", core.SeverityInfo, "mklink")
+	ev.Details["process_name"] = "cmd.exe"
+	ev.Details["command_line"] = `mklink /D C:\Users\dev\mylink C:\projects\src`
+	ev.Details["parent_process"] = "explorer.exe"
+	ev.SourceIP = "10.0.0.1"
+
+	w.HandleEvent(ev)
+
+	titles := cp.alertTitles()
+	found := false
+	for _, title := range titles {
+		if title == "Symlink Creation Detected" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected symlink creation alert (non-sensitive), got: %v", titles)
+	}
+}
+
+// ─── ETW Bypass Detection Tests ───────────────────────────────────────────────
+
+func TestWatcher_HandleEvent_ETWBypass(t *testing.T) {
+	cp := makeCapturingPipeline()
+	w := startedModuleWithPipeline(t, cp)
+	defer w.Stop()
+
+	ev := core.NewSecurityEvent("test", "fileless_execution", core.SeverityInfo, "etw bypass")
+	ev.Details["process_name"] = "powershell.exe"
+	ev.Details["command_line"] = "[Ref].Assembly.GetType('System.Diagnostics.Eventing.EtwEventWrite')"
+	ev.Details["parent_process"] = "cmd.exe"
+	ev.Details["script_content"] = ""
+	ev.SourceIP = "10.0.0.1"
+
+	w.HandleEvent(ev)
+
+	titles := cp.alertTitles()
+	found := false
+	for _, title := range titles {
+		if title == "ETW/Logging Evasion Detected" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected ETW bypass alert, got: %v", titles)
+	}
+}
+
+func TestWatcher_HandleEvent_DefenderDisable(t *testing.T) {
+	cp := makeCapturingPipeline()
+	w := startedModuleWithPipeline(t, cp)
+	defer w.Stop()
+
+	ev := core.NewSecurityEvent("test", "fileless_execution", core.SeverityInfo, "defender disable")
+	ev.Details["process_name"] = "powershell.exe"
+	ev.Details["command_line"] = "Set-MpPreference -DisableIOAVProtection $true"
+	ev.Details["parent_process"] = "cmd.exe"
+	ev.Details["script_content"] = ""
+	ev.SourceIP = "10.0.0.1"
+
+	w.HandleEvent(ev)
+
+	titles := cp.alertTitles()
+	found := false
+	for _, title := range titles {
+		if title == "ETW/Logging Evasion Detected" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected ETW bypass alert for Defender disable, got: %v", titles)
+	}
+}
+
+// ─── Lua Shellcode Loader Detection Tests ─────────────────────────────────────
+
+func TestWatcher_HandleEvent_LuaShellcodeLoader(t *testing.T) {
+	cp := makeCapturingPipeline()
+	w := startedModuleWithPipeline(t, cp)
+	defer w.Stop()
+
+	ev := core.NewSecurityEvent("test", "fileless_execution", core.SeverityInfo, "lua loader")
+	ev.Details["process_name"] = "luajit.exe"
+	ev.Details["command_line"] = "luajit.exe payload.lua"
+	ev.Details["parent_process"] = "powershell.exe"
+	ev.Details["script_content"] = "local ffi = require('ffi'); ffi.cast('void(*)()', shellcode)()"
+	ev.SourceIP = "10.0.0.1"
+
+	w.HandleEvent(ev)
+
+	titles := cp.alertTitles()
+	found := false
+	for _, title := range titles {
+		if title == "Lua-Based Shellcode Loader Detected" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected Lua shellcode loader alert, got: %v", titles)
+	}
+}
+
+// ─── isSensitiveCmdTarget Tests ───────────────────────────────────────────────
+
+func TestIsSensitiveCmdTarget(t *testing.T) {
+	cases := []struct {
+		input string
+		want  bool
+	}{
+		{`mklink /d /etc/shadow c:\temp`, true},
+		{`ln -s /root/.ssh/id_rsa /tmp/key`, true},
+		{`mklink c:\windows\system32\config\sam c:\temp\sam`, true},
+		{`ln -s .git/config /tmp/gitcfg`, true},
+		{`mklink c:\users\dev\link c:\projects`, false},
+		{`ln -s /tmp/a /tmp/b`, false},
+	}
+	for _, tc := range cases {
+		got := isSensitiveCmdTarget(tc.input)
+		if got != tc.want {
+			t.Errorf("isSensitiveCmdTarget(%q) = %v, want %v", tc.input, got, tc.want)
+		}
+	}
+}
