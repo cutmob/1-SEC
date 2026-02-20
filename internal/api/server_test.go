@@ -453,15 +453,15 @@ func TestHandleLogs_GET(t *testing.T) {
 func TestCORSMiddleware_Wildcard(t *testing.T) {
 	handler := corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	}), nil) // nil = no origins configured = wildcard
+	}), nil) // nil = no origins configured = deny cross-origin (secure default)
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Origin", "http://example.com")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
-		t.Errorf("ACAO = %q, want *", w.Header().Get("Access-Control-Allow-Origin"))
+	if w.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Errorf("ACAO = %q, want empty (no CORS when no origins configured)", w.Header().Get("Access-Control-Allow-Origin"))
 	}
 }
 

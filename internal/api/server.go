@@ -44,6 +44,12 @@ func NewServer(engine *core.Engine) *Server {
 	mux.HandleFunc("/api/v1/correlator", s.handleCorrelator)
 	mux.HandleFunc("/api/v1/threats", s.handleThreats)
 	mux.HandleFunc("/api/v1/rust", s.handleRustStatus)
+	mux.HandleFunc("/api/v1/enforce/status", s.handleEnforceStatus)
+	mux.HandleFunc("/api/v1/enforce/policies", s.handleEnforcePolicies)
+	mux.HandleFunc("/api/v1/enforce/policies/", s.handleEnforcePolicyAction)
+	mux.HandleFunc("/api/v1/enforce/history", s.handleEnforceHistory)
+	mux.HandleFunc("/api/v1/enforce/dry-run/", s.handleEnforceDryRun)
+	mux.HandleFunc("/api/v1/enforce/test/", s.handleEnforceTest)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/api/v1/shutdown", s.handleShutdown)
 
@@ -76,7 +82,7 @@ func (s *Server) Start() error {
 	if s.engine.Config.AuthEnabled() {
 		s.logger.Info().Int("keys", len(s.engine.Config.Server.APIKeys)).Msg("API authentication enabled")
 	} else {
-		s.logger.Warn().Msg("API authentication disabled — set api_keys in config or ONESEC_API_KEY env var")
+		s.logger.Warn().Msg("⚠ API running in OPEN MODE — no authentication required. Set api_keys in config or ONESEC_API_KEY env var to secure the API")
 	}
 	go func() {
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -128,6 +134,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	enforcementStatus := "disabled"
+	if s.engine.Config.Enforcement != nil && s.engine.Config.Enforcement.Enabled {
+		if s.engine.Config.Enforcement.DryRun {
+			enforcementStatus = "dry_run"
+		} else {
+			enforcementStatus = "live"
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"version":       "1.0.0",
 		"status":        "running",
@@ -135,6 +150,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"modules_total": s.engine.Registry.Count(),
 		"alerts_total":  s.engine.Pipeline.Count(),
 		"rust_engine":   rustEngineStatus,
+		"enforcement":   enforcementStatus,
 		"modules":       modules,
 		"timestamp":     time.Now().UTC(),
 	})
@@ -290,7 +306,8 @@ func (s *Server) handleAlertByID(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Status string `json:"status"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		limited := io.LimitReader(r.Body, 1<<16) // 64KB limit for status updates
+		if err := json.NewDecoder(limited).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 			return
 		}
@@ -535,10 +552,13 @@ func rateLimitMiddleware(next http.Handler, requestsPerSecond int) http.Handler 
 		rate:    requestsPerSecond,
 	}
 
-	// Cleanup stale buckets every 5 minutes
+	// Cleanup stale buckets every 5 minutes.
+	// This goroutine lives for the lifetime of the server — acceptable since
+	// the server process owns the middleware and both share the same lifecycle.
 	go func() {
-		for {
-			time.Sleep(5 * time.Minute)
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
 			limiter.mu.Lock()
 			cutoff := time.Now().Add(-10 * time.Minute)
 			for ip, bucket := range limiter.buckets {
@@ -590,25 +610,32 @@ func rateLimitMiddleware(next http.Handler, requestsPerSecond int) http.Handler 
 func corsMiddleware(next http.Handler, allowedOrigins []string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		allowed := "*"
-		if len(allowedOrigins) > 0 {
-			allowed = ""
-			for _, o := range allowedOrigins {
-				if o == "*" || o == origin {
-					allowed = origin
-					break
+
+		// If no origins configured, deny cross-origin requests (secure default)
+		if len(allowedOrigins) == 0 {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		allowed := ""
+		for _, o := range allowedOrigins {
+			if o == "*" || o == origin {
+				allowed = origin
+				if o == "*" {
+					allowed = "*"
 				}
+				break
 			}
-			if allowed == "" {
-				// Origin not in allow list — skip CORS headers
-				next.ServeHTTP(w, r)
-				return
-			}
+		}
+		if allowed == "" {
+			// Origin not in allow list — skip CORS headers
+			next.ServeHTTP(w, r)
+			return
 		}
 		w.Header().Set("Access-Control-Allow-Origin", allowed)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
-		if len(allowedOrigins) > 0 && allowedOrigins[0] != "*" {
+		if allowedOrigins[0] != "*" {
 			w.Header().Set("Vary", "Origin")
 		}
 		if r.Method == http.MethodOptions {
