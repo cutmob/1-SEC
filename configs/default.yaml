@@ -13,11 +13,11 @@ server:
   #   - "your-secret-api-key-here"
   #
   # CORS — restrict allowed origins for the REST API.
-  # Defaults to ["*"] (all origins) for local development.
-  # For production, set to your dashboard domain(s):
-  # cors_origins:
-  #   - "https://1-sec.dev"
-  #   - "https://dashboard.1-sec.dev"
+  # In production these should match your dashboard domain(s).
+  cors_origins:
+    - "https://1-sec.netlify.app"
+    - "https://1-sec.dev"
+    - "https://www.1-sec.dev"
 
 bus:
   url: "nats://127.0.0.1:4222"

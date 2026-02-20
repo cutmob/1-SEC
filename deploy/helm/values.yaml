@@ -54,8 +54,11 @@ persistence:
   mountPath: /data/nats
 
 # ── Environment / Secrets ────────────────────────────────────────────────────
-# Set these via --set or a sealed-secrets / external-secrets provider.
-# Never commit real keys to values.yaml.
+# PRODUCTION: Use existingSecret (below) instead of inline env values.
+# Create the secret separately via Sealed Secrets, External Secrets Operator,
+# or: kubectl create secret generic 1sec-prod-secrets --from-literal=GEMINI_API_KEY=xxx ...
+#
+# These inline values are ONLY for quick local testing. Never commit real keys here.
 env:
   GEMINI_API_KEY: ""
   GEMINI_API_KEY_2: ""
@@ -65,9 +68,10 @@ env:
   ONESEC_RUST_ENGINE: "false"
   ONESEC_LOG_LEVEL: "info"
 
-# Reference an existing Secret instead of inline env vars (recommended for prod)
-existingSecret: ""
+# Reference an existing Secret instead of inline env vars (RECOMMENDED for production).
 # Secret must contain keys matching the env vars above.
+existingSecret: ""
+# Example: existingSecret: "1sec-prod-secrets"
 
 # ── 1SEC Config override ──────────────────────────────────────────────────────
 # Provide a full configs/default.yaml override as a multiline string.
@@ -76,6 +80,9 @@ config: ""
 # config: |
 #   server:
 #     port: 1780
+#     cors_origins:
+#       - "https://1-sec.netlify.app"
+#       - "https://1-sec.dev"
 #   modules:
 #     ai_analysis_engine:
 #       enabled: true
