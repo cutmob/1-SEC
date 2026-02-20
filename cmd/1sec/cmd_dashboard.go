@@ -227,6 +227,59 @@ func renderDashboard(base, apiKey string, timeout time.Duration) {
 		}
 	}
 
+	// Enforcement section
+	enforceBody, enforceErr := apiGet(base+"/api/v1/enforce/status", apiKey, timeout)
+	if enforceErr == nil {
+		var enforceResp map[string]interface{}
+		if json.Unmarshal(enforceBody, &enforceResp) == nil {
+			enabled, _ := enforceResp["enabled"].(bool)
+			dryRun, _ := enforceResp["dry_run"].(bool)
+
+			fmt.Println()
+			fmt.Printf("  %s\n", bold("ENFORCEMENT"))
+
+			if enabled {
+				if dryRun {
+					fmt.Printf("  %-20s %s\n", "Status:", yellow("DRY RUN"))
+				} else {
+					fmt.Printf("  %-20s %s\n", "Status:", green("LIVE"))
+				}
+			} else {
+				fmt.Printf("  %-20s %s\n", "Status:", dim("disabled"))
+			}
+
+			if stats, ok := enforceResp["stats"].(map[string]interface{}); ok {
+				if p, ok := stats["total_policies"].(float64); ok {
+					fmt.Printf("  %-20s %d\n", "Policies:", int(p))
+				}
+				if r, ok := stats["total_records"].(float64); ok && r > 0 {
+					fmt.Printf("  %-20s %d\n", "Actions:", int(r))
+				}
+				if byStatus, ok := stats["by_status"].(map[string]interface{}); ok && len(byStatus) > 0 {
+					parts := make([]string, 0)
+					for k, v := range byStatus {
+						count := int(v.(float64))
+						switch k {
+						case "SUCCESS":
+							parts = append(parts, green(fmt.Sprintf("OK:%d", count)))
+						case "FAILED":
+							parts = append(parts, red(fmt.Sprintf("FAIL:%d", count)))
+						case "DRY_RUN":
+							parts = append(parts, yellow(fmt.Sprintf("DRY:%d", count)))
+						case "COOLDOWN":
+							parts = append(parts, dim(fmt.Sprintf("CD:%d", count)))
+						case "SKIPPED":
+							parts = append(parts, dim(fmt.Sprintf("SKIP:%d", count)))
+						}
+					}
+					if len(parts) > 0 {
+						fmt.Printf("  %-20s %s\n", "Breakdown:", strings.Join(parts, "  "))
+					}
+				}
+			}
+		}
+	}
+
 	fmt.Printf("\n  %s\n", dim("─────────────────────────────────────────────"))
 	fmt.Printf("  %s %s  %s %s\n",
 		dim("API:"), base,

@@ -85,7 +85,7 @@ fn default_workers() -> usize {
     num_cpus()
 }
 fn default_min_score() -> f64 {
-    0.0
+    0.1
 }
 fn default_snaplen() -> i32 {
     65535

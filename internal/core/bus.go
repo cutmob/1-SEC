@@ -123,6 +123,23 @@ func NewEventBus(cfg *BusConfig, logger zerolog.Logger) (*EventBus, error) {
 		}
 	}
 
+	// Create or update the enforcement responses stream.
+	responsesStreamCfg := &nats.StreamConfig{
+		Name:      "SECURITY_RESPONSES",
+		Subjects:  []string{"sec.responses.>"},
+		Retention: nats.LimitsPolicy,
+		MaxAge:    24 * time.Hour * 30, // 30 days retention
+		MaxBytes:  256 * 1024 * 1024,   // 256MB max
+		Storage:   nats.FileStorage,
+		Discard:   nats.DiscardOld,
+	}
+	_, err = js.AddStream(responsesStreamCfg)
+	if err != nil {
+		if _, updateErr := js.UpdateStream(responsesStreamCfg); updateErr != nil {
+			return nil, fmt.Errorf("creating/updating responses stream: %w (original: %v)", updateErr, err)
+		}
+	}
+
 	bus.logger.Info().Str("url", url).Msg("connected to NATS JetStream")
 	return bus, nil
 }
@@ -220,3 +237,32 @@ func (b *EventBus) Close() error {
 func (b *EventBus) IsConnected() bool {
 	return b.nc != nil && b.nc.IsConnected()
 }
+
+// SubscribeToRustMatches subscribes to pattern match results published by the
+// Rust sidecar engine on sec.matches.>. Uses a durable consumer with explicit
+// ack for reliable delivery. The SECURITY_MATCH_RESULTS stream is created by
+// the Rust engine, but we ensure it exists here too in case Go starts first.
+func (b *EventBus) SubscribeToRustMatches(handler func(data []byte)) error {
+	// Ensure the match results stream exists (Rust also creates it, but Go may start first)
+	matchStreamCfg := &nats.StreamConfig{
+		Name:      "SECURITY_MATCH_RESULTS",
+		Subjects:  []string{"sec.matches.>"},
+		Retention: nats.LimitsPolicy,
+		MaxAge:    24 * time.Hour * 7, // 7 days
+		MaxBytes:  512 * 1024 * 1024,  // 512MB
+		Storage:   nats.FileStorage,
+		Discard:   nats.DiscardOld,
+	}
+	_, err := b.js.AddStream(matchStreamCfg)
+	if err != nil {
+		if _, updateErr := b.js.UpdateStream(matchStreamCfg); updateErr != nil {
+			b.logger.Warn().Err(updateErr).Msg("could not create/update match results stream — Rust engine may create it")
+		}
+	}
+
+	return b.Subscribe("sec.matches.>", func(msg *nats.Msg) {
+		handler(msg.Data)
+		_ = msg.Ack()
+	})
+}
+

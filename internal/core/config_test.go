@@ -36,9 +36,12 @@ func TestDefaultConfig_Values(t *testing.T) {
 	if cfg.Logging.Format != "console" {
 		t.Errorf("default Format = %q, want console", cfg.Logging.Format)
 	}
-	// Rust engine should be disabled by default
-	if cfg.RustEngine.Enabled {
-		t.Error("RustEngine should be disabled by default")
+	// Rust engine should be enabled by default
+	if !cfg.RustEngine.Enabled {
+		t.Error("RustEngine should be enabled by default")
+	}
+	if cfg.RustEngine.MinScore != 0.1 {
+		t.Errorf("RustEngine.MinScore = %v, want 0.1", cfg.RustEngine.MinScore)
 	}
 }
 

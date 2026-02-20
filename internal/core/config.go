@@ -11,13 +11,44 @@ import (
 
 // Config holds the entire 1SEC configuration.
 type Config struct {
-	Server     ServerConfig            `yaml:"server"`
-	Bus        BusConfig               `yaml:"bus"`
-	Alerts     AlertConfig             `yaml:"alerts"`
-	Syslog     SyslogConfig            `yaml:"syslog"`
-	Modules    map[string]ModuleConfig `yaml:"modules"`
-	Logging    LoggingConfig           `yaml:"logging"`
-	RustEngine RustEngineConfig        `yaml:"rust_engine"`
+	Server      ServerConfig            `yaml:"server"`
+	Bus         BusConfig               `yaml:"bus"`
+	Alerts      AlertConfig             `yaml:"alerts"`
+	Syslog      SyslogConfig            `yaml:"syslog"`
+	Modules     map[string]ModuleConfig `yaml:"modules"`
+	Logging     LoggingConfig           `yaml:"logging"`
+	RustEngine  RustEngineConfig        `yaml:"rust_engine"`
+	Enforcement *EnforcementConfig      `yaml:"enforcement,omitempty"`
+}
+
+// EnforcementConfig holds the automated response / enforcement layer settings.
+type EnforcementConfig struct {
+	Enabled         bool                          `yaml:"enabled"`
+	DryRun          bool                          `yaml:"dry_run"`
+	Preset          string                        `yaml:"preset,omitempty"` // "lax", "balanced", "strict"
+	GlobalAllowList []string                      `yaml:"global_allow_list,omitempty"`
+	Policies        map[string]ResponsePolicyYAML `yaml:"policies,omitempty"`
+}
+
+// ResponsePolicyYAML is the YAML-friendly representation of a response policy.
+type ResponsePolicyYAML struct {
+	Module           string             `yaml:"-"`
+	Enabled          bool               `yaml:"enabled"`
+	MinSeverity      string             `yaml:"min_severity"`
+	Actions          []ResponseRuleYAML `yaml:"actions"`
+	CooldownSeconds  int                `yaml:"cooldown_seconds"`
+	DryRun           bool               `yaml:"dry_run"`
+	AllowList        []string           `yaml:"allow_list,omitempty"`
+	MaxActionsPerMin int                `yaml:"max_actions_per_min"`
+}
+
+// ResponseRuleYAML is the YAML-friendly representation of a response rule.
+type ResponseRuleYAML struct {
+	Action      string            `yaml:"action"`
+	MinSeverity string            `yaml:"min_severity"`
+	Params      map[string]string `yaml:"params,omitempty"`
+	DryRun      bool              `yaml:"dry_run"`
+	Description string            `yaml:"description,omitempty"`
 }
 
 // ServerConfig holds API server settings.
@@ -130,11 +161,11 @@ func DefaultConfig() *Config {
 			Format: "console",
 		},
 		RustEngine: RustEngineConfig{
-			Enabled:              false,
+			Enabled:              true,
 			Binary:               "1sec-engine",
 			Workers:              0,
 			BufferSize:           10000,
-			MinScore:             0.0,
+			MinScore:             0.1,
 			AhoCorasickPrefilter: true,
 			Capture: RustCaptureConfig{
 				Enabled:     false,
@@ -170,6 +201,16 @@ func LoadConfig(path string) (*Config, error) {
 	if len(cfg.Server.APIKeys) == 0 {
 		if envKey := os.Getenv("ONESEC_API_KEY"); envKey != "" {
 			cfg.Server.APIKeys = []string{envKey}
+		}
+	}
+
+	// Load CORS origins from environment if set (comma-separated, appended to config values)
+	if envCORS := os.Getenv("ONESEC_CORS_ORIGINS"); envCORS != "" {
+		for _, origin := range strings.Split(envCORS, ",") {
+			origin = strings.TrimSpace(origin)
+			if origin != "" {
+				cfg.Server.CORSOrigins = append(cfg.Server.CORSOrigins, origin)
+			}
 		}
 	}
 
@@ -210,6 +251,22 @@ func (c *Config) GetModuleSetting(module, key string, defaultVal interface{}) in
 		return val
 	}
 	return defaultVal
+}
+
+// ParseSeverity converts a string to a Severity value.
+func ParseSeverity(s string) Severity {
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "LOW":
+		return SeverityLow
+	case "MEDIUM":
+		return SeverityMedium
+	case "HIGH":
+		return SeverityHigh
+	case "CRITICAL":
+		return SeverityCritical
+	default:
+		return SeverityInfo
+	}
 }
 
 // LogLevel returns the parsed log level string.

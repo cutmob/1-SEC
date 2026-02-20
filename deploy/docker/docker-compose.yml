@@ -56,8 +56,11 @@ services:
       # API authentication — set to secure the REST API
       ONESEC_API_KEY: "${ONESEC_API_KEY:-}"
 
-      # Rust engine — set to "true" to enable the high-performance sidecar
-      ONESEC_RUST_ENGINE: "${ONESEC_RUST_ENGINE:-false}"
+      # CORS — additional allowed origins (comma-separated, appended to config defaults)
+      ONESEC_CORS_ORIGINS: "${ONESEC_CORS_ORIGINS:-}"
+
+      # Rust engine — enabled by default for high-performance pattern matching
+      ONESEC_RUST_ENGINE: "${ONESEC_RUST_ENGINE:-true}"
 
       # Log level: debug | info | warn | error
       ONESEC_LOG_LEVEL: "${ONESEC_LOG_LEVEL:-info}"

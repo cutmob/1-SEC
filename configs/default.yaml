@@ -14,6 +14,7 @@ server:
   #
   # CORS — restrict allowed origins for the REST API.
   # In production these should match your dashboard domain(s).
+  # Can also be set via ONESEC_CORS_ORIGINS environment variable (comma-separated).
   cors_origins:
     - "https://1-sec.netlify.app"
     - "https://1-sec.dev"
@@ -135,14 +136,72 @@ modules:
 # ── Rust Engine (optional high-performance sidecar) ──────────────────────────
 
 rust_engine:
-  enabled: false
+  enabled: true
   binary: "1sec-engine"
   workers: 0               # 0 = auto-detect CPU cores
   buffer_size: 10000
-  min_score: 0.0
+  min_score: 0.1
   aho_corasick_prefilter: true
   capture:
     enabled: false
     interface: "eth0"
     bpf_filter: ""
     promiscuous: true
+
+# ── Enforcement / Automated Response ─────────────────────────────────────────
+# The enforcement layer subscribes to alerts and executes configurable response
+# actions. Start in dry_run mode to audit what would happen before going live.
+#
+# Action types:
+#   block_ip         — add IP to system firewall deny rules (auto-unblock after duration)
+#   kill_process     — terminate a malicious process by PID or name
+#   quarantine_file  — move suspicious file to quarantine directory
+#   drop_connection  — reset/drop active network connections from source
+#   disable_user     — disable a user account (OS-level or custom command)
+#   webhook          — POST alert + action context to a URL (SIEM, Slack, PagerDuty)
+#   command          — run an arbitrary shell command with alert template variables
+#   log_only         — record the alert without taking enforcement action
+#
+# Template variables for 'command' action:
+#   {{alert_id}}, {{module}}, {{severity}}, {{source_ip}}, {{title}}
+
+enforcement:
+  enabled: true
+  dry_run: true             # IMPORTANT: start in dry-run to audit before going live
+  preset: "balanced"        # "lax", "balanced", or "strict" — sets defaults for all 16 modules
+                            # lax:      log + webhook only, never blocks/kills
+                            # balanced: blocks IPs on HIGH, kills on CRITICAL (recommended)
+                            # strict:   aggressive enforcement on MEDIUM+, short cooldowns
+  global_allow_list: []     # IPs that are never blocked (e.g., monitoring, VPN, load balancers)
+  # To switch presets via CLI:  1sec enforce preset strict --dry-run
+  # To see what a preset does:  1sec enforce preset balanced --show
+
+  # Override individual module policies below. These merge on top of the preset.
+  # Any module not listed here uses the preset defaults.
+  # Uncomment and customize as needed:
+  #
+  # policies:
+  #   network_guardian:
+  #     enabled: true
+  #     min_severity: "HIGH"
+  #     cooldown_seconds: 300
+  #     max_actions_per_min: 20
+  #     allow_list: ["10.0.0.1"]    # per-module allow list
+  #     actions:
+  #       - action: block_ip
+  #         min_severity: "HIGH"
+  #         description: "Block source IP via system firewall"
+  #         params:
+  #           duration: "1h"
+  #       - action: webhook
+  #         min_severity: "CRITICAL"
+  #         description: "Notify SOC team"
+  #         params:
+  #           url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+  #           auth_token: ""
+  #       - action: command
+  #         min_severity: "CRITICAL"
+  #         description: "Run custom remediation script"
+  #         params:
+  #           command: "/opt/1sec/scripts/block-ip.sh {{source_ip}}"
+  #           timeout: "30s"

@@ -82,7 +82,7 @@ impl IPScorer {
 
     /// Record a threat event for an IP. Returns true if the IP is now blocked.
     pub fn record(&self, ip: &str, module: &str, severity_points: i32) -> bool {
-        let mut scores = self.scores.write().unwrap();
+        let mut scores = self.scores.write().unwrap_or_else(|e| e.into_inner());
         let entry = scores.entry(ip.to_string()).or_insert_with(|| IPScore {
             score: 0,
             modules: HashMap::new(),
@@ -108,7 +108,7 @@ impl IPScorer {
     pub fn is_blocked(&self, ip: &str) -> bool {
         self.scores
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(ip)
             .map_or(false, |e| e.blocked)
     }
@@ -117,7 +117,7 @@ impl IPScorer {
     pub fn get_score(&self, ip: &str) -> (i32, usize) {
         self.scores
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(ip)
             .map_or((0, 0), |e| (e.score, e.modules.len()))
     }
@@ -126,7 +126,7 @@ impl IPScorer {
     pub fn snapshot(&self) -> Vec<(String, i32, usize, bool)> {
         self.scores
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .map(|(ip, e)| (ip.clone(), e.score, e.modules.len(), e.blocked))
             .collect()
@@ -134,7 +134,7 @@ impl IPScorer {
 
     /// Remove entries older than max_age.
     pub fn cleanup(&self, max_age: Duration) {
-        let mut scores = self.scores.write().unwrap();
+        let mut scores = self.scores.write().unwrap_or_else(|e| e.into_inner());
         scores.retain(|_, e| e.last_seen.elapsed() < max_age);
     }
 }
@@ -168,7 +168,7 @@ impl RateLimiter {
 
     /// Check if a request from this IP should be allowed.
     pub fn allow(&self, ip: &str) -> bool {
-        let mut buckets = self.buckets.write().unwrap();
+        let mut buckets = self.buckets.write().unwrap_or_else(|e| e.into_inner());
         let bucket = buckets.entry(ip.to_string()).or_insert_with(|| TokenBucket {
             tokens: self.burst as f64,
             last_refill: Instant::now(),
@@ -193,14 +193,14 @@ impl RateLimiter {
     pub fn request_count(&self, ip: &str) -> u64 {
         self.buckets
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(ip)
             .map_or(0, |b| b.request_count)
     }
 
     /// Cleanup stale buckets.
     pub fn cleanup(&self, max_age: Duration) {
-        let mut buckets = self.buckets.write().unwrap();
+        let mut buckets = self.buckets.write().unwrap_or_else(|e| e.into_inner());
         buckets.retain(|_, b| b.last_refill.elapsed() < max_age);
     }
 }

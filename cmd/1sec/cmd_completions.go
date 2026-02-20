@@ -91,6 +91,22 @@ _1sec_completions() {
             COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
             return 0
             ;;
+        enforce)
+            COMPREPLY=( $(compgen -W "status policies history enable disable dry-run test preset webhooks approvals batching escalations chains --format" -- "${cur}") )
+            return 0
+            ;;
+        webhooks)
+            COMPREPLY=( $(compgen -W "stats dead-letters retry" -- "${cur}") )
+            return 0
+            ;;
+        approvals)
+            COMPREPLY=( $(compgen -W "pending approve reject history" -- "${cur}") )
+            return 0
+            ;;
+        chains)
+            COMPREPLY=( $(compgen -W "list records" -- "${cur}") )
+            return 0
+            ;;
         --severity)
             COMPREPLY=( $(compgen -W "INFO LOW MEDIUM HIGH CRITICAL" -- "${cur}") )
             return 0
@@ -202,6 +218,11 @@ _1sec() {
                     prof_cmds=('list:List profiles' 'create:Create a profile' 'show:Show profile details' 'delete:Delete a profile' 'use:Set default profile')
                     _describe 'subcommand' prof_cmds
                     ;;
+                enforce)
+                    local -a enforce_cmds
+                    enforce_cmds=('status:Engine status' 'policies:List policies' 'history:Action history' 'enable:Enable module' 'disable:Disable module' 'dry-run:Toggle dry-run' 'test:Simulate alert' 'preset:Apply preset' 'webhooks:Webhook dispatcher' 'approvals:Approval gates' 'batching:Alert batcher' 'escalations:Escalation timers' 'chains:Action chains')
+                    _describe 'subcommand' enforce_cmds
+                    ;;
                 completions)
                     _values 'shell' bash zsh fish powershell
                     ;;
@@ -271,6 +292,21 @@ complete -c 1sec -n '__fish_seen_subcommand_from profile' -a 'list create show d
 
 # completions subcommands
 complete -c 1sec -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish powershell'
+
+# enforce subcommands
+complete -c 1sec -n '__fish_seen_subcommand_from enforce' -a status -d 'Engine status'
+complete -c 1sec -n '__fish_seen_subcommand_from enforce' -a policies -d 'List policies'
+complete -c 1sec -n '__fish_seen_subcommand_from enforce' -a history -d 'Action history'
+complete -c 1sec -n '__fish_seen_subcommand_from enforce' -a enable -d 'Enable module'
+complete -c 1sec -n '__fish_seen_subcommand_from enforce' -a disable -d 'Disable module'
+complete -c 1sec -n '__fish_seen_subcommand_from enforce' -a 'dry-run' -d 'Toggle dry-run'
+complete -c 1sec -n '__fish_seen_subcommand_from enforce' -a test -d 'Simulate alert'
+complete -c 1sec -n '__fish_seen_subcommand_from enforce' -a preset -d 'Apply preset'
+complete -c 1sec -n '__fish_seen_subcommand_from enforce' -a webhooks -d 'Webhook dispatcher'
+complete -c 1sec -n '__fish_seen_subcommand_from enforce' -a approvals -d 'Approval gates'
+complete -c 1sec -n '__fish_seen_subcommand_from enforce' -a batching -d 'Alert batcher'
+complete -c 1sec -n '__fish_seen_subcommand_from enforce' -a escalations -d 'Escalation timers'
+complete -c 1sec -n '__fish_seen_subcommand_from enforce' -a chains -d 'Action chains'
 
 # Global flags
 complete -c 1sec -l config -d 'Config file path' -r -F
@@ -362,6 +398,11 @@ Register-ArgumentCompleter -Native -CommandName 1sec -ScriptBlock {
             }
             'profile' {
                 @('list', 'create', 'show', 'delete', 'use') | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
+                    [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+                }
+            }
+            'enforce' {
+                @('status', 'policies', 'history', 'enable', 'disable', 'dry-run', 'test', 'preset', 'webhooks', 'approvals', 'batching', 'escalations', 'chains') | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
                     [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
                 }
             }

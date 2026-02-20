@@ -85,6 +85,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "  %-14s  %s\n", bold("correlator"), "Inspect the threat correlator state")
 	fmt.Fprintf(w, "  %-14s  %s\n", bold("threats"), "Query dynamic IP threat scoring")
 	fmt.Fprintf(w, "  %-14s  %s\n", bold("rust"), "Check Rust sidecar engine status")
+	fmt.Fprintf(w, "  %-14s  %s\n", bold("enforce"), "Manage automated threat response / enforcement")
 	fmt.Fprintf(w, "  %-14s  %s\n", bold("completions"), "Generate shell completion scripts")
 	fmt.Fprintf(w, "  %-14s  %s\n", bold("version"), "Print version and build info")
 	fmt.Fprintf(w, "  %-14s  %s\n", bold("help"), "Show help for a command")
@@ -117,5 +118,9 @@ func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "  1sec status --profile prod\n\n")
 	fmt.Fprintf(w, "  %s\n", dim("# Launch live dashboard"))
 	fmt.Fprintf(w, "  1sec dashboard\n\n")
+	fmt.Fprintf(w, "  %s\n", dim("# Check enforcement status"))
+	fmt.Fprintf(w, "  1sec enforce status\n\n")
+	fmt.Fprintf(w, "  %s\n", dim("# Test what enforcement would do for a module"))
+	fmt.Fprintf(w, "  1sec enforce test ransomware --severity CRITICAL\n\n")
 	fmt.Fprintf(w, "Run %s for detailed help on any command.\n\n", bold("1sec help <command>"))
 }

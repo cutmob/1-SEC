@@ -146,3 +146,42 @@ func isConnectionError(err error) bool {
 		strings.Contains(s, "EOF") ||
 		strings.Contains(s, "connection refused")
 }
+
+// doGet performs a GET request and returns the raw http.Response for streaming JSON decoding.
+func doGet(url, apiKey string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to 1SEC API at %s: %w", url, err)
+	}
+	return resp, nil
+}
+
+// doPost performs a POST request and returns the raw http.Response.
+func doPost(url, apiKey string, payload []byte) (*http.Response, error) {
+	var body io.Reader
+	if payload != nil {
+		body = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequest(http.MethodPost, url, body)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to 1SEC API at %s: %w", url, err)
+	}
+	return resp, nil
+}

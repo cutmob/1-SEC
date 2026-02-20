@@ -14,7 +14,7 @@ import (
 )
 
 var (
-	version   = "1.0.0"
+	version   = "1.2.0"
 	commit    = "dev"
 	buildDate = "unknown"
 )
@@ -93,6 +93,8 @@ func main() {
 		cmdThreats(args)
 	case "rust":
 		cmdRust(args)
+	case "enforce":
+		cmdEnforce(args)
 	default:
 		fmt.Fprintf(os.Stderr, red("error: ")+"unknown command %q\n\n", subcmd)
 		if s := suggest(subcmd); s != "" {

@@ -88,7 +88,7 @@ impl PatternMatcher {
         let ac = AhoCorasick::builder()
             .ascii_case_insensitive(true)
             .build(&ac_literals)
-            .expect("failed to build Aho-Corasick automaton");
+            .expect("failed to build Aho-Corasick automaton from pattern literals — this is a bug in patterns.rs");
 
         // Log pattern compilation diagnostics using ac_indices
         let ac_backed: usize = patterns.iter().filter(|p| !p.ac_indices.is_empty()).count();

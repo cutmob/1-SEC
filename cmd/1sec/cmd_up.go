@@ -154,8 +154,16 @@ func cmdUp(args []string) {
 		if cfg.RustEngine.Enabled && engine.RustSidecar != nil && engine.RustSidecar.Running() {
 			rustStatus = fmt.Sprintf(", rust engine %s", green("active"))
 		}
-		fmt.Fprintf(os.Stderr, "%s 1SEC running — %d modules active, API on :%d%s\n",
-			green("✓"), engine.Registry.Count(), cfg.Server.Port, rustStatus)
+		enforceStatus := ""
+		if cfg.Enforcement != nil && cfg.Enforcement.Enabled {
+			if cfg.Enforcement.DryRun {
+				enforceStatus = fmt.Sprintf(", enforcement %s", yellow("dry-run"))
+			} else {
+				enforceStatus = fmt.Sprintf(", enforcement %s", green("live"))
+			}
+		}
+		fmt.Fprintf(os.Stderr, "%s 1SEC running — %d modules active, API on :%d%s%s\n",
+			green("✓"), engine.Registry.Count(), cfg.Server.Port, rustStatus, enforceStatus)
 		fmt.Fprintf(os.Stderr, "%s Press Ctrl+C to stop\n", dim("▸"))
 	}
 

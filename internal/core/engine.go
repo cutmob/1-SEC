@@ -13,17 +13,19 @@ import (
 
 // Engine is the main 1SEC engine that orchestrates all components.
 type Engine struct {
-	Config      *Config
-	Bus         *EventBus
-	Registry    *ModuleRegistry
-	Pipeline    *AlertPipeline
-	RustSidecar *RustSidecar
-	Correlator  *ThreatCorrelator
-	Logger      zerolog.Logger
-	ctx         context.Context
-	cancel      context.CancelFunc
-	configPath  string
-	logBuffer   *LogRingBuffer
+	Config           *Config
+	Bus              *EventBus
+	Registry         *ModuleRegistry
+	Pipeline         *AlertPipeline
+	RustSidecar      *RustSidecar
+	Correlator       *ThreatCorrelator
+	ResponseEngine   *ResponseEngine
+	RustMatchBridge  *RustMatchBridge
+	Logger           zerolog.Logger
+	ctx            context.Context
+	cancel         context.CancelFunc
+	configPath     string
+	logBuffer      *LogRingBuffer
 }
 
 // NewEngine creates a new 1SEC engine.
@@ -116,6 +118,23 @@ func (e *Engine) Start() error {
 	})
 	e.Correlator.Start(e.ctx)
 
+	// Start response engine (enforcement layer) — subscribes to alerts and
+	// executes configured response actions (block IP, kill process, etc.)
+	if e.Config.Enforcement != nil && e.Config.Enforcement.Enabled {
+		e.ResponseEngine = NewResponseEngine(e.Logger, e.Bus, e.Pipeline, e.Config)
+		e.ResponseEngine.Start(e.ctx)
+	}
+
+	// Start Rust match bridge — subscribes to sec.matches.> from the Rust sidecar
+	// and converts pattern match results into alerts for the enforcement pipeline.
+	// This closes the gap where Rust detects threats but they never reach enforcement.
+	if e.Config.RustEngine.Enabled {
+		e.RustMatchBridge = NewRustMatchBridge(e.Logger, e.Pipeline, e.Bus)
+		if err := e.RustMatchBridge.Start(e.ctx); err != nil {
+			e.Logger.Warn().Err(err).Msg("failed to start rust match bridge — Rust detections won't reach enforcement")
+		}
+	}
+
 	// Start all enabled modules
 	if err := e.Registry.StartAll(e.ctx, e.Bus, e.Pipeline, e.Config); err != nil {
 		return fmt.Errorf("starting modules: %w", err)
@@ -179,6 +198,11 @@ func (e *Engine) Shutdown() error {
 	// Stop Rust sidecar first (it depends on the bus)
 	if e.RustSidecar != nil {
 		e.RustSidecar.Stop()
+	}
+
+	// Stop response engine
+	if e.ResponseEngine != nil {
+		e.ResponseEngine.Stop()
 	}
 
 	e.Registry.StopAll()
