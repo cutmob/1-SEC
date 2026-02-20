@@ -28,6 +28,9 @@ func cmdAlerts(args []string) {
 		case "get":
 			cmdAlertsGet(args[1:])
 			return
+		case "delete":
+			cmdAlertsDelete(args[1:])
+			return
 		case "clear":
 			cmdAlertsClear(args[1:])
 			return
@@ -302,3 +305,43 @@ func cmdAlertsClear(args []string) {
 
 	fmt.Fprintf(os.Stdout, "%s Cleared %v alert(s).\n", green("✓"), resp["cleared"])
 }
+
+func cmdAlertsDelete(args []string) {
+	fs := flag.NewFlagSet("alerts-delete", flag.ExitOnError)
+	configPath := fs.String("config", "configs/default.yaml", "Config file path")
+	host := fs.String("host", "", "API host override")
+	port := fs.Int("port", 0, "API port override")
+	apiKeyFlag := fs.String("api-key", "", "API key for authentication")
+	jsonOut := fs.Bool("json", false, "Output raw JSON")
+	timeoutStr := fs.String("timeout", "5s", "Request timeout")
+	profileFlag := fs.String("profile", "", "Named profile to use")
+	fs.Parse(args)
+
+	*configPath = resolveProfile(*profileFlag, envConfig(*configPath))
+
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		errorf("alert ID required — usage: 1sec alerts delete <alert-id>")
+	}
+	alertID := remaining[0]
+
+	timeout, err := time.ParseDuration(*timeoutStr)
+	if err != nil {
+		errorf("invalid timeout %q: %v", *timeoutStr, err)
+	}
+
+	base := apiBase(*configPath, envHost(*host), envPort(*port))
+	apiKey := resolveAPIKey(*apiKeyFlag, *configPath)
+	body, err := apiDelete(fmt.Sprintf("%s/api/v1/alerts/%s", base, alertID), apiKey, timeout)
+	if err != nil {
+		errorf("%v", err)
+	}
+
+	if *jsonOut {
+		fmt.Println(string(body))
+		return
+	}
+
+	fmt.Fprintf(os.Stdout, "%s Alert %s deleted.\n", green("✓"), alertID)
+}
+

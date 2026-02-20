@@ -48,7 +48,7 @@ _1sec_completions() {
             return 0
             ;;
         alerts)
-            COMPREPLY=( $(compgen -W "ack resolve false-positive get clear --severity --module --status --limit --format --output" -- "${cur}") )
+            COMPREPLY=( $(compgen -W "ack resolve false-positive get delete clear --severity --module --status --limit --format --output" -- "${cur}") )
             return 0
             ;;
         modules)
@@ -152,7 +152,7 @@ _1sec() {
             case "${words[1]}" in
                 alerts)
                     local -a alert_cmds
-                    alert_cmds=('ack:Acknowledge an alert' 'resolve:Resolve an alert' 'false-positive:Mark as false positive' 'get:Get alert by ID' 'clear:Clear all alerts')
+                    alert_cmds=('ack:Acknowledge an alert' 'resolve:Resolve an alert' 'false-positive:Mark as false positive' 'get:Get alert by ID' 'delete:Delete an alert' 'clear:Clear all alerts')
                     _describe 'subcommand' alert_cmds
                     ;;
                 modules)
@@ -224,6 +224,7 @@ complete -c 1sec -n '__fish_seen_subcommand_from alerts' -a ack -d 'Acknowledge 
 complete -c 1sec -n '__fish_seen_subcommand_from alerts' -a resolve -d 'Resolve alert'
 complete -c 1sec -n '__fish_seen_subcommand_from alerts' -a false-positive -d 'Mark false positive'
 complete -c 1sec -n '__fish_seen_subcommand_from alerts' -a get -d 'Get alert by ID'
+complete -c 1sec -n '__fish_seen_subcommand_from alerts' -a delete -d 'Delete alert by ID'
 complete -c 1sec -n '__fish_seen_subcommand_from alerts' -a clear -d 'Clear all alerts'
 
 # modules subcommands
@@ -295,7 +296,7 @@ Register-ArgumentCompleter -Native -CommandName 1sec -ScriptBlock {
     } else {
         switch ($command) {
             'alerts' {
-                @('ack', 'resolve', 'false-positive', 'get', 'clear') | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
+                @('ack', 'resolve', 'false-positive', 'get', 'delete', 'clear') | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
                     [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
                 }
             }

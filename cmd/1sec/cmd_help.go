@@ -48,6 +48,7 @@ func cmdHelp(subcmd string) {
 		fmt.Printf("  %-20s  %s\n", "resolve <id>", "Mark an alert as resolved")
 		fmt.Printf("  %-20s  %s\n", "false-positive <id>", "Mark an alert as false positive")
 		fmt.Printf("  %-20s  %s\n", "get <id>", "Get a specific alert by ID")
+		fmt.Printf("  %-20s  %s\n", "delete <id>", "Delete a specific alert by ID")
 		fmt.Printf("  %-20s  %s\n", "clear", "Remove all stored alerts")
 		fmt.Printf("\n%s\n\n", bold("FLAGS"))
 		fmt.Printf("  %-28s  %s\n", "--format <fmt>", "Output format: table, json, csv, sarif")
@@ -62,6 +63,7 @@ func cmdHelp(subcmd string) {
 		fmt.Printf("  1sec alerts --format csv --output alerts.csv\n")
 		fmt.Printf("  1sec alerts ack abc-123-def\n")
 		fmt.Printf("  1sec alerts resolve abc-123-def\n")
+		fmt.Printf("  1sec alerts delete abc-123-def\n")
 	case "scan":
 		fmt.Printf("%s\n\n", bold("1sec scan"))
 		fmt.Printf("Submit a payload for on-demand analysis by a running 1SEC instance.\n")
