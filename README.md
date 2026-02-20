@@ -131,6 +131,16 @@ helm install 1sec ./deploy/helm \
 1sec docker status               Show container status
 1sec docker build                Build image from source
 
+1sec correlator                  Inspect threat correlator state
+1sec correlator --json           JSON output with chain definitions
+
+1sec threats                     Query dynamic IP threat scoring
+1sec threats --blocked           Show only blocked IPs
+1sec threats --format csv        CSV output
+
+1sec rust                        Check Rust sidecar engine status
+1sec rust --json                 JSON output with config details
+
 1sec version                     Print version + build info
 1sec help <command>              Detailed help for any command
 ```
@@ -293,6 +303,9 @@ The engine exposes a REST API on port 1780:
 | GET | `/api/v1/modules` | All registered modules |
 | GET | `/api/v1/alerts` | Recent alerts (`?limit=N&min_severity=HIGH`) |
 | GET | `/api/v1/config` | Current resolved config |
+| GET | `/api/v1/correlator` | Threat correlator state, attack chains, active sources |
+| GET | `/api/v1/threats` | Dynamic IP threat scores, block status |
+| GET | `/api/v1/rust` | Rust sidecar engine status and config |
 | POST | `/api/v1/events` | Ingest an external SecurityEvent |
 | POST | `/api/v1/shutdown` | Graceful shutdown |
 
