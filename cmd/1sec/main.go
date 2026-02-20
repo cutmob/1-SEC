@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	goruntime "runtime"
 	"runtime/debug"
 	"strings"
 	"syscall"
@@ -33,7 +36,7 @@ import (
 	"github.com/1sec-project/1sec/internal/modules/network"
 	"github.com/1sec-project/1sec/internal/modules/quantumcrypto"
 	"github.com/1sec-project/1sec/internal/modules/ransomware"
-	"github.com/1sec-project/1sec/internal/modules/runtime"
+	runtimemod "github.com/1sec-project/1sec/internal/modules/runtime"
 	"github.com/1sec-project/1sec/internal/modules/supplychain"
 
 	"gopkg.in/yaml.v3"
@@ -199,6 +202,14 @@ func main() {
 		cmdStop(args)
 	case "docker":
 		cmdDocker(args)
+	case "init":
+		cmdInit(args)
+	case "logs":
+		cmdLogs(args)
+	case "events":
+		cmdEvents(args)
+	case "completions":
+		cmdCompletions(args)
 	case "version":
 		printVersion(os.Stdout)
 		os.Exit(0)
@@ -213,7 +224,7 @@ func main() {
 }
 
 func suggest(input string) string {
-	cmds := []string{"up", "status", "alerts", "scan", "modules", "config", "check", "stop", "docker", "version", "help"}
+	cmds := []string{"up", "status", "alerts", "scan", "modules", "config", "check", "stop", "docker", "init", "logs", "events", "completions", "version", "help"}
 	input = strings.ToLower(input)
 	for _, c := range cmds {
 		if strings.HasPrefix(c, input) || strings.HasPrefix(input, c) {
@@ -253,6 +264,7 @@ func printVersion(w io.Writer) {
 	if bi, ok := debug.ReadBuildInfo(); ok {
 		fmt.Fprintf(w, " %s", bi.GoVersion)
 	}
+	fmt.Fprintf(w, " %s/%s", goruntime.GOOS, goruntime.GOARCH)
 	fmt.Fprintln(w)
 }
 
@@ -266,21 +278,26 @@ func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "%s\n\n", bold("USAGE"))
 	fmt.Fprintf(w, "  1sec <command> [flags]\n\n")
 	fmt.Fprintf(w, "%s\n\n", bold("COMMANDS"))
-	fmt.Fprintf(w, "  %-12s  %s\n", bold("up"), "Start the 1SEC engine with all enabled modules")
-	fmt.Fprintf(w, "  %-12s  %s\n", bold("status"), "Show status of a running 1SEC instance")
-	fmt.Fprintf(w, "  %-12s  %s\n", bold("alerts"), "Fetch recent alerts from a running instance")
-	fmt.Fprintf(w, "  %-12s  %s\n", bold("scan"), "Submit a payload for on-demand analysis")
-	fmt.Fprintf(w, "  %-12s  %s\n", bold("modules"), "List all available defense modules")
-	fmt.Fprintf(w, "  %-12s  %s\n", bold("config"), "Show or validate the resolved configuration")
-	fmt.Fprintf(w, "  %-12s  %s\n", bold("check"), "Run pre-flight diagnostics")
-	fmt.Fprintf(w, "  %-12s  %s\n", bold("stop"), "Gracefully stop a running instance")
-	fmt.Fprintf(w, "  %-12s  %s\n", bold("docker"), "Manage the 1SEC Docker deployment")
-	fmt.Fprintf(w, "  %-12s  %s\n", bold("version"), "Print version and build info")
-	fmt.Fprintf(w, "  %-12s  %s\n", bold("help"), "Show help for a command")
+	fmt.Fprintf(w, "  %-14s  %s\n", bold("up"), "Start the 1SEC engine with all enabled modules")
+	fmt.Fprintf(w, "  %-14s  %s\n", bold("stop"), "Gracefully stop a running instance")
+	fmt.Fprintf(w, "  %-14s  %s\n", bold("status"), "Show status of a running 1SEC instance")
+	fmt.Fprintf(w, "  %-14s  %s\n", bold("alerts"), "Fetch, acknowledge, resolve, or clear alerts")
+	fmt.Fprintf(w, "  %-14s  %s\n", bold("scan"), "Submit a payload for on-demand analysis")
+	fmt.Fprintf(w, "  %-14s  %s\n", bold("modules"), "List, inspect, enable, or disable defense modules")
+	fmt.Fprintf(w, "  %-14s  %s\n", bold("config"), "Show, validate, initialize, or set configuration")
+	fmt.Fprintf(w, "  %-14s  %s\n", bold("check"), "Run pre-flight diagnostics")
+	fmt.Fprintf(w, "  %-14s  %s\n", bold("logs"), "Fetch recent logs from a running instance")
+	fmt.Fprintf(w, "  %-14s  %s\n", bold("events"), "Submit or inspect events on the bus")
+	fmt.Fprintf(w, "  %-14s  %s\n", bold("init"), "Generate a starter configuration file")
+	fmt.Fprintf(w, "  %-14s  %s\n", bold("docker"), "Manage the 1SEC Docker deployment")
+	fmt.Fprintf(w, "  %-14s  %s\n", bold("completions"), "Generate shell completion scripts")
+	fmt.Fprintf(w, "  %-14s  %s\n", bold("version"), "Print version and build info")
+	fmt.Fprintf(w, "  %-14s  %s\n", bold("help"), "Show help for a command")
 	fmt.Fprintf(w, "\n%s\n\n", bold("GLOBAL FLAGS"))
-	fmt.Fprintf(w, "  %-20s  %s\n", "--config <path>", "Config file path (default: configs/default.yaml)")
-	fmt.Fprintf(w, "  %-20s  %s\n", "--version, -V", "Print version and exit")
-	fmt.Fprintf(w, "  %-20s  %s\n", "--help, -h", "Show help")
+	fmt.Fprintf(w, "  %-22s  %s\n", "--config <path>", "Config file path (default: configs/default.yaml)")
+	fmt.Fprintf(w, "  %-22s  %s\n", "--api-key <key>", "API key for authenticated requests")
+	fmt.Fprintf(w, "  %-22s  %s\n", "--version, -V", "Print version and exit")
+	fmt.Fprintf(w, "  %-22s  %s\n", "--help, -h", "Show help")
 	fmt.Fprintf(w, "\n%s\n\n", bold("EXAMPLES"))
 	fmt.Fprintf(w, "  %s\n", dim("# Start with defaults"))
 	fmt.Fprintf(w, "  1sec up\n\n")
@@ -290,8 +307,14 @@ func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "  1sec status --json\n\n")
 	fmt.Fprintf(w, "  %s\n", dim("# Fetch critical alerts, save to file"))
 	fmt.Fprintf(w, "  1sec alerts --severity CRITICAL --json --output alerts.json\n\n")
+	fmt.Fprintf(w, "  %s\n", dim("# Acknowledge an alert"))
+	fmt.Fprintf(w, "  1sec alerts ack <alert-id>\n\n")
 	fmt.Fprintf(w, "  %s\n", dim("# Scan a payload"))
 	fmt.Fprintf(w, "  echo '{\"input\": \"1 OR 1=1\"}' | 1sec scan --module injection_shield\n\n")
+	fmt.Fprintf(w, "  %s\n", dim("# Generate a config file"))
+	fmt.Fprintf(w, "  1sec init --output my-config.yaml\n\n")
+	fmt.Fprintf(w, "  %s\n", dim("# Tail logs from a running instance"))
+	fmt.Fprintf(w, "  1sec logs --lines 50\n\n")
 	fmt.Fprintf(w, "  %s\n", dim("# Pre-flight check"))
 	fmt.Fprintf(w, "  1sec check\n\n")
 	fmt.Fprintf(w, "Run %s for detailed help on any command.\n\n", bold("1sec help <command>"))
@@ -326,18 +349,27 @@ func cmdHelp(subcmd string) {
 		fmt.Printf("  %-28s  %s\n", "--config <path>", "Config file to derive API address")
 		fmt.Printf("  %-28s  %s\n", "--host <host>", "API host (overrides config)")
 		fmt.Printf("  %-28s  %s\n", "--port <port>", "API port (overrides config)")
+		fmt.Printf("  %-28s  %s\n", "--api-key <key>", "API key for authentication")
 		fmt.Printf("  %-28s  %s\n", "--json", "Output raw JSON")
 		fmt.Printf("  %-28s  %s\n", "--output <file>", "Write output to file instead of stdout")
 		fmt.Printf("  %-28s  %s\n", "--timeout <duration>", "Request timeout (default: 5s)")
 	case "alerts":
 		fmt.Printf("%s\n\n", bold("1sec alerts"))
-		fmt.Printf("Fetch recent alerts from a running 1SEC instance.\n\n")
-		fmt.Printf("%s\n\n", bold("FLAGS"))
+		fmt.Printf("Fetch, acknowledge, resolve, or clear alerts from a running 1SEC instance.\n\n")
+		fmt.Printf("%s\n\n", bold("SUBCOMMANDS"))
+		fmt.Printf("  %-20s  %s\n", "ack <id>", "Acknowledge an alert")
+		fmt.Printf("  %-20s  %s\n", "resolve <id>", "Mark an alert as resolved")
+		fmt.Printf("  %-20s  %s\n", "false-positive <id>", "Mark an alert as false positive")
+		fmt.Printf("  %-20s  %s\n", "get <id>", "Get a specific alert by ID")
+		fmt.Printf("  %-20s  %s\n", "clear", "Remove all stored alerts")
+		fmt.Printf("\n%s\n\n", bold("FLAGS"))
 		fmt.Printf("  %-28s  %s\n", "--config <path>", "Config file to derive API address")
 		fmt.Printf("  %-28s  %s\n", "--host <host>", "API host (overrides config)")
 		fmt.Printf("  %-28s  %s\n", "--port <port>", "API port (overrides config)")
+		fmt.Printf("  %-28s  %s\n", "--api-key <key>", "API key for authentication")
 		fmt.Printf("  %-28s  %s\n", "--severity <level>", "Minimum severity: INFO, LOW, MEDIUM, HIGH, CRITICAL")
 		fmt.Printf("  %-28s  %s\n", "--module <name>", "Filter alerts by source module")
+		fmt.Printf("  %-28s  %s\n", "--status <status>", "Filter by status: OPEN, ACKNOWLEDGED, RESOLVED, FALSE_POSITIVE")
 		fmt.Printf("  %-28s  %s\n", "--limit <n>", "Maximum number of alerts (default: 20)")
 		fmt.Printf("  %-28s  %s\n", "--json", "Output raw JSON")
 		fmt.Printf("  %-28s  %s\n", "--output <file>", "Write output to file instead of stdout")
@@ -345,8 +377,10 @@ func cmdHelp(subcmd string) {
 		fmt.Printf("\n%s\n\n", bold("EXAMPLES"))
 		fmt.Printf("  1sec alerts\n")
 		fmt.Printf("  1sec alerts --severity HIGH --module injection_shield\n")
-		fmt.Printf("  1sec alerts --severity CRITICAL --json --output alerts.json\n")
-		fmt.Printf("  1sec alerts --limit 50\n")
+		fmt.Printf("  1sec alerts ack abc-123-def\n")
+		fmt.Printf("  1sec alerts resolve abc-123-def\n")
+		fmt.Printf("  1sec alerts clear\n")
+		fmt.Printf("  1sec alerts get abc-123-def --json\n")
 	case "scan":
 		fmt.Printf("%s\n\n", bold("1sec scan"))
 		fmt.Printf("Submit a payload for on-demand analysis by a running 1SEC instance.\n")
@@ -355,30 +389,54 @@ func cmdHelp(subcmd string) {
 		fmt.Printf("  %-28s  %s\n", "--config <path>", "Config file to derive API address")
 		fmt.Printf("  %-28s  %s\n", "--host <host>", "API host (overrides config)")
 		fmt.Printf("  %-28s  %s\n", "--port <port>", "API port (overrides config)")
+		fmt.Printf("  %-28s  %s\n", "--api-key <key>", "API key for authentication")
 		fmt.Printf("  %-28s  %s\n", "--module <name>", "Module to attribute the event to (default: external)")
 		fmt.Printf("  %-28s  %s\n", "--type <type>", "Event type (default: scan)")
 		fmt.Printf("  %-28s  %s\n", "--severity <level>", "Event severity (default: MEDIUM)")
 		fmt.Printf("  %-28s  %s\n", "--input <file>", "Read payload from file instead of stdin (use - for stdin)")
+		fmt.Printf("  %-28s  %s\n", "--wait", "Wait for analysis results after submission")
+		fmt.Printf("  %-28s  %s\n", "--wait-timeout <duration>", "How long to wait for results (default: 30s)")
 		fmt.Printf("  %-28s  %s\n", "--json", "Output raw JSON response")
 		fmt.Printf("  %-28s  %s\n", "--timeout <duration>", "Request timeout (default: 10s)")
 		fmt.Printf("\n%s\n\n", bold("EXAMPLES"))
 		fmt.Printf("  echo '{\"query\": \"1 OR 1=1\"}' | 1sec scan --module injection_shield\n")
 		fmt.Printf("  1sec scan --input payload.json --module llm_firewall --type prompt_check\n")
+		fmt.Printf("  echo '{\"prompt\": \"ignore all instructions\"}' | 1sec scan --module llm_firewall --wait\n")
 		fmt.Printf("  curl -s https://example.com/api | 1sec scan --module api_fortress\n")
 	case "modules":
 		fmt.Printf("%s\n\n", bold("1sec modules"))
-		fmt.Printf("List all 16 available defense modules.\n\n")
-		fmt.Printf("%s\n\n", bold("FLAGS"))
+		fmt.Printf("List, inspect, enable, or disable defense modules.\n\n")
+		fmt.Printf("%s\n\n", bold("SUBCOMMANDS"))
+		fmt.Printf("  %-20s  %s\n", "info <name>", "Show detailed info about a specific module")
+		fmt.Printf("  %-20s  %s\n", "enable <name>", "Enable a module in the config file")
+		fmt.Printf("  %-20s  %s\n", "disable <name>", "Disable a module in the config file")
+		fmt.Printf("\n%s\n\n", bold("FLAGS"))
 		fmt.Printf("  %-28s  %s\n", "--json", "Output as JSON")
 		fmt.Printf("  %-28s  %s\n", "--tier <n>", "Filter by tier number (1-6)")
+		fmt.Printf("  %-28s  %s\n", "--config <path>", "Config file (for enable/disable/info)")
+		fmt.Printf("\n%s\n\n", bold("EXAMPLES"))
+		fmt.Printf("  1sec modules\n")
+		fmt.Printf("  1sec modules --tier 2\n")
+		fmt.Printf("  1sec modules info injection_shield\n")
+		fmt.Printf("  1sec modules enable ransomware --config my-config.yaml\n")
+		fmt.Printf("  1sec modules disable iot_shield\n")
 	case "config":
 		fmt.Printf("%s\n\n", bold("1sec config"))
-		fmt.Printf("Show the fully resolved configuration (with defaults applied).\n\n")
-		fmt.Printf("%s\n\n", bold("FLAGS"))
+		fmt.Printf("Show, validate, or modify the resolved configuration.\n\n")
+		fmt.Printf("%s\n\n", bold("SUBCOMMANDS"))
+		fmt.Printf("  %-20s  %s\n", "set <key> <value>", "Set a configuration value (dot-notation)")
+		fmt.Printf("\n%s\n\n", bold("FLAGS"))
 		fmt.Printf("  %-28s  %s\n", "--config <path>", "Config file to load")
 		fmt.Printf("  %-28s  %s\n", "--validate", "Validate config and exit (exit 0 = valid)")
 		fmt.Printf("  %-28s  %s\n", "--json", "Output as JSON")
 		fmt.Printf("  %-28s  %s\n", "--output <file>", "Write output to file")
+		fmt.Printf("\n%s\n\n", bold("EXAMPLES"))
+		fmt.Printf("  1sec config\n")
+		fmt.Printf("  1sec config --validate\n")
+		fmt.Printf("  1sec config --json\n")
+		fmt.Printf("  1sec config set server.port 8080\n")
+		fmt.Printf("  1sec config set logging.level debug\n")
+		fmt.Printf("  1sec config set modules.iot_shield.enabled false\n")
 	case "check":
 		fmt.Printf("%s\n\n", bold("1sec check"))
 		fmt.Printf("Run pre-flight diagnostics to verify the system is ready.\n\n")
@@ -388,7 +446,8 @@ func cmdHelp(subcmd string) {
 		fmt.Printf("  - NATS port is available\n")
 		fmt.Printf("  - Data directory is writable\n")
 		fmt.Printf("  - AI API keys are configured (if AI engine is enabled)\n")
-		fmt.Printf("  - Rust engine binary is available (if enabled)\n\n")
+		fmt.Printf("  - Rust engine binary is available (if enabled)\n")
+		fmt.Printf("  - Syslog port is available (if enabled)\n\n")
 		fmt.Printf("%s\n\n", bold("FLAGS"))
 		fmt.Printf("  %-28s  %s\n", "--config <path>", "Config file to check")
 		fmt.Printf("  %-28s  %s\n", "--json", "Output results as JSON")
@@ -399,7 +458,49 @@ func cmdHelp(subcmd string) {
 		fmt.Printf("  %-28s  %s\n", "--config <path>", "Config file to derive API address")
 		fmt.Printf("  %-28s  %s\n", "--host <host>", "API host (overrides config)")
 		fmt.Printf("  %-28s  %s\n", "--port <port>", "API port (overrides config)")
+		fmt.Printf("  %-28s  %s\n", "--api-key <key>", "API key for authentication")
 		fmt.Printf("  %-28s  %s\n", "--timeout <duration>", "Request timeout (default: 5s)")
+	case "init":
+		fmt.Printf("%s\n\n", bold("1sec init"))
+		fmt.Printf("Generate a starter configuration file with sensible defaults.\n\n")
+		fmt.Printf("%s\n\n", bold("FLAGS"))
+		fmt.Printf("  %-28s  %s\n", "--output <path>", "Output file path (default: 1sec.yaml)")
+		fmt.Printf("  %-28s  %s\n", "--minimal", "Generate a minimal config (only essential settings)")
+		fmt.Printf("  %-28s  %s\n", "--force", "Overwrite existing file without prompting")
+		fmt.Printf("\n%s\n\n", bold("EXAMPLES"))
+		fmt.Printf("  1sec init\n")
+		fmt.Printf("  1sec init --output /etc/1sec/config.yaml\n")
+		fmt.Printf("  1sec init --minimal\n")
+	case "logs":
+		fmt.Printf("%s\n\n", bold("1sec logs"))
+		fmt.Printf("Fetch recent log entries from a running 1SEC instance.\n\n")
+		fmt.Printf("%s\n\n", bold("FLAGS"))
+		fmt.Printf("  %-28s  %s\n", "--config <path>", "Config file to derive API address")
+		fmt.Printf("  %-28s  %s\n", "--host <host>", "API host (overrides config)")
+		fmt.Printf("  %-28s  %s\n", "--port <port>", "API port (overrides config)")
+		fmt.Printf("  %-28s  %s\n", "--api-key <key>", "API key for authentication")
+		fmt.Printf("  %-28s  %s\n", "--lines <n>", "Number of log lines to fetch (default: 50)")
+		fmt.Printf("  %-28s  %s\n", "--json", "Output raw JSON")
+		fmt.Printf("  %-28s  %s\n", "--output <file>", "Write output to file")
+		fmt.Printf("  %-28s  %s\n", "--timeout <duration>", "Request timeout (default: 5s)")
+		fmt.Printf("\n%s\n\n", bold("EXAMPLES"))
+		fmt.Printf("  1sec logs\n")
+		fmt.Printf("  1sec logs --lines 100\n")
+		fmt.Printf("  1sec logs --json --output engine.log\n")
+	case "events":
+		fmt.Printf("%s\n\n", bold("1sec events"))
+		fmt.Printf("Submit a security event to a running 1SEC instance.\n\n")
+		fmt.Printf("%s\n\n", bold("FLAGS"))
+		fmt.Printf("  %-28s  %s\n", "--config <path>", "Config file to derive API address")
+		fmt.Printf("  %-28s  %s\n", "--host <host>", "API host (overrides config)")
+		fmt.Printf("  %-28s  %s\n", "--port <port>", "API port (overrides config)")
+		fmt.Printf("  %-28s  %s\n", "--api-key <key>", "API key for authentication")
+		fmt.Printf("  %-28s  %s\n", "--input <file>", "Read event JSON from file (- for stdin)")
+		fmt.Printf("  %-28s  %s\n", "--json", "Output raw JSON response")
+		fmt.Printf("  %-28s  %s\n", "--timeout <duration>", "Request timeout (default: 10s)")
+		fmt.Printf("\n%s\n\n", bold("EXAMPLES"))
+		fmt.Printf("  echo '{\"type\":\"login_failure\",\"source_ip\":\"1.2.3.4\"}' | 1sec events\n")
+		fmt.Printf("  1sec events --input event.json\n")
 	case "docker":
 		fmt.Printf("%s\n\n", bold("1sec docker"))
 		fmt.Printf("Manage the 1SEC Docker Compose deployment.\n\n")
@@ -419,6 +520,25 @@ func cmdHelp(subcmd string) {
 		fmt.Printf("  1sec docker status\n")
 		fmt.Printf("  1sec docker down\n")
 		fmt.Printf("  1sec docker build\n")
+	case "completions":
+		fmt.Printf("%s\n\n", bold("1sec completions"))
+		fmt.Printf("Generate shell completion scripts.\n\n")
+		fmt.Printf("%s\n\n", bold("USAGE"))
+		fmt.Printf("  1sec completions <shell>\n\n")
+		fmt.Printf("%s\n\n", bold("SHELLS"))
+		fmt.Printf("  %-12s  %s\n", "bash", "Generate Bash completions")
+		fmt.Printf("  %-12s  %s\n", "zsh", "Generate Zsh completions")
+		fmt.Printf("  %-12s  %s\n", "fish", "Generate Fish completions")
+		fmt.Printf("  %-12s  %s\n", "powershell", "Generate PowerShell completions")
+		fmt.Printf("\n%s\n\n", bold("EXAMPLES"))
+		fmt.Printf("  %s\n", dim("# Bash (add to ~/.bashrc)"))
+		fmt.Printf("  source <(1sec completions bash)\n\n")
+		fmt.Printf("  %s\n", dim("# Zsh (add to ~/.zshrc)"))
+		fmt.Printf("  source <(1sec completions zsh)\n\n")
+		fmt.Printf("  %s\n", dim("# Fish"))
+		fmt.Printf("  1sec completions fish | source\n\n")
+		fmt.Printf("  %s\n", dim("# PowerShell"))
+		fmt.Printf("  1sec completions powershell | Out-String | Invoke-Expression\n")
 	default:
 		fmt.Fprintf(os.Stderr, red("error: ")+"unknown command %q — run '1sec help' for usage\n", subcmd)
 		os.Exit(1)
@@ -426,7 +546,7 @@ func cmdHelp(subcmd string) {
 }
 
 // ---------------------------------------------------------------------------
-// API helpers
+// API helpers — now with auth support
 // ---------------------------------------------------------------------------
 
 func apiBase(configPath, hostOverride string, portOverride int) string {
@@ -453,9 +573,33 @@ func apiBase(configPath, hostOverride string, portOverride int) string {
 	return fmt.Sprintf("http://%s:%d", host, port)
 }
 
-func apiGet(url string, timeout time.Duration) ([]byte, error) {
+// resolveAPIKey returns the API key from flag, env, or config (in that order).
+func resolveAPIKey(flagKey, configPath string) string {
+	if flagKey != "" {
+		return flagKey
+	}
+	if envKey := os.Getenv("ONESEC_API_KEY"); envKey != "" {
+		return envKey
+	}
+	// Try to read from config
+	cfg, err := core.LoadConfig(configPath)
+	if err == nil && cfg != nil && len(cfg.Server.APIKeys) > 0 {
+		return cfg.Server.APIKeys[0]
+	}
+	return ""
+}
+
+func apiGet(url, apiKey string, timeout time.Duration) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
 	client := &http.Client{Timeout: timeout}
-	resp, err := client.Get(url)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to 1SEC API at %s: %w", url, err)
 	}
@@ -466,15 +610,27 @@ func apiGet(url string, timeout time.Duration) ([]byte, error) {
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
 
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return body, fmt.Errorf("authentication failed (HTTP %d) — provide --api-key or set ONESEC_API_KEY", resp.StatusCode)
+	}
 	if resp.StatusCode >= 400 {
 		return body, fmt.Errorf("API returned HTTP %d: %s", resp.StatusCode, string(body))
 	}
 	return body, nil
 }
 
-func apiPost(url string, payload []byte, timeout time.Duration) ([]byte, error) {
+func apiPost(url string, payload []byte, apiKey string, timeout time.Duration) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
 	client := &http.Client{Timeout: timeout}
-	resp, err := client.Post(url, "application/json", strings.NewReader(string(payload)))
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to 1SEC API at %s: %w", url, err)
 	}
@@ -485,6 +641,40 @@ func apiPost(url string, payload []byte, timeout time.Duration) ([]byte, error) 
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
 
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return body, fmt.Errorf("authentication failed (HTTP %d) — provide --api-key or set ONESEC_API_KEY", resp.StatusCode)
+	}
+	if resp.StatusCode >= 400 {
+		return body, fmt.Errorf("API returned HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	return body, nil
+}
+
+func apiPatch(url string, payload []byte, apiKey string, timeout time.Duration) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodPatch, url, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to 1SEC API at %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response: %w", err)
+	}
+
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return body, fmt.Errorf("authentication failed (HTTP %d) — provide --api-key or set ONESEC_API_KEY", resp.StatusCode)
+	}
 	if resp.StatusCode >= 400 {
 		return body, fmt.Errorf("API returned HTTP %d: %s", resp.StatusCode, string(body))
 	}
@@ -510,7 +700,7 @@ func registerModules(engine *core.Engine) {
 		aicontainment.New(),
 		datapoisoning.New(),
 		quantumcrypto.New(),
-		runtime.New(),
+		runtimemod.New(),
 		cloudposture.New(),
 		aiengine.New(),
 	}
@@ -662,6 +852,7 @@ func cmdStatus(args []string) {
 	configPath := fs.String("config", "configs/default.yaml", "Config file path")
 	host := fs.String("host", "", "API host override")
 	port := fs.Int("port", 0, "API port override")
+	apiKeyFlag := fs.String("api-key", "", "API key for authentication")
 	jsonOut := fs.Bool("json", false, "Output raw JSON")
 	output := fs.String("output", "", "Write output to file")
 	timeoutStr := fs.String("timeout", "5s", "Request timeout")
@@ -673,7 +864,8 @@ func cmdStatus(args []string) {
 	}
 
 	base := apiBase(*configPath, *host, *port)
-	body, err := apiGet(base+"/api/v1/status", timeout)
+	apiKey := resolveAPIKey(*apiKeyFlag, *configPath)
+	body, err := apiGet(base+"/api/v1/status", apiKey, timeout)
 	if err != nil {
 		errorf("%v", err)
 	}
@@ -726,16 +918,39 @@ func cmdStatus(args []string) {
 }
 
 // ---------------------------------------------------------------------------
-// cmdAlerts — fetch alerts from a running instance
+// cmdAlerts — fetch/manage alerts from a running instance
 // ---------------------------------------------------------------------------
 
 func cmdAlerts(args []string) {
+	// Check for subcommands first (before flag parsing)
+	if len(args) > 0 {
+		switch args[0] {
+		case "ack", "acknowledge":
+			cmdAlertsUpdateStatus(args[1:], "ACKNOWLEDGED")
+			return
+		case "resolve":
+			cmdAlertsUpdateStatus(args[1:], "RESOLVED")
+			return
+		case "false-positive":
+			cmdAlertsUpdateStatus(args[1:], "FALSE_POSITIVE")
+			return
+		case "get":
+			cmdAlertsGet(args[1:])
+			return
+		case "clear":
+			cmdAlertsClear(args[1:])
+			return
+		}
+	}
+
 	fs := flag.NewFlagSet("alerts", flag.ExitOnError)
 	configPath := fs.String("config", "configs/default.yaml", "Config file path")
 	host := fs.String("host", "", "API host override")
 	port := fs.Int("port", 0, "API port override")
+	apiKeyFlag := fs.String("api-key", "", "API key for authentication")
 	severity := fs.String("severity", "", "Minimum severity: INFO, LOW, MEDIUM, HIGH, CRITICAL")
 	module := fs.String("module", "", "Filter by source module")
+	statusFilter := fs.String("status", "", "Filter by status: OPEN, ACKNOWLEDGED, RESOLVED, FALSE_POSITIVE")
 	limit := fs.Int("limit", 20, "Maximum alerts to fetch")
 	jsonOut := fs.Bool("json", false, "Output raw JSON")
 	output := fs.String("output", "", "Write output to file")
@@ -748,12 +963,13 @@ func cmdAlerts(args []string) {
 	}
 
 	base := apiBase(*configPath, *host, *port)
+	apiKey := resolveAPIKey(*apiKeyFlag, *configPath)
 	url := fmt.Sprintf("%s/api/v1/alerts?limit=%d", base, *limit)
 	if *severity != "" {
 		url += "&min_severity=" + strings.ToUpper(*severity)
 	}
 
-	body, err := apiGet(url, timeout)
+	body, err := apiGet(url, apiKey, timeout)
 	if err != nil {
 		errorf("%v", err)
 	}
@@ -761,52 +977,36 @@ func cmdAlerts(args []string) {
 	w, cleanup := outputWriter(*output)
 	defer cleanup()
 
-	// Client-side module filter
-	if *module != "" && !*jsonOut {
-		var resp map[string]interface{}
-		if err := json.Unmarshal(body, &resp); err != nil {
-			errorf("parsing response: %v", err)
-		}
-		alerts, _ := resp["alerts"].([]interface{})
-		filtered := make([]interface{}, 0)
-		for _, a := range alerts {
-			alert := a.(map[string]interface{})
-			if fmt.Sprintf("%v", alert["module"]) == *module {
-				filtered = append(filtered, a)
-			}
-		}
-		resp["alerts"] = filtered
-		resp["total"] = len(filtered)
-		body, _ = json.MarshalIndent(resp, "", "  ")
-	}
-
-	if *jsonOut {
-		if *module != "" {
-			// Re-filter for JSON output too
-			var resp map[string]interface{}
-			json.Unmarshal(body, &resp)
-			alerts, _ := resp["alerts"].([]interface{})
-			filtered := make([]interface{}, 0)
-			for _, a := range alerts {
-				alert := a.(map[string]interface{})
-				if fmt.Sprintf("%v", alert["module"]) == *module {
-					filtered = append(filtered, a)
-				}
-			}
-			resp["alerts"] = filtered
-			resp["total"] = len(filtered)
-			body, _ = json.MarshalIndent(resp, "", "  ")
-		}
-		fmt.Fprintln(w, string(body))
-		return
-	}
-
+	// Client-side module and status filters
 	var resp map[string]interface{}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		errorf("parsing response: %v", err)
 	}
 
 	alerts, _ := resp["alerts"].([]interface{})
+	if *module != "" || *statusFilter != "" {
+		filtered := make([]interface{}, 0)
+		for _, a := range alerts {
+			alert := a.(map[string]interface{})
+			if *module != "" && fmt.Sprintf("%v", alert["module"]) != *module {
+				continue
+			}
+			if *statusFilter != "" && !strings.EqualFold(fmt.Sprintf("%v", alert["status"]), *statusFilter) {
+				continue
+			}
+			filtered = append(filtered, a)
+		}
+		alerts = filtered
+		resp["alerts"] = alerts
+		resp["total"] = len(alerts)
+	}
+
+	if *jsonOut {
+		data, _ := json.MarshalIndent(resp, "", "  ")
+		fmt.Fprintln(w, string(data))
+		return
+	}
+
 	if len(alerts) == 0 {
 		fmt.Fprintf(w, "%s No alerts found.\n", dim("▸"))
 		return
@@ -827,7 +1027,11 @@ func cmdAlerts(args []string) {
 		case "LOW":
 			sevColor = cyan
 		}
-		fmt.Fprintf(w, "  %s [%s] %s\n", sevColor("●"), sevColor(fmt.Sprintf("%-8s", sev)), alert["title"])
+		statusStr := ""
+		if s, ok := alert["status"]; ok && fmt.Sprintf("%v", s) != "OPEN" {
+			statusStr = fmt.Sprintf(" [%s]", dim(fmt.Sprintf("%v", s)))
+		}
+		fmt.Fprintf(w, "  %s [%s] %s%s\n", sevColor("●"), sevColor(fmt.Sprintf("%-8s", sev)), alert["title"], statusStr)
 		fmt.Fprintf(w, "    %s  %s  %s\n",
 			dim(fmt.Sprintf("module=%v", alert["module"])),
 			dim(fmt.Sprintf("type=%v", alert["type"])),
@@ -839,8 +1043,144 @@ func cmdAlerts(args []string) {
 	}
 }
 
+func cmdAlertsUpdateStatus(args []string, status string) {
+	fs := flag.NewFlagSet("alerts-status", flag.ExitOnError)
+	configPath := fs.String("config", "configs/default.yaml", "Config file path")
+	host := fs.String("host", "", "API host override")
+	port := fs.Int("port", 0, "API port override")
+	apiKeyFlag := fs.String("api-key", "", "API key for authentication")
+	jsonOut := fs.Bool("json", false, "Output raw JSON")
+	timeoutStr := fs.String("timeout", "5s", "Request timeout")
+	fs.Parse(args)
+
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		errorf("alert ID required — usage: 1sec alerts %s <alert-id>", strings.ToLower(status))
+	}
+	alertID := remaining[0]
+
+	timeout, err := time.ParseDuration(*timeoutStr)
+	if err != nil {
+		errorf("invalid timeout %q: %v", *timeoutStr, err)
+	}
+
+	base := apiBase(*configPath, *host, *port)
+	apiKey := resolveAPIKey(*apiKeyFlag, *configPath)
+	payload, _ := json.Marshal(map[string]string{"status": status})
+	body, err := apiPatch(fmt.Sprintf("%s/api/v1/alerts/%s", base, alertID), payload, apiKey, timeout)
+	if err != nil {
+		errorf("%v", err)
+	}
+
+	if *jsonOut {
+		fmt.Println(string(body))
+		return
+	}
+
+	fmt.Fprintf(os.Stdout, "%s Alert %s marked as %s\n", green("✓"), alertID, status)
+}
+
+func cmdAlertsGet(args []string) {
+	fs := flag.NewFlagSet("alerts-get", flag.ExitOnError)
+	configPath := fs.String("config", "configs/default.yaml", "Config file path")
+	host := fs.String("host", "", "API host override")
+	port := fs.Int("port", 0, "API port override")
+	apiKeyFlag := fs.String("api-key", "", "API key for authentication")
+	jsonOut := fs.Bool("json", false, "Output raw JSON")
+	timeoutStr := fs.String("timeout", "5s", "Request timeout")
+	fs.Parse(args)
+
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		errorf("alert ID required — usage: 1sec alerts get <alert-id>")
+	}
+	alertID := remaining[0]
+
+	timeout, err := time.ParseDuration(*timeoutStr)
+	if err != nil {
+		errorf("invalid timeout %q: %v", *timeoutStr, err)
+	}
+
+	base := apiBase(*configPath, *host, *port)
+	apiKey := resolveAPIKey(*apiKeyFlag, *configPath)
+	body, err := apiGet(fmt.Sprintf("%s/api/v1/alerts/%s", base, alertID), apiKey, timeout)
+	if err != nil {
+		errorf("%v", err)
+	}
+
+	if *jsonOut {
+		fmt.Println(string(body))
+		return
+	}
+
+	var alert map[string]interface{}
+	if err := json.Unmarshal(body, &alert); err != nil {
+		errorf("parsing response: %v", err)
+	}
+
+	sev := fmt.Sprintf("%v", alert["severity"])
+	sevColor := dim
+	switch sev {
+	case "CRITICAL", "HIGH":
+		sevColor = red
+	case "MEDIUM":
+		sevColor = yellow
+	case "LOW":
+		sevColor = cyan
+	}
+
+	fmt.Printf("%s Alert Detail\n\n", bold("🔔"))
+	fmt.Printf("  %-16s %s\n", "ID:", alert["id"])
+	fmt.Printf("  %-16s %s\n", "Title:", alert["title"])
+	fmt.Printf("  %-16s %s\n", "Severity:", sevColor(sev))
+	fmt.Printf("  %-16s %v\n", "Status:", alert["status"])
+	fmt.Printf("  %-16s %v\n", "Module:", alert["module"])
+	fmt.Printf("  %-16s %v\n", "Type:", alert["type"])
+	fmt.Printf("  %-16s %v\n", "Timestamp:", alert["timestamp"])
+	if desc, ok := alert["description"]; ok && desc != "" && desc != nil {
+		fmt.Printf("  %-16s %v\n", "Description:", desc)
+	}
+	if mits, ok := alert["mitigations"].([]interface{}); ok && len(mits) > 0 {
+		fmt.Printf("  %-16s\n", "Mitigations:")
+		for _, m := range mits {
+			fmt.Printf("    - %v\n", m)
+		}
+	}
+	fmt.Println()
+}
+
+func cmdAlertsClear(args []string) {
+	fs := flag.NewFlagSet("alerts-clear", flag.ExitOnError)
+	configPath := fs.String("config", "configs/default.yaml", "Config file path")
+	host := fs.String("host", "", "API host override")
+	port := fs.Int("port", 0, "API port override")
+	apiKeyFlag := fs.String("api-key", "", "API key for authentication")
+	timeoutStr := fs.String("timeout", "5s", "Request timeout")
+	fs.Parse(args)
+
+	timeout, err := time.ParseDuration(*timeoutStr)
+	if err != nil {
+		errorf("invalid timeout %q: %v", *timeoutStr, err)
+	}
+
+	base := apiBase(*configPath, *host, *port)
+	apiKey := resolveAPIKey(*apiKeyFlag, *configPath)
+	body, err := apiPost(base+"/api/v1/alerts/clear", []byte("{}"), apiKey, timeout)
+	if err != nil {
+		errorf("%v", err)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		fmt.Fprintf(os.Stdout, "%s Alerts cleared.\n", green("✓"))
+		return
+	}
+
+	fmt.Fprintf(os.Stdout, "%s Cleared %v alert(s).\n", green("✓"), resp["cleared"])
+}
+
 // ---------------------------------------------------------------------------
-// cmdScan — submit a payload for on-demand analysis
+// cmdScan — submit a payload for on-demand analysis (with --wait support)
 // ---------------------------------------------------------------------------
 
 func cmdScan(args []string) {
@@ -848,10 +1188,13 @@ func cmdScan(args []string) {
 	configPath := fs.String("config", "configs/default.yaml", "Config file path")
 	host := fs.String("host", "", "API host override")
 	port := fs.Int("port", 0, "API port override")
+	apiKeyFlag := fs.String("api-key", "", "API key for authentication")
 	module := fs.String("module", "external", "Module to attribute the event to")
 	eventType := fs.String("type", "scan", "Event type")
 	severity := fs.String("severity", "MEDIUM", "Event severity")
 	inputFile := fs.String("input", "-", "Read payload from file (- for stdin)")
+	wait := fs.Bool("wait", false, "Wait for analysis results after submission")
+	waitTimeoutStr := fs.String("wait-timeout", "30s", "How long to wait for results")
 	jsonOut := fs.Bool("json", false, "Output raw JSON response")
 	timeoutStr := fs.String("timeout", "10s", "Request timeout")
 	fs.Parse(args)
@@ -859,6 +1202,11 @@ func cmdScan(args []string) {
 	timeout, err := time.ParseDuration(*timeoutStr)
 	if err != nil {
 		errorf("invalid timeout %q: %v", *timeoutStr, err)
+	}
+
+	waitTimeout, err := time.ParseDuration(*waitTimeoutStr)
+	if err != nil {
+		errorf("invalid wait-timeout %q: %v", *waitTimeoutStr, err)
 	}
 
 	// Read payload from stdin or file
@@ -934,14 +1282,10 @@ func cmdScan(args []string) {
 	}
 
 	base := apiBase(*configPath, *host, *port)
-	body, err := apiPost(base+"/api/v1/events", eventJSON, timeout)
+	apiKey := resolveAPIKey(*apiKeyFlag, *configPath)
+	body, err := apiPost(base+"/api/v1/events", eventJSON, apiKey, timeout)
 	if err != nil {
 		errorf("%v", err)
-	}
-
-	if *jsonOut {
-		fmt.Println(string(body))
-		return
 	}
 
 	var resp map[string]interface{}
@@ -950,51 +1294,182 @@ func cmdScan(args []string) {
 		return
 	}
 
-	fmt.Fprintf(os.Stdout, "%s Event submitted — id=%s status=%s\n",
-		green("✓"), resp["event_id"], resp["status"])
+	eventID := fmt.Sprintf("%v", resp["event_id"])
+
+	if !*wait {
+		if *jsonOut {
+			fmt.Println(string(body))
+			return
+		}
+		fmt.Fprintf(os.Stdout, "%s Event submitted — id=%s status=%s\n",
+			green("✓"), eventID, resp["status"])
+		return
+	}
+
+	// --wait mode: poll for alerts related to this event
+	fmt.Fprintf(os.Stderr, "%s Event submitted (id=%s), waiting for analysis...\n", dim("▸"), eventID)
+
+	deadline := time.Now().Add(waitTimeout)
+	pollInterval := 500 * time.Millisecond
+	prevAlertCount := 0
+
+	// Get initial alert count
+	initialBody, err := apiGet(base+"/api/v1/alerts?limit=1", apiKey, timeout)
+	if err == nil {
+		var initialResp map[string]interface{}
+		if json.Unmarshal(initialBody, &initialResp) == nil {
+			if total, ok := initialResp["total"].(float64); ok {
+				prevAlertCount = int(total)
+			}
+		}
+	}
+
+	for time.Now().Before(deadline) {
+		time.Sleep(pollInterval)
+
+		alertBody, err := apiGet(fmt.Sprintf("%s/api/v1/alerts?limit=50", base), apiKey, timeout)
+		if err != nil {
+			continue
+		}
+
+		var alertResp map[string]interface{}
+		if json.Unmarshal(alertBody, &alertResp) != nil {
+			continue
+		}
+
+		alerts, _ := alertResp["alerts"].([]interface{})
+		if len(alerts) > prevAlertCount {
+			// New alerts appeared — check if any reference our event
+			newAlerts := make([]interface{}, 0)
+			for _, a := range alerts {
+				alert := a.(map[string]interface{})
+				if eventIDs, ok := alert["event_ids"].([]interface{}); ok {
+					for _, eid := range eventIDs {
+						if fmt.Sprintf("%v", eid) == eventID {
+							newAlerts = append(newAlerts, a)
+						}
+					}
+				}
+			}
+
+			if len(newAlerts) > 0 {
+				if *jsonOut {
+					data, _ := json.MarshalIndent(map[string]interface{}{
+						"event_id": eventID,
+						"alerts":   newAlerts,
+						"total":    len(newAlerts),
+					}, "", "  ")
+					fmt.Println(string(data))
+					return
+				}
+
+				fmt.Fprintf(os.Stdout, "\n%s Analysis complete — %d alert(s) generated:\n\n", green("✓"), len(newAlerts))
+				for _, a := range newAlerts {
+					alert := a.(map[string]interface{})
+					sev := fmt.Sprintf("%v", alert["severity"])
+					sevColor := dim
+					switch sev {
+					case "CRITICAL", "HIGH":
+						sevColor = red
+					case "MEDIUM":
+						sevColor = yellow
+					case "LOW":
+						sevColor = cyan
+					}
+					fmt.Fprintf(os.Stdout, "  %s [%s] %s\n", sevColor("●"), sevColor(sev), alert["title"])
+					if desc, ok := alert["description"]; ok && desc != "" {
+						fmt.Fprintf(os.Stdout, "    %s\n", desc)
+					}
+				}
+				fmt.Println()
+				return
+			}
+		}
+
+		// Increase poll interval over time
+		if pollInterval < 2*time.Second {
+			pollInterval += 250 * time.Millisecond
+		}
+	}
+
+	fmt.Fprintf(os.Stdout, "%s No alerts generated within %s. The payload may be clean.\n",
+		dim("▸"), waitTimeout)
 }
 
 // ---------------------------------------------------------------------------
-// cmdModules — list all defense modules
+// cmdModules — list/inspect/enable/disable defense modules
 // ---------------------------------------------------------------------------
 
+// moduleInfo holds static metadata about each module.
+type moduleInfo struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Tier        int      `json:"tier"`
+	TierName    string   `json:"tier_name"`
+	EventTypes  []string `json:"event_types,omitempty"`
+}
+
+var allModules = []moduleInfo{
+	{"network_guardian", "DDoS mitigation, rate limiting, IP reputation, geo-fencing, DNS tunneling, C2 detection, lateral movement, port scan detection", 1, "Network & Perimeter",
+		[]string{"dns_query", "dns_response", "network_connection", "connection_established", "lateral_movement", "smb_connection", "rdp_connection", "port_scan", "syn_scan", "amplification_attack"}},
+	{"api_fortress", "BOLA detection, schema validation, shadow API discovery", 1, "Network & Perimeter",
+		[]string{"api_request", "api_response", "schema_violation"}},
+	{"iot_shield", "Device fingerprinting, protocol anomaly, firmware integrity", 1, "Network & Perimeter",
+		[]string{"device_connect", "firmware_update", "protocol_anomaly"}},
+	{"injection_shield", "SQLi, XSS, SSRF, command injection, template injection, NoSQL injection, path traversal", 2, "Application Layer",
+		[]string{"http_request", "query_exec", "command_exec", "template_render"}},
+	{"supply_chain", "SBOM analysis, package integrity, CI/CD hardening, typosquatting detection", 2, "Application Layer",
+		[]string{"package_install", "dependency_update", "ci_pipeline", "sbom_scan"}},
+	{"ransomware", "Encryption detection, canary files, exfiltration detection", 2, "Application Layer",
+		[]string{"file_encrypt", "file_modify", "process_exec", "data_exfil"}},
+	{"auth_fortress", "Brute force, credential stuffing, session theft, impossible travel, MFA bypass, password spraying, OAuth token abuse", 3, "Identity & Access",
+		[]string{"login_attempt", "login_success", "login_failure", "session_activity", "mfa_attempt", "oauth_grant", "password_spray"}},
+	{"deepfake_shield", "Synthetic voice/video detection, AI phishing detection", 3, "Identity & Access",
+		[]string{"media_upload", "voice_call", "video_stream", "email_received"}},
+	{"identity_monitor", "Synthetic identity, privilege escalation, service account monitoring", 3, "Identity & Access",
+		[]string{"identity_create", "privilege_change", "service_account_activity"}},
+	{"llm_firewall", "Prompt injection, output filtering, jailbreak detection", 4, "AI-Specific Defense",
+		[]string{"llm_prompt", "llm_response", "prompt_injection", "jailbreak_attempt"}},
+	{"ai_containment", "Action sandboxing, shadow AI detection", 4, "AI-Specific Defense",
+		[]string{"ai_action", "model_deploy", "shadow_ai_detected"}},
+	{"data_poisoning", "Training data integrity, RAG verification, adversarial input detection", 4, "AI-Specific Defense",
+		[]string{"training_data", "rag_query", "adversarial_input"}},
+	{"quantum_crypto", "Crypto inventory, PQC migration readiness, crypto-agility", 5, "Cryptography",
+		[]string{"crypto_operation", "certificate_issue", "key_exchange"}},
+	{"runtime_watcher", "File integrity, container escape, privilege escalation detection", 6, "Runtime & Infrastructure",
+		[]string{"file_change", "container_event", "privilege_escalation", "process_exec"}},
+	{"cloud_posture", "Config drift, misconfiguration, secrets sprawl detection", 6, "Runtime & Infrastructure",
+		[]string{"config_change", "secret_detected", "misconfiguration"}},
+	{"ai_analysis_engine", "Two-tier LLM pipeline: triage + deep classification", 0, "Cross-Cutting",
+		[]string{"*"}},
+}
+
 func cmdModules(args []string) {
+	// Check for subcommands first
+	if len(args) > 0 {
+		switch args[0] {
+		case "info":
+			cmdModulesInfo(args[1:])
+			return
+		case "enable":
+			cmdModulesToggle(args[1:], true)
+			return
+		case "disable":
+			cmdModulesToggle(args[1:], false)
+			return
+		}
+	}
+
 	fs := flag.NewFlagSet("modules", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "Output as JSON")
 	tier := fs.Int("tier", 0, "Filter by tier (1-6)")
 	fs.Parse(args)
 
-	type moduleInfo struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Tier        int    `json:"tier"`
-		TierName    string `json:"tier_name"`
-	}
-
-	all := []moduleInfo{
-		{"network_guardian", "DDoS mitigation, rate limiting, IP reputation, geo-fencing", 1, "Network & Perimeter"},
-		{"api_fortress", "BOLA detection, schema validation, shadow API discovery", 1, "Network & Perimeter"},
-		{"iot_shield", "Device fingerprinting, protocol anomaly, firmware integrity", 1, "Network & Perimeter"},
-		{"injection_shield", "SQLi, XSS, SSRF, command injection, template injection, NoSQL injection, path traversal", 2, "Application Layer"},
-		{"supply_chain", "SBOM analysis, package integrity, CI/CD hardening, typosquatting detection", 2, "Application Layer"},
-		{"ransomware", "Encryption detection, canary files, exfiltration detection", 2, "Application Layer"},
-		{"auth_fortress", "Brute force, credential stuffing, session theft, MFA bypass detection", 3, "Identity & Access"},
-		{"deepfake_shield", "Synthetic voice/video detection, AI phishing detection", 3, "Identity & Access"},
-		{"identity_monitor", "Synthetic identity, privilege escalation, service account monitoring", 3, "Identity & Access"},
-		{"llm_firewall", "Prompt injection, output filtering, jailbreak detection", 4, "AI-Specific Defense"},
-		{"ai_containment", "Action sandboxing, shadow AI detection", 4, "AI-Specific Defense"},
-		{"data_poisoning", "Training data integrity, RAG verification, adversarial input detection", 4, "AI-Specific Defense"},
-		{"quantum_crypto", "Crypto inventory, PQC migration readiness, crypto-agility", 5, "Cryptography"},
-		{"runtime_watcher", "File integrity, container escape, privilege escalation detection", 6, "Runtime & Infrastructure"},
-		{"cloud_posture", "Config drift, misconfiguration, secrets sprawl detection", 6, "Runtime & Infrastructure"},
-		{"ai_analysis_engine", "Two-tier LLM pipeline: triage + deep classification", 0, "Cross-Cutting"},
-	}
-
 	// Filter by tier
-	filtered := all
+	filtered := allModules
 	if *tier > 0 {
 		filtered = make([]moduleInfo, 0)
-		for _, m := range all {
+		for _, m := range allModules {
 			if m.Tier == *tier {
 				filtered = append(filtered, m)
 			}
@@ -1026,11 +1501,144 @@ func cmdModules(args []string) {
 	fmt.Println()
 }
 
+func cmdModulesInfo(args []string) {
+	fs := flag.NewFlagSet("modules-info", flag.ExitOnError)
+	configPath := fs.String("config", "configs/default.yaml", "Config file path")
+	jsonOut := fs.Bool("json", false, "Output as JSON")
+	fs.Parse(args)
+
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		errorf("module name required — usage: 1sec modules info <name>")
+	}
+	name := remaining[0]
+
+	var found *moduleInfo
+	for i := range allModules {
+		if allModules[i].Name == name {
+			found = &allModules[i]
+			break
+		}
+	}
+	if found == nil {
+		errorf("unknown module %q — run '1sec modules' to see all available modules", name)
+	}
+
+	// Load config to get enabled status and settings
+	cfg, _ := core.LoadConfig(*configPath)
+	enabled := true
+	var settings map[string]interface{}
+	if cfg != nil {
+		enabled = cfg.IsModuleEnabled(name)
+		settings = cfg.GetModuleSettings(name)
+	}
+
+	if *jsonOut {
+		data, _ := json.MarshalIndent(map[string]interface{}{
+			"name":        found.Name,
+			"description": found.Description,
+			"tier":        found.Tier,
+			"tier_name":   found.TierName,
+			"event_types": found.EventTypes,
+			"enabled":     enabled,
+			"settings":    settings,
+		}, "", "  ")
+		fmt.Println(string(data))
+		return
+	}
+
+	statusIcon := green("●")
+	statusText := green("enabled")
+	if !enabled {
+		statusIcon = red("○")
+		statusText = red("disabled")
+	}
+
+	fmt.Printf("%s Module: %s\n\n", bold("🛡"), bold(found.Name))
+	fmt.Printf("  %-16s %s\n", "Description:", found.Description)
+	if found.Tier > 0 {
+		fmt.Printf("  %-16s Tier %d: %s\n", "Tier:", found.Tier, found.TierName)
+	} else {
+		fmt.Printf("  %-16s %s\n", "Tier:", found.TierName)
+	}
+	fmt.Printf("  %-16s %s %s\n", "Status:", statusIcon, statusText)
+
+	if len(found.EventTypes) > 0 {
+		fmt.Printf("  %-16s %s\n", "Event Types:", strings.Join(found.EventTypes, ", "))
+	}
+
+	if len(settings) > 0 {
+		fmt.Printf("\n  %s\n", bold("Settings:"))
+		for k, v := range settings {
+			fmt.Printf("    %-32s %v\n", k+":", v)
+		}
+	}
+	fmt.Println()
+}
+
+func cmdModulesToggle(args []string, enable bool) {
+	fs := flag.NewFlagSet("modules-toggle", flag.ExitOnError)
+	configPath := fs.String("config", "configs/default.yaml", "Config file path")
+	fs.Parse(args)
+
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		action := "enable"
+		if !enable {
+			action = "disable"
+		}
+		errorf("module name required — usage: 1sec modules %s <name>", action)
+	}
+	name := remaining[0]
+
+	// Validate module name
+	validModule := false
+	for _, m := range allModules {
+		if m.Name == name {
+			validModule = true
+			break
+		}
+	}
+	if !validModule {
+		errorf("unknown module %q — run '1sec modules' to see all available modules", name)
+	}
+
+	cfg, err := core.LoadConfig(*configPath)
+	if err != nil {
+		errorf("loading config: %v", err)
+	}
+
+	mod, ok := cfg.Modules[name]
+	if !ok {
+		mod = core.ModuleConfig{Settings: map[string]interface{}{}}
+	}
+	mod.Enabled = enable
+	cfg.Modules[name] = mod
+
+	if err := core.SaveConfig(cfg, *configPath); err != nil {
+		errorf("saving config: %v", err)
+	}
+
+	action := "enabled"
+	icon := green("✓")
+	if !enable {
+		action = "disabled"
+		icon = yellow("!")
+	}
+	fmt.Fprintf(os.Stdout, "%s Module %s %s in %s\n", icon, bold(name), action, *configPath)
+}
+
 // ---------------------------------------------------------------------------
-// cmdConfig — show or validate resolved configuration
+// cmdConfig — show, validate, or modify configuration
 // ---------------------------------------------------------------------------
 
 func cmdConfig(args []string) {
+	// Check for subcommands first
+	if len(args) > 0 && args[0] == "set" {
+		cmdConfigSet(args[1:])
+		return
+	}
+
 	fs := flag.NewFlagSet("config", flag.ExitOnError)
 	configPath := fs.String("config", "configs/default.yaml", "Config file path")
 	validate := fs.Bool("validate", false, "Validate config and exit")
@@ -1065,6 +1673,15 @@ func cmdConfig(args []string) {
 		validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
 		if !validLevels[cfg.LogLevel()] {
 			issues = append(issues, fmt.Sprintf("logging.level %q is not valid (debug, info, warn, error)", cfg.Logging.Level))
+		}
+		// Validate syslog port doesn't conflict
+		if cfg.Syslog.Enabled {
+			if cfg.Syslog.Port == cfg.Server.Port {
+				issues = append(issues, fmt.Sprintf("syslog.port and server.port are both %d", cfg.Syslog.Port))
+			}
+			if cfg.Syslog.Port == cfg.Bus.Port {
+				issues = append(issues, fmt.Sprintf("syslog.port and bus.port are both %d", cfg.Syslog.Port))
+			}
 		}
 
 		if len(issues) > 0 {
@@ -1104,6 +1721,101 @@ func cmdConfig(args []string) {
 		errorf("marshaling config: %v", err)
 	}
 	fmt.Fprint(w, string(data))
+}
+
+func cmdConfigSet(args []string) {
+	fs := flag.NewFlagSet("config-set", flag.ExitOnError)
+	configPath := fs.String("config", "configs/default.yaml", "Config file path")
+	fs.Parse(args)
+
+	remaining := fs.Args()
+	if len(remaining) < 2 {
+		errorf("usage: 1sec config set <key> <value>\n\nExamples:\n  1sec config set server.port 8080\n  1sec config set logging.level debug\n  1sec config set modules.iot_shield.enabled false")
+	}
+
+	key := remaining[0]
+	value := remaining[1]
+
+	// Load raw YAML, modify, and save
+	data, err := os.ReadFile(*configPath)
+	if err != nil {
+		errorf("reading config: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		errorf("parsing config: %v", err)
+	}
+
+	// Navigate dot-notation path and set value
+	parts := strings.Split(key, ".")
+	if err := setNestedValue(raw, parts, value); err != nil {
+		errorf("setting %s: %v", key, err)
+	}
+
+	out, err := yaml.Marshal(raw)
+	if err != nil {
+		errorf("marshaling config: %v", err)
+	}
+
+	if err := os.WriteFile(*configPath, out, 0644); err != nil {
+		errorf("writing config: %v", err)
+	}
+
+	fmt.Fprintf(os.Stdout, "%s Set %s = %s in %s\n", green("✓"), bold(key), value, *configPath)
+}
+
+// setNestedValue sets a value in a nested map using a path of keys.
+func setNestedValue(m map[string]interface{}, path []string, value string) error {
+	if len(path) == 0 {
+		return fmt.Errorf("empty key path")
+	}
+
+	if len(path) == 1 {
+		m[path[0]] = parseValue(value)
+		return nil
+	}
+
+	next, ok := m[path[0]]
+	if !ok {
+		// Create intermediate map
+		next = map[string]interface{}{}
+		m[path[0]] = next
+	}
+
+	nextMap, ok := next.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("key %q is not a map", path[0])
+	}
+
+	return setNestedValue(nextMap, path[1:], value)
+}
+
+// parseValue converts a string to the appropriate Go type.
+func parseValue(s string) interface{} {
+	// Boolean
+	switch strings.ToLower(s) {
+	case "true":
+		return true
+	case "false":
+		return false
+	}
+
+	// Integer
+	if n, err := fmt.Sscanf(s, "%d", new(int)); n == 1 && err == nil {
+		var i int
+		fmt.Sscanf(s, "%d", &i)
+		return i
+	}
+
+	// Float
+	if n, err := fmt.Sscanf(s, "%f", new(float64)); n == 1 && err == nil && strings.Contains(s, ".") {
+		var f float64
+		fmt.Sscanf(s, "%f", &f)
+		return f
+	}
+
+	return s
 }
 
 // ---------------------------------------------------------------------------
@@ -1207,7 +1919,16 @@ func cmdCheck(args []string) {
 			pass("port_conflict", "API and NATS ports are distinct")
 		}
 
-		// 7. Rust engine binary (if enabled)
+		// 7. Syslog port (if enabled)
+		if cfg.Syslog.Enabled {
+			if cfg.Syslog.Port == cfg.Server.Port || cfg.Syslog.Port == cfg.Bus.Port {
+				fail("syslog_port", fmt.Sprintf("syslog port %d conflicts with another service", cfg.Syslog.Port))
+			} else {
+				pass("syslog_port", fmt.Sprintf("syslog port %d does not conflict", cfg.Syslog.Port))
+			}
+		}
+
+		// 8. Rust engine binary (if enabled)
 		if cfg.RustEngine.Enabled {
 			binary := cfg.RustEngine.Binary
 			if binary == "" {
@@ -1287,6 +2008,7 @@ func cmdStop(args []string) {
 	configPath := fs.String("config", "configs/default.yaml", "Config file path")
 	host := fs.String("host", "", "API host override")
 	port := fs.Int("port", 0, "API port override")
+	apiKeyFlag := fs.String("api-key", "", "API key for authentication")
 	timeoutStr := fs.String("timeout", "5s", "Request timeout")
 	fs.Parse(args)
 
@@ -1296,15 +2018,16 @@ func cmdStop(args []string) {
 	}
 
 	base := apiBase(*configPath, *host, *port)
+	apiKey := resolveAPIKey(*apiKeyFlag, *configPath)
 
 	// First check if the instance is reachable
-	_, err = apiGet(base+"/health", timeout)
+	_, err = apiGet(base+"/health", apiKey, timeout)
 	if err != nil {
 		errorf("cannot reach 1SEC instance at %s — is it running?", base)
 	}
 
 	// Send shutdown request
-	body, err := apiPost(base+"/api/v1/shutdown", []byte("{}"), timeout)
+	body, err := apiPost(base+"/api/v1/shutdown", []byte("{}"), apiKey, timeout)
 	if err != nil {
 		// Connection reset is expected — the server shuts down after responding
 		if strings.Contains(err.Error(), "connection reset") ||
@@ -1323,6 +2046,350 @@ func cmdStop(args []string) {
 	}
 
 	fmt.Fprintf(os.Stdout, "%s %s\n", green("✓"), resp["message"])
+}
+
+// ---------------------------------------------------------------------------
+// cmdInit — generate a starter configuration file
+// ---------------------------------------------------------------------------
+
+func cmdInit(args []string) {
+	fs := flag.NewFlagSet("init", flag.ExitOnError)
+	output := fs.String("output", "1sec.yaml", "Output file path")
+	minimal := fs.Bool("minimal", false, "Generate minimal config")
+	force := fs.Bool("force", false, "Overwrite existing file")
+	fs.Parse(args)
+
+	// Check if file exists
+	if !*force {
+		if _, err := os.Stat(*output); err == nil {
+			errorf("file %q already exists — use --force to overwrite", *output)
+		}
+	}
+
+	// Ensure parent directory exists
+	dir := filepath.Dir(*output)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			errorf("creating directory %q: %v", dir, err)
+		}
+	}
+
+	var content string
+	if *minimal {
+		content = minimalConfig()
+	} else {
+		content = fullConfig()
+	}
+
+	if err := os.WriteFile(*output, []byte(content), 0644); err != nil {
+		errorf("writing config: %v", err)
+	}
+
+	fmt.Fprintf(os.Stdout, "%s Configuration written to %s\n", green("✓"), *output)
+	fmt.Fprintf(os.Stdout, "%s Run '1sec up --config %s' to start\n", dim("▸"), *output)
+}
+
+func minimalConfig() string {
+	return `# 1SEC Configuration (minimal)
+# See 'configs/default.yaml' for all options or run '1sec init' without --minimal.
+
+server:
+  host: "0.0.0.0"
+  port: 1780
+  # api_keys:
+  #   - "your-secret-key-here"
+
+logging:
+  level: "info"
+  format: "console"
+
+# All 16 modules are enabled by default.
+# Disable specific modules:
+# modules:
+#   iot_shield:
+#     enabled: false
+`
+}
+
+func fullConfig() string {
+	return `# 1SEC Configuration
+# Generated by '1sec init'. All modules enabled with sane defaults.
+# Docs: https://github.com/1sec-project/1sec
+
+server:
+  host: "0.0.0.0"
+  port: 1780
+  # API key authentication — set one or more keys to secure the REST API.
+  # If empty, the API runs in open mode (no auth required).
+  # Can also be set via ONESEC_API_KEY environment variable.
+  # api_keys:
+  #   - "your-secret-api-key-here"
+  #
+  # CORS — restrict allowed origins for the REST API.
+  # cors_origins:
+  #   - "https://your-dashboard.example.com"
+
+bus:
+  url: "nats://127.0.0.1:4222"
+  embedded: true
+  data_dir: "./data/nats"
+  port: 4222
+  cluster_id: "1sec-cluster"
+
+alerts:
+  max_store: 10000
+  enable_console: true
+  # webhook_urls:
+  #   - "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+
+syslog:
+  enabled: false
+  protocol: "udp"    # "udp", "tcp", or "both"
+  host: "0.0.0.0"
+  port: 1514
+
+logging:
+  level: "info"       # debug, info, warn, error
+  format: "console"   # console, json
+
+modules:
+  network_guardian:
+    enabled: true
+    settings:
+      max_requests_per_minute: 1000
+      burst_size: 100
+
+  api_fortress:
+    enabled: true
+    settings:
+      api_max_rpm: 200
+
+  iot_shield:
+    enabled: true
+
+  injection_shield:
+    enabled: true
+
+  supply_chain:
+    enabled: true
+
+  ransomware:
+    enabled: true
+    settings:
+      encryption_threshold: 10
+      exfil_mb_threshold: 100
+
+  auth_fortress:
+    enabled: true
+    settings:
+      max_failures_per_minute: 10
+      lockout_duration_seconds: 300
+      stuffing_threshold: 50
+
+  deepfake_shield:
+    enabled: true
+
+  identity_monitor:
+    enabled: true
+
+  llm_firewall:
+    enabled: true
+    settings:
+      token_budget_per_hour: 100000
+
+  ai_containment:
+    enabled: true
+
+  data_poisoning:
+    enabled: true
+
+  quantum_crypto:
+    enabled: true
+
+  runtime_watcher:
+    enabled: true
+    settings:
+      scan_interval_seconds: 300
+
+  cloud_posture:
+    enabled: true
+
+  ai_analysis_engine:
+    enabled: true
+    settings:
+      # gemini_api_key: "YOUR_GEMINI_API_KEY"
+      # Also reads from env: GEMINI_API_KEY
+      triage_model: "gemini-flash-lite-latest"
+      deep_model: "gemini-flash-latest"
+      api_base_url: "https://generativelanguage.googleapis.com/v1beta/models"
+      triage_workers: 4
+      deep_workers: 2
+
+rust_engine:
+  enabled: false
+  binary: "1sec-engine"
+  workers: 0               # 0 = auto-detect CPU cores
+  buffer_size: 10000
+  min_score: 0.0
+  aho_corasick_prefilter: true
+  capture:
+    enabled: false
+    interface: "eth0"
+    bpf_filter: ""
+    promiscuous: true
+`
+}
+
+// ---------------------------------------------------------------------------
+// cmdLogs — fetch recent logs from a running instance
+// ---------------------------------------------------------------------------
+
+func cmdLogs(args []string) {
+	fs := flag.NewFlagSet("logs", flag.ExitOnError)
+	configPath := fs.String("config", "configs/default.yaml", "Config file path")
+	host := fs.String("host", "", "API host override")
+	port := fs.Int("port", 0, "API port override")
+	apiKeyFlag := fs.String("api-key", "", "API key for authentication")
+	lines := fs.Int("lines", 50, "Number of log lines to fetch")
+	jsonOut := fs.Bool("json", false, "Output raw JSON")
+	output := fs.String("output", "", "Write output to file")
+	timeoutStr := fs.String("timeout", "5s", "Request timeout")
+	fs.Parse(args)
+
+	timeout, err := time.ParseDuration(*timeoutStr)
+	if err != nil {
+		errorf("invalid timeout %q: %v", *timeoutStr, err)
+	}
+
+	base := apiBase(*configPath, *host, *port)
+	apiKey := resolveAPIKey(*apiKeyFlag, *configPath)
+	url := fmt.Sprintf("%s/api/v1/logs?limit=%d", base, *lines)
+
+	body, err := apiGet(url, apiKey, timeout)
+	if err != nil {
+		errorf("%v", err)
+	}
+
+	w, cleanup := outputWriter(*output)
+	defer cleanup()
+
+	if *jsonOut {
+		fmt.Fprintln(w, string(body))
+		return
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		errorf("parsing response: %v", err)
+	}
+
+	logs, _ := resp["logs"].([]interface{})
+	if len(logs) == 0 {
+		fmt.Fprintf(w, "%s No log entries found.\n", dim("▸"))
+		return
+	}
+
+	fmt.Fprintf(w, "%s Logs (%d entries)\n\n", bold("📋"), len(logs))
+	for _, l := range logs {
+		entry := l.(map[string]interface{})
+		raw := fmt.Sprintf("%v", entry["raw"])
+		raw = strings.TrimSpace(raw)
+		if raw != "" {
+			fmt.Fprintln(w, raw)
+		} else {
+			fmt.Fprintf(w, "%s %s\n", dim(fmt.Sprintf("%v", entry["timestamp"])), entry["message"])
+		}
+	}
+	fmt.Fprintln(w)
+}
+
+// ---------------------------------------------------------------------------
+// cmdEvents — submit events to a running instance
+// ---------------------------------------------------------------------------
+
+func cmdEvents(args []string) {
+	fs := flag.NewFlagSet("events", flag.ExitOnError)
+	configPath := fs.String("config", "configs/default.yaml", "Config file path")
+	host := fs.String("host", "", "API host override")
+	port := fs.Int("port", 0, "API port override")
+	apiKeyFlag := fs.String("api-key", "", "API key for authentication")
+	inputFile := fs.String("input", "-", "Read event JSON from file (- for stdin)")
+	jsonOut := fs.Bool("json", false, "Output raw JSON response")
+	timeoutStr := fs.String("timeout", "10s", "Request timeout")
+	fs.Parse(args)
+
+	timeout, err := time.ParseDuration(*timeoutStr)
+	if err != nil {
+		errorf("invalid timeout %q: %v", *timeoutStr, err)
+	}
+
+	// Read event from stdin or file
+	var reader io.Reader
+	if *inputFile == "-" || *inputFile == "" {
+		fi, err := os.Stdin.Stat()
+		if err != nil {
+			errorf("checking stdin: %v", err)
+		}
+		if (fi.Mode() & os.ModeCharDevice) != 0 {
+			errorf("no input provided — pipe event JSON via stdin or use --input <file>")
+		}
+		reader = os.Stdin
+	} else {
+		f, err := os.Open(*inputFile)
+		if err != nil {
+			errorf("opening input file %q: %v", *inputFile, err)
+		}
+		defer f.Close()
+		reader = f
+	}
+
+	payload, err := io.ReadAll(reader)
+	if err != nil {
+		errorf("reading input: %v", err)
+	}
+	if len(payload) == 0 {
+		errorf("empty input — provide event JSON")
+	}
+
+	// Validate it's valid JSON
+	var event map[string]interface{}
+	if err := json.Unmarshal(payload, &event); err != nil {
+		errorf("invalid JSON: %v", err)
+	}
+
+	// Set defaults for missing fields
+	if _, ok := event["id"]; !ok {
+		event["id"] = "cli-" + time.Now().Format("20060102-150405.000")
+	}
+	if _, ok := event["timestamp"]; !ok {
+		event["timestamp"] = time.Now().UTC()
+	}
+	if _, ok := event["source"]; !ok {
+		event["source"] = "cli-events"
+	}
+
+	eventJSON, _ := json.Marshal(event)
+
+	base := apiBase(*configPath, *host, *port)
+	apiKey := resolveAPIKey(*apiKeyFlag, *configPath)
+	body, err := apiPost(base+"/api/v1/events", eventJSON, apiKey, timeout)
+	if err != nil {
+		errorf("%v", err)
+	}
+
+	if *jsonOut {
+		fmt.Println(string(body))
+		return
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		fmt.Println(string(body))
+		return
+	}
+
+	fmt.Fprintf(os.Stdout, "%s Event submitted — id=%s status=%s\n",
+		green("✓"), resp["event_id"], resp["status"])
 }
 
 // ---------------------------------------------------------------------------
@@ -1358,7 +2425,7 @@ func cmdDocker(args []string) {
 		dockerArgs = append(baseArgs, "down")
 		fmt.Fprintf(os.Stderr, "%s Stopping 1SEC containers...\n", dim("▸"))
 	case "logs":
-		dockerArgs = append(baseArgs, "logs", "--follow", "--tail=100")
+		dockerArgs = append(baseArgs, "logs", "--tail=100")
 	case "status":
 		dockerArgs = append(baseArgs, "ps")
 	case "build":
@@ -1373,8 +2440,7 @@ func cmdDocker(args []string) {
 		os.Exit(1)
 	}
 
-	// Exec docker with the constructed args — replaces current process so
-	// signals (Ctrl+C) pass through naturally to docker compose.
+	// Exec docker with the constructed args
 	if err := execDocker(dockerArgs); err != nil {
 		errorf("docker %s failed: %v", sub, err)
 	}
@@ -1424,4 +2490,282 @@ func runSubprocess(bin string, args []string) error {
 		return err
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// cmdCompletions — generate shell completion scripts
+// ---------------------------------------------------------------------------
+
+func cmdCompletions(args []string) {
+	if len(args) == 0 {
+		cmdHelp("completions")
+		os.Exit(0)
+	}
+
+	shell := strings.ToLower(args[0])
+	switch shell {
+	case "bash":
+		fmt.Print(bashCompletions())
+	case "zsh":
+		fmt.Print(zshCompletions())
+	case "fish":
+		fmt.Print(fishCompletions())
+	case "powershell", "pwsh":
+		fmt.Print(powershellCompletions())
+	default:
+		errorf("unsupported shell %q — supported: bash, zsh, fish, powershell", shell)
+	}
+}
+
+func bashCompletions() string {
+	return `# 1sec bash completions
+# Add to ~/.bashrc: source <(1sec completions bash)
+
+_1sec_completions() {
+    local cur prev commands
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    commands="up stop status alerts scan modules config check logs events init docker completions version help"
+
+    case "${prev}" in
+        1sec)
+            COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
+            return 0
+            ;;
+        alerts)
+            COMPREPLY=( $(compgen -W "ack resolve false-positive get clear --severity --module --status --limit --json --output" -- "${cur}") )
+            return 0
+            ;;
+        modules)
+            COMPREPLY=( $(compgen -W "info enable disable --json --tier" -- "${cur}") )
+            return 0
+            ;;
+        config)
+            COMPREPLY=( $(compgen -W "set --validate --json --output" -- "${cur}") )
+            return 0
+            ;;
+        docker)
+            COMPREPLY=( $(compgen -W "up down logs status build pull" -- "${cur}") )
+            return 0
+            ;;
+        completions)
+            COMPREPLY=( $(compgen -W "bash zsh fish powershell" -- "${cur}") )
+            return 0
+            ;;
+        help)
+            COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
+            return 0
+            ;;
+        --severity)
+            COMPREPLY=( $(compgen -W "INFO LOW MEDIUM HIGH CRITICAL" -- "${cur}") )
+            return 0
+            ;;
+        --module|info|enable|disable)
+            local modules="network_guardian api_fortress iot_shield injection_shield supply_chain ransomware auth_fortress deepfake_shield identity_monitor llm_firewall ai_containment data_poisoning quantum_crypto runtime_watcher cloud_posture ai_analysis_engine"
+            COMPREPLY=( $(compgen -W "${modules}" -- "${cur}") )
+            return 0
+            ;;
+        --log-level)
+            COMPREPLY=( $(compgen -W "debug info warn error" -- "${cur}") )
+            return 0
+            ;;
+        --config|--output|--input|--compose-file|--env-file)
+            COMPREPLY=( $(compgen -f -- "${cur}") )
+            return 0
+            ;;
+    esac
+
+    if [[ "${cur}" == -* ]]; then
+        COMPREPLY=( $(compgen -W "--config --api-key --json --output --host --port --timeout --help" -- "${cur}") )
+        return 0
+    fi
+}
+
+complete -F _1sec_completions 1sec
+`
+}
+
+func zshCompletions() string {
+	return `#compdef 1sec
+# 1sec zsh completions
+# Add to ~/.zshrc: source <(1sec completions zsh)
+
+_1sec() {
+    local -a commands
+    commands=(
+        'up:Start the 1SEC engine with all enabled modules'
+        'stop:Gracefully stop a running instance'
+        'status:Show status of a running 1SEC instance'
+        'alerts:Fetch, acknowledge, resolve, or clear alerts'
+        'scan:Submit a payload for on-demand analysis'
+        'modules:List, inspect, enable, or disable defense modules'
+        'config:Show, validate, or modify configuration'
+        'check:Run pre-flight diagnostics'
+        'logs:Fetch recent logs from a running instance'
+        'events:Submit events to the bus'
+        'init:Generate a starter configuration file'
+        'docker:Manage the 1SEC Docker deployment'
+        'completions:Generate shell completion scripts'
+        'version:Print version and build info'
+        'help:Show help for a command'
+    )
+
+    _arguments -C \
+        '1:command:->command' \
+        '*::arg:->args'
+
+    case "$state" in
+        command)
+            _describe 'command' commands
+            ;;
+        args)
+            case "${words[1]}" in
+                alerts)
+                    local -a alert_cmds
+                    alert_cmds=('ack:Acknowledge an alert' 'resolve:Resolve an alert' 'false-positive:Mark as false positive' 'get:Get alert by ID' 'clear:Clear all alerts')
+                    _describe 'subcommand' alert_cmds
+                    ;;
+                modules)
+                    local -a mod_cmds
+                    mod_cmds=('info:Show module details' 'enable:Enable a module' 'disable:Disable a module')
+                    _describe 'subcommand' mod_cmds
+                    ;;
+                config)
+                    local -a cfg_cmds
+                    cfg_cmds=('set:Set a config value')
+                    _describe 'subcommand' cfg_cmds
+                    ;;
+                docker)
+                    local -a docker_cmds
+                    docker_cmds=('up:Start containers' 'down:Stop containers' 'logs:View logs' 'status:Container status' 'build:Build image' 'pull:Pull image')
+                    _describe 'subcommand' docker_cmds
+                    ;;
+                completions)
+                    _values 'shell' bash zsh fish powershell
+                    ;;
+                help)
+                    _describe 'command' commands
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_1sec "$@"
+`
+}
+
+func fishCompletions() string {
+	return `# 1sec fish completions
+# Add: 1sec completions fish | source
+
+# Disable file completions by default
+complete -c 1sec -f
+
+# Main commands
+complete -c 1sec -n '__fish_use_subcommand' -a up -d 'Start the 1SEC engine'
+complete -c 1sec -n '__fish_use_subcommand' -a stop -d 'Stop a running instance'
+complete -c 1sec -n '__fish_use_subcommand' -a status -d 'Show instance status'
+complete -c 1sec -n '__fish_use_subcommand' -a alerts -d 'Manage alerts'
+complete -c 1sec -n '__fish_use_subcommand' -a scan -d 'Scan a payload'
+complete -c 1sec -n '__fish_use_subcommand' -a modules -d 'Manage modules'
+complete -c 1sec -n '__fish_use_subcommand' -a config -d 'Manage configuration'
+complete -c 1sec -n '__fish_use_subcommand' -a check -d 'Pre-flight diagnostics'
+complete -c 1sec -n '__fish_use_subcommand' -a logs -d 'Fetch logs'
+complete -c 1sec -n '__fish_use_subcommand' -a events -d 'Submit events'
+complete -c 1sec -n '__fish_use_subcommand' -a init -d 'Generate config file'
+complete -c 1sec -n '__fish_use_subcommand' -a docker -d 'Docker deployment'
+complete -c 1sec -n '__fish_use_subcommand' -a completions -d 'Shell completions'
+complete -c 1sec -n '__fish_use_subcommand' -a version -d 'Print version'
+complete -c 1sec -n '__fish_use_subcommand' -a help -d 'Show help'
+
+# alerts subcommands
+complete -c 1sec -n '__fish_seen_subcommand_from alerts' -a ack -d 'Acknowledge alert'
+complete -c 1sec -n '__fish_seen_subcommand_from alerts' -a resolve -d 'Resolve alert'
+complete -c 1sec -n '__fish_seen_subcommand_from alerts' -a false-positive -d 'Mark false positive'
+complete -c 1sec -n '__fish_seen_subcommand_from alerts' -a get -d 'Get alert by ID'
+complete -c 1sec -n '__fish_seen_subcommand_from alerts' -a clear -d 'Clear all alerts'
+
+# modules subcommands
+complete -c 1sec -n '__fish_seen_subcommand_from modules' -a info -d 'Module details'
+complete -c 1sec -n '__fish_seen_subcommand_from modules' -a enable -d 'Enable module'
+complete -c 1sec -n '__fish_seen_subcommand_from modules' -a disable -d 'Disable module'
+
+# docker subcommands
+complete -c 1sec -n '__fish_seen_subcommand_from docker' -a 'up down logs status build pull'
+
+# completions subcommands
+complete -c 1sec -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish powershell'
+
+# Global flags
+complete -c 1sec -l config -d 'Config file path' -r -F
+complete -c 1sec -l api-key -d 'API key' -r
+complete -c 1sec -l json -d 'JSON output'
+complete -c 1sec -l output -d 'Output file' -r -F
+complete -c 1sec -l host -d 'API host' -r
+complete -c 1sec -l port -d 'API port' -r
+complete -c 1sec -l timeout -d 'Request timeout' -r
+complete -c 1sec -l help -d 'Show help'
+`
+}
+
+func powershellCompletions() string {
+	return `# 1sec PowerShell completions
+# Add: 1sec completions powershell | Out-String | Invoke-Expression
+
+Register-ArgumentCompleter -Native -CommandName 1sec -ScriptBlock {
+    param($wordToComplete, $commandAst, $cursorPosition)
+
+    $commands = @{
+        'up' = 'Start the 1SEC engine'
+        'stop' = 'Stop a running instance'
+        'status' = 'Show instance status'
+        'alerts' = 'Manage alerts'
+        'scan' = 'Scan a payload'
+        'modules' = 'Manage modules'
+        'config' = 'Manage configuration'
+        'check' = 'Pre-flight diagnostics'
+        'logs' = 'Fetch logs'
+        'events' = 'Submit events'
+        'init' = 'Generate config file'
+        'docker' = 'Docker deployment'
+        'completions' = 'Shell completions'
+        'version' = 'Print version'
+        'help' = 'Show help'
+    }
+
+    $elements = $commandAst.CommandElements
+    $command = if ($elements.Count -gt 1) { $elements[1].Value } else { '' }
+
+    if ($elements.Count -le 2) {
+        $commands.GetEnumerator() | Where-Object { $_.Key -like "$wordToComplete*" } | ForEach-Object {
+            [System.Management.Automation.CompletionResult]::new($_.Key, $_.Key, 'ParameterValue', $_.Value)
+        }
+    } else {
+        switch ($command) {
+            'alerts' {
+                @('ack', 'resolve', 'false-positive', 'get', 'clear') | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
+                    [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+                }
+            }
+            'modules' {
+                @('info', 'enable', 'disable') | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
+                    [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+                }
+            }
+            'docker' {
+                @('up', 'down', 'logs', 'status', 'build', 'pull') | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
+                    [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+                }
+            }
+            'completions' {
+                @('bash', 'zsh', 'fish', 'powershell') | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
+                    [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+                }
+            }
+        }
+    }
+}
+`
 }

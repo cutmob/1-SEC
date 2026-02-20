@@ -22,19 +22,19 @@ const ModuleName = "iot_shield"
 // scanning, rogue device detection, OT command validation, device behavior
 // baseline monitoring, network segmentation enforcement, and firmware CVE tracking.
 type Shield struct {
-	logger       zerolog.Logger
-	bus          *core.EventBus
-	pipeline     *core.AlertPipeline
-	cfg          *core.Config
-	ctx          context.Context
-	cancel       context.CancelFunc
-	inventory    *DeviceInventory
-	anomalyDet   *ProtocolAnomalyDetector
-	behaviorMon  *DeviceBehaviorMonitor
-	otValidator  *OTCommandValidator
-	credScanner  *CredentialScanner
-	fwIntegrity  *FirmwareIntegrityDB
-	segEnforcer  *SegmentationEnforcer
+	logger      zerolog.Logger
+	bus         *core.EventBus
+	pipeline    *core.AlertPipeline
+	cfg         *core.Config
+	ctx         context.Context
+	cancel      context.CancelFunc
+	inventory   *DeviceInventory
+	anomalyDet  *ProtocolAnomalyDetector
+	behaviorMon *DeviceBehaviorMonitor
+	otValidator *OTCommandValidator
+	credScanner *CredentialScanner
+	fwIntegrity *FirmwareIntegrityDB
+	segEnforcer *SegmentationEnforcer
 }
 
 func New() *Shield { return &Shield{} }
@@ -362,11 +362,11 @@ type DeviceRecord struct {
 }
 
 type RegistrationResult struct {
-	IsNew              bool
-	IPChanged          bool
-	FirmwareDowngrade  bool
-	PreviousIP         string
-	PreviousFirmware   string
+	IsNew             bool
+	IPChanged         bool
+	FirmwareDowngrade bool
+	PreviousIP        string
+	PreviousFirmware  string
 }
 
 func NewDeviceInventory() *DeviceInventory {
@@ -804,8 +804,8 @@ func (d *ProtocolAnomalyDetector) CleanupLoop(ctx context.Context) {
 // ===========================================================================
 
 type DeviceBehaviorMonitor struct {
-	mu       sync.RWMutex
-	profiles map[string]*deviceBehaviorProfile
+	mu             sync.RWMutex
+	profiles       map[string]*deviceBehaviorProfile
 	spikeThreshold float64
 }
 
@@ -813,15 +813,15 @@ type deviceBehaviorProfile struct {
 	DeviceType     string
 	KnownProtocols map[string]bool
 	// Activity rate tracking
-	activityCount  int
-	activityWindow time.Time
-	baselineRate   int // events per minute (rolling average)
+	activityCount   int
+	activityWindow  time.Time
+	baselineRate    int // events per minute (rolling average)
 	baselineSamples int
 	// Time-of-day tracking
-	activeHours    map[int]int // hour -> count
-	totalEvents    int
-	LastSeen       time.Time
-	CreatedAt      time.Time
+	activeHours map[int]int // hour -> count
+	totalEvents int
+	LastSeen    time.Time
+	CreatedAt   time.Time
 }
 
 type BehaviorAnomaly struct {
@@ -951,10 +951,10 @@ func (bm *DeviceBehaviorMonitor) CleanupLoop(ctx context.Context) {
 // ===========================================================================
 
 type OTCommandValidator struct {
-	mu               sync.RWMutex
-	authorizedIPs    map[string]bool
+	mu                sync.RWMutex
+	authorizedIPs     map[string]bool
 	dangerousCommands map[string]*regexp.Regexp
-	safeRanges       map[string]*safeRange
+	safeRanges        map[string]*safeRange
 }
 
 type safeRange struct {
@@ -1052,34 +1052,34 @@ func (v *OTCommandValidator) Validate(protocol, command string, functionCode int
 
 type CredentialScanner struct {
 	// vendor -> username -> passwords
-	vendorDefaults map[string]map[string][]string
+	vendorDefaults  map[string]map[string][]string
 	genericDefaults map[string][]string
-	weakPasswords  *regexp.Regexp
+	weakPasswords   *regexp.Regexp
 }
 
 func NewCredentialScanner() *CredentialScanner {
 	return &CredentialScanner{
 		vendorDefaults: map[string]map[string][]string{
-			"hikvision":  {"admin": {"12345", "admin12345", ""}},
-			"dahua":      {"admin": {"admin", ""}},
-			"axis":       {"root": {"pass", "root", ""}},
-			"cisco":      {"admin": {"admin", "cisco", ""}, "cisco": {"cisco", ""}},
-			"honeywell":  {"admin": {"1234", "admin", ""}},
-			"schneider":  {"USER": {"USER", ""}, "admin": {"admin", ""}},
-			"siemens":    {"admin": {"admin", ""}, "SIMATIC": {"SIMATIC", ""}},
-			"abb":        {"admin": {"admin", ""}, "default": {"default", ""}},
-			"rockwell":   {"admin": {"1234", ""}, "1784": {"1784", ""}},
-			"moxa":       {"admin": {"", "admin", "root"}},
-			"dlink":      {"admin": {"admin", "", "password"}},
-			"tplink":     {"admin": {"admin", ""}},
-			"ubiquiti":   {"ubnt": {"ubnt", ""}},
-			"mikrotik":   {"admin": {"", "admin"}},
-			"netgear":    {"admin": {"password", "1234"}},
-			"samsung":    {"admin": {"1111111", "4321"}},
-			"bosch":      {"admin": {"admin", ""}},
-			"ge":         {"admin": {"admin", ""}, "engineer": {"engineer", ""}},
-			"emerson":    {"admin": {"admin", ""}, "Ovation": {"Ovation", ""}},
-			"yokogawa":   {"admin": {"admin", ""}, "CENTUM": {"CENTUM", ""}},
+			"hikvision": {"admin": {"12345", "admin12345", ""}},
+			"dahua":     {"admin": {"admin", ""}},
+			"axis":      {"root": {"pass", "root", ""}},
+			"cisco":     {"admin": {"admin", "cisco", ""}, "cisco": {"cisco", ""}},
+			"honeywell": {"admin": {"1234", "admin", ""}},
+			"schneider": {"USER": {"USER", ""}, "admin": {"admin", ""}},
+			"siemens":   {"admin": {"admin", ""}, "SIMATIC": {"SIMATIC", ""}},
+			"abb":       {"admin": {"admin", ""}, "default": {"default", ""}},
+			"rockwell":  {"admin": {"1234", ""}, "1784": {"1784", ""}},
+			"moxa":      {"admin": {"", "admin", "root"}},
+			"dlink":     {"admin": {"admin", "", "password"}},
+			"tplink":    {"admin": {"admin", ""}},
+			"ubiquiti":  {"ubnt": {"ubnt", ""}},
+			"mikrotik":  {"admin": {"", "admin"}},
+			"netgear":   {"admin": {"password", "1234"}},
+			"samsung":   {"admin": {"1111111", "4321"}},
+			"bosch":     {"admin": {"admin", ""}},
+			"ge":        {"admin": {"admin", ""}, "engineer": {"engineer", ""}},
+			"emerson":   {"admin": {"admin", ""}, "Ovation": {"Ovation", ""}},
+			"yokogawa":  {"admin": {"admin", ""}, "CENTUM": {"CENTUM", ""}},
 		},
 		genericDefaults: map[string][]string{
 			"admin":     {"admin", "password", "1234", "12345", "123456", ""},
@@ -1145,10 +1145,10 @@ func (cs *CredentialScanner) Check(username, password, deviceType, vendor string
 // ===========================================================================
 
 type FirmwareIntegrityDB struct {
-	mu          sync.RWMutex
-	knownGood   map[string]map[string]bool // "vendor:model" -> set of known-good hashes
-	vulnerable  map[string]string          // hash -> vulnerability description
-	deviceFW    map[string]string          // deviceID -> current hash
+	mu         sync.RWMutex
+	knownGood  map[string]map[string]bool // "vendor:model" -> set of known-good hashes
+	vulnerable map[string]string          // hash -> vulnerability description
+	deviceFW   map[string]string          // deviceID -> current hash
 }
 
 type FirmwareResult struct {
@@ -1219,7 +1219,7 @@ func (db *FirmwareIntegrityDB) RegisterVulnerable(hash, description string) {
 
 type SegmentationEnforcer struct {
 	mu            sync.RWMutex
-	blockedFlows  map[string]bool // "srcZone->dstZone" -> blocked
+	blockedFlows  map[string]bool  // "srcZone->dstZone" -> blocked
 	allowedPorts  map[string][]int // "srcZone->dstZone" -> allowed ports
 	criticalZones map[string]bool
 }

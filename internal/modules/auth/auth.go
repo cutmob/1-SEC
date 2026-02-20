@@ -570,27 +570,27 @@ func (sm *SessionMonitor) CleanupLoop(ctx context.Context) {
 // ---------------------------------------------------------------------------
 
 type OAuthMonitor struct {
-	mu          sync.Mutex
-	appGrants   map[string]*oauthAppProfile // key: appID
-	tokenUsage  map[string]*tokenProfile    // key: tokenID
+	mu         sync.Mutex
+	appGrants  map[string]*oauthAppProfile // key: appID
+	tokenUsage map[string]*tokenProfile    // key: tokenID
 }
 
 type oauthAppProfile struct {
-	grantCount    int
-	uniqueUsers   map[string]bool
-	scopes        map[string]bool
-	redirectURIs  map[string]bool
-	firstSeen     time.Time
-	lastSeen      time.Time
+	grantCount   int
+	uniqueUsers  map[string]bool
+	scopes       map[string]bool
+	redirectURIs map[string]bool
+	firstSeen    time.Time
+	lastSeen     time.Time
 }
 
 type tokenProfile struct {
-	user       string
-	ips        map[string]time.Time
-	actions    map[string]bool
-	firstIP    string
-	firstSeen  time.Time
-	lastSeen   time.Time
+	user      string
+	ips       map[string]time.Time
+	actions   map[string]bool
+	firstIP   string
+	firstSeen time.Time
+	lastSeen  time.Time
 }
 
 type OAuthResult struct {

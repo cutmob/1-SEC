@@ -22,14 +22,14 @@ const ModuleName = "runtime_watcher"
 // fileless malware detection, UEFI/bootkit indicators, memory injection detection,
 // persistence mechanism detection, and WMI/scheduled task abuse detection.
 type Watcher struct {
-	logger  zerolog.Logger
-	bus     *core.EventBus
+	logger   zerolog.Logger
+	bus      *core.EventBus
 	pipeline *core.AlertPipeline
-	cfg     *core.Config
-	ctx     context.Context
-	cancel  context.CancelFunc
-	fim     *FileIntegrityMonitor
-	procMon *ProcessMonitor
+	cfg      *core.Config
+	ctx      context.Context
+	cancel   context.CancelFunc
+	fim      *FileIntegrityMonitor
+	procMon  *ProcessMonitor
 }
 
 func New() *Watcher { return &Watcher{} }
@@ -197,17 +197,17 @@ func (w *Watcher) handleMemoryInjection(event *core.SecurityEvent) {
 		title   string
 		mitreID string
 	}{
-		"process_hollowing":    {"Process Hollowing", "T1055.012"},
-		"dll_injection":        {"DLL Injection", "T1055.001"},
-		"reflective_loading":   {"Reflective DLL Loading", "T1620.001"},
-		"thread_hijacking":     {"Thread Execution Hijacking", "T1055.003"},
-		"apc_injection":        {"APC Queue Injection", "T1055.004"},
-		"atom_bombing":         {"AtomBombing Injection", "T1055"},
+		"process_hollowing":     {"Process Hollowing", "T1055.012"},
+		"dll_injection":         {"DLL Injection", "T1055.001"},
+		"reflective_loading":    {"Reflective DLL Loading", "T1620.001"},
+		"thread_hijacking":      {"Thread Execution Hijacking", "T1055.003"},
+		"apc_injection":         {"APC Queue Injection", "T1055.004"},
+		"atom_bombing":          {"AtomBombing Injection", "T1055"},
 		"process_doppelganging": {"Process Doppelgänging", "T1055.013"},
-		"veh_hooking":          {"Vectored Exception Handler Hooking", "T1055"},
-		"ntfs_transaction":     {"NTFS Transaction Injection", "T1055"},
-		"early_bird":           {"Early Bird APC Injection", "T1055.004"},
-		"module_stomping":      {"Module Stomping", "T1055"},
+		"veh_hooking":           {"Vectored Exception Handler Hooking", "T1055"},
+		"ntfs_transaction":      {"NTFS Transaction Injection", "T1055"},
+		"early_bird":            {"Early Bird APC Injection", "T1055.004"},
+		"module_stomping":       {"Module Stomping", "T1055"},
 	}
 
 	desc, known := techniqueDescriptions[technique]
@@ -786,17 +786,17 @@ func (pm *ProcessMonitor) IsSuspicious(name, cmdLine, parent string) bool {
 		return true
 	}
 	suspiciousParents := map[string][]string{
-		"apache2": {"bash", "sh", "python", "perl", "ruby"},
-		"httpd":   {"bash", "sh", "python", "perl", "ruby"},
-		"nginx":   {"bash", "sh", "python", "perl", "ruby"},
-		"java":    {"bash", "sh", "cmd", "powershell"},
-		"node":    {"bash", "sh", "cmd", "powershell"},
+		"apache2":  {"bash", "sh", "python", "perl", "ruby"},
+		"httpd":    {"bash", "sh", "python", "perl", "ruby"},
+		"nginx":    {"bash", "sh", "python", "perl", "ruby"},
+		"java":     {"bash", "sh", "cmd", "powershell"},
+		"node":     {"bash", "sh", "cmd", "powershell"},
 		"postgres": {"bash", "sh", "python"},
-		"mysql":   {"bash", "sh", "python"},
-		"w3wp":    {"cmd", "powershell", "bash"},
-		"iis":     {"cmd", "powershell"},
-		"tomcat":  {"bash", "sh", "cmd", "powershell"},
-		"php-fpm": {"bash", "sh", "python"},
+		"mysql":    {"bash", "sh", "python"},
+		"w3wp":     {"cmd", "powershell", "bash"},
+		"iis":      {"cmd", "powershell"},
+		"tomcat":   {"bash", "sh", "cmd", "powershell"},
+		"php-fpm":  {"bash", "sh", "python"},
 	}
 	parentLower := strings.ToLower(parent)
 	if children, ok := suspiciousParents[parentLower]; ok {

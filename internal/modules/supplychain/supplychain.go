@@ -232,10 +232,10 @@ type PackageTracker struct {
 }
 
 type PackageRecord struct {
-	Name     string
-	Version  string
-	Registry string
-	Hash     string
+	Name      string
+	Version   string
+	Registry  string
+	Hash      string
 	FirstSeen time.Time
 }
 

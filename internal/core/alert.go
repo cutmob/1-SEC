@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 
@@ -165,4 +166,42 @@ func (p *AlertPipeline) Count() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return len(p.alerts)
+}
+
+// UpdateAlertStatus changes the status of an alert by ID.
+func (p *AlertPipeline) UpdateAlertStatus(id string, status AlertStatus) (*Alert, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, a := range p.alerts {
+		if a.ID == id {
+			a.Status = status
+			return a, true
+		}
+	}
+	return nil, false
+}
+
+// ClearAlerts removes all stored alerts and returns the count removed.
+func (p *AlertPipeline) ClearAlerts() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	count := len(p.alerts)
+	p.alerts = make([]*Alert, 0, p.maxStore)
+	return count
+}
+
+// ParseAlertStatus converts a string to AlertStatus.
+func ParseAlertStatus(s string) (AlertStatus, bool) {
+	switch strings.ToUpper(s) {
+	case "OPEN":
+		return AlertStatusOpen, true
+	case "ACKNOWLEDGED", "ACK":
+		return AlertStatusAcknowledged, true
+	case "RESOLVED":
+		return AlertStatusResolved, true
+	case "FALSE_POSITIVE":
+		return AlertStatusFalsePositive, true
+	default:
+		return AlertStatusOpen, false
+	}
 }

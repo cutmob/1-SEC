@@ -33,24 +33,26 @@ type Shield struct {
 
 // Stats tracks detection statistics.
 type Stats struct {
-	mu             sync.Mutex
-	TotalScanned   int64
-	SQLiDetected   int64
-	XSSDetected    int64
-	CMDiDetected   int64
-	SSRFDetected   int64
-	LDAPiDetected  int64
-	TemplDetected  int64
-	NoSQLDetected  int64
-	PathDetected   int64
+	mu            sync.Mutex
+	TotalScanned  int64
+	SQLiDetected  int64
+	XSSDetected   int64
+	CMDiDetected  int64
+	SSRFDetected  int64
+	LDAPiDetected int64
+	TemplDetected int64
+	NoSQLDetected int64
+	PathDetected  int64
 }
 
 func New() *Shield {
 	return &Shield{}
 }
 
-func (s *Shield) Name() string        { return ModuleName }
-func (s *Shield) Description() string { return "Detects SQL injection, XSS, command injection, SSRF, LDAP injection, template injection, NoSQL injection, and path traversal attacks" }
+func (s *Shield) Name() string { return ModuleName }
+func (s *Shield) Description() string {
+	return "Detects SQL injection, XSS, command injection, SSRF, LDAP injection, template injection, NoSQL injection, and path traversal attacks"
+}
 
 func (s *Shield) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
 	s.ctx, s.cancel = context.WithCancel(ctx)

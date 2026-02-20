@@ -29,8 +29,10 @@ type Monitor struct {
 
 func New() *Monitor { return &Monitor{} }
 
-func (m *Monitor) Name() string        { return ModuleName }
-func (m *Monitor) Description() string { return "Synthetic identity detection, privilege escalation monitoring, service account behavior analysis, and identity lifecycle anomalies" }
+func (m *Monitor) Name() string { return ModuleName }
+func (m *Monitor) Description() string {
+	return "Synthetic identity detection, privilege escalation monitoring, service account behavior analysis, and identity lifecycle anomalies"
+}
 
 func (m *Monitor) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
 	m.ctx, m.cancel = context.WithCancel(ctx)
@@ -217,8 +219,8 @@ type IdentityRecord struct {
 }
 
 type creationTracker struct {
-	count    int
-	window   time.Time
+	count  int
+	window time.Time
 }
 
 type SyntheticScore struct {
@@ -368,11 +370,11 @@ type ServiceAccountMonitor struct {
 }
 
 type svcAccountProfile struct {
-	KnownActions  map[string]bool
-	KnownIPs      map[string]bool
-	ActionCount   int
-	CountWindow   time.Time
-	LastSeen      time.Time
+	KnownActions map[string]bool
+	KnownIPs     map[string]bool
+	ActionCount  int
+	CountWindow  time.Time
+	LastSeen     time.Time
 }
 
 type SvcAnomaly struct {

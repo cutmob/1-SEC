@@ -32,8 +32,10 @@ type Guard struct {
 
 func New() *Guard { return &Guard{} }
 
-func (g *Guard) Name() string        { return ModuleName }
-func (g *Guard) Description() string { return "Training data integrity validation, RAG source verification, adversarial input detection, and model weight drift monitoring" }
+func (g *Guard) Name() string { return ModuleName }
+func (g *Guard) Description() string {
+	return "Training data integrity validation, RAG source verification, adversarial input detection, and model weight drift monitoring"
+}
 
 func (g *Guard) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
 	g.ctx, g.cancel = context.WithCancel(ctx)
@@ -216,11 +218,11 @@ type DataIntegrityTracker struct {
 }
 
 type datasetRecord struct {
-	LastHash       string
+	LastHash        string
 	LastRecordCount int
-	AvgChangeRate  float64
-	UpdateCount    int
-	LastUpdate     time.Time
+	AvgChangeRate   float64
+	UpdateCount     int
+	LastUpdate      time.Time
 }
 
 type DataUpdateResult struct {

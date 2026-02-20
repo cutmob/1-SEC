@@ -780,12 +780,12 @@ type C2Detector struct {
 }
 
 type c2Profile struct {
-	intervals   []int64 // milliseconds between connections
-	bytesOut    []int
-	bytesIn     []int
-	timestamps  []time.Time
-	protocol    string
-	lastSeen    time.Time
+	intervals  []int64 // milliseconds between connections
+	bytesOut   []int
+	bytesIn    []int
+	timestamps []time.Time
+	protocol   string
+	lastSeen   time.Time
 }
 
 type C2AnalysisResult struct {
@@ -939,12 +939,12 @@ type lateralProfile struct {
 }
 
 type ticketProfile struct {
-	tgsRequests   int
-	rc4Requests   int
-	tgtAnomalies  int
-	dcsyncCount   int
-	windowStart   time.Time
-	lastSeen      time.Time
+	tgsRequests  int
+	rc4Requests  int
+	tgtAnomalies int
+	dcsyncCount  int
+	windowStart  time.Time
+	lastSeen     time.Time
 }
 
 type LateralResult struct {
@@ -1097,19 +1097,19 @@ func (lm *LateralMovementMonitor) CleanupLoop(ctx context.Context) {
 // ---------------------------------------------------------------------------
 
 type PortScanDetector struct {
-	mu      sync.Mutex
-	scans   map[string]*scanProfile // key: sourceIP
+	mu    sync.Mutex
+	scans map[string]*scanProfile // key: sourceIP
 }
 
 type scanProfile struct {
 	// Vertical: ports per destination
 	portsByDest map[string]map[int]bool // destIP -> set of ports
 	// Horizontal: destinations per port
-	destsByPort map[int]map[string]bool // port -> set of destIPs
-	synOnly     int                     // SYN without ACK (stealth indicator)
+	destsByPort   map[int]map[string]bool // port -> set of destIPs
+	synOnly       int                     // SYN without ACK (stealth indicator)
 	totalAttempts int
-	windowStart time.Time
-	lastSeen    time.Time
+	windowStart   time.Time
+	lastSeen      time.Time
 }
 
 type PortScanResult struct {

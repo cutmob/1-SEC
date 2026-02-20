@@ -32,7 +32,6 @@ type Firewall struct {
 	mu           sync.RWMutex
 }
 
-
 // DetectionPattern represents a compiled prompt injection/jailbreak pattern.
 type DetectionPattern struct {
 	Name     string
@@ -66,7 +65,7 @@ func New() *Firewall {
 	}
 }
 
-func (f *Firewall) Name() string        { return ModuleName }
+func (f *Firewall) Name() string { return ModuleName }
 func (f *Firewall) Description() string {
 	return "Prompt injection detection, jailbreak prevention, output filtering, and token budget monitoring for LLM applications"
 }
@@ -751,8 +750,8 @@ func (mt *MultiTurnTracker) RecordAndAnalyze(sessionID, prompt string, isSuspici
 // Example: read credentials file -> encode contents -> make HTTP request to external server.
 // Each step is individually benign; the chain is the attack.
 type ToolChainMonitor struct {
-	mu       sync.RWMutex
-	agents   map[string]*toolChainState
+	mu              sync.RWMutex
+	agents          map[string]*toolChainState
 	dangerousChains []dangerousChain
 }
 
@@ -1147,11 +1146,11 @@ func normalizeBidiAndDiacritics(input string) string {
 func looksLikeROT13(input string) bool {
 	// Heuristic: if the input contains words that look like ROT13 of common injection terms
 	rot13Indicators := []string{
-		"vtaber", // ignore
+		"vtaber",    // ignore
 		"qvfertneq", // disregard
-		"birEevqr", // override
-		"flFgrz", // system
-		"cebzcg", // prompt
+		"birEevqr",  // override
+		"flFgrz",    // system
+		"cebzcg",    // prompt
 	}
 	lower := strings.ToLower(input)
 	for _, indicator := range rot13Indicators {

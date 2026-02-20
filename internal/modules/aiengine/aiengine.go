@@ -19,8 +19,9 @@ const ModuleName = "ai_analysis_engine"
 
 // Engine is the cross-cutting AI Analysis Engine (Module 16).
 // It implements a two-tier LLM pipeline:
-//   Tier 1: Gemini Flash Lite — fast triage, false positive filtering
-//   Tier 2: Gemini Flash — deep threat classification, cross-module correlation
+//
+//	Tier 1: Gemini Flash Lite — fast triage, false positive filtering
+//	Tier 2: Gemini Flash — deep threat classification, cross-module correlation
 type Engine struct {
 	logger     zerolog.Logger
 	bus        *core.EventBus
@@ -33,13 +34,13 @@ type Engine struct {
 	keyMgr     *KeyManager
 
 	// Config
-	triageModel  string
-	deepModel    string
-	triageURL    string
-	deepURL      string
-	enabled      bool
-	triageQueue  chan *core.SecurityEvent
-	deepQueue    chan *analysisRequest
+	triageModel string
+	deepModel   string
+	triageURL   string
+	deepURL     string
+	enabled     bool
+	triageQueue chan *core.SecurityEvent
+	deepQueue   chan *analysisRequest
 }
 
 type analysisRequest struct {
@@ -311,9 +312,9 @@ type geminiResponse struct {
 }
 
 type triageResult struct {
-	Score    float64 `json:"score"`
-	Category string  `json:"category"`
-	IsFalsePositive bool `json:"is_false_positive"`
+	Score           float64 `json:"score"`
+	Category        string  `json:"category"`
+	IsFalsePositive bool    `json:"is_false_positive"`
 }
 
 type deepAnalysisResult struct {

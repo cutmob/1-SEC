@@ -11,9 +11,9 @@ import (
 
 // Cooldown durations for different error types.
 const (
-	rateLimitCooldown      = 60 * time.Second       // 429 rate limit
-	quotaExhaustedCooldown = 10 * time.Minute       // quota exhausted
-	invalidKeyCooldown     = 24 * time.Hour          // 401 / invalid key
+	rateLimitCooldown      = 60 * time.Second // 429 rate limit
+	quotaExhaustedCooldown = 10 * time.Minute // quota exhausted
+	invalidKeyCooldown     = 24 * time.Hour   // 401 / invalid key
 )
 
 // rotatablePatterns are error substrings that indicate key-level rate limiting.
@@ -39,10 +39,10 @@ type keyState struct {
 // on rate limit (429) or quota exhaustion. Rate limits are per-key,
 // so rotating to a fresh key is the only way to maintain throughput.
 type KeyManager struct {
-	mu       sync.Mutex
-	keys     []*keyState
-	current  int
-	logger   zerolog.Logger
+	mu      sync.Mutex
+	keys    []*keyState
+	current int
+	logger  zerolog.Logger
 }
 
 // NewKeyManager creates a KeyManager from a list of API key strings.

@@ -95,13 +95,13 @@ func NewAudioAnalyzer() *AudioAnalyzer { return &AudioAnalyzer{} }
 
 // AudioResult holds the results of heuristic audio analysis.
 type AudioResult struct {
-	Score           float64
-	Entropy         float64
-	SpectralFlat    float64
-	SilenceRatio    float64
-	ZeroCrossRate   float64
-	BitrateStable   bool
-	Indicators      []string
+	Score         float64
+	Entropy       float64
+	SpectralFlat  float64
+	SilenceRatio  float64
+	ZeroCrossRate float64
+	BitrateStable bool
+	Indicators    []string
 }
 
 // Analyze performs heuristic analysis on raw audio bytes.

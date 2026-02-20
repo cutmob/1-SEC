@@ -66,13 +66,13 @@ type LoggingConfig struct {
 
 // RustEngineConfig holds settings for the optional Rust sidecar engine.
 type RustEngineConfig struct {
-	Enabled             bool              `yaml:"enabled"`
-	Binary              string            `yaml:"binary"`
-	Workers             int               `yaml:"workers"`
-	BufferSize          int               `yaml:"buffer_size"`
-	MinScore            float64           `yaml:"min_score"`
-	AhoCorasickPrefilter bool            `yaml:"aho_corasick_prefilter"`
-	Capture             RustCaptureConfig `yaml:"capture"`
+	Enabled              bool              `yaml:"enabled"`
+	Binary               string            `yaml:"binary"`
+	Workers              int               `yaml:"workers"`
+	BufferSize           int               `yaml:"buffer_size"`
+	MinScore             float64           `yaml:"min_score"`
+	AhoCorasickPrefilter bool              `yaml:"aho_corasick_prefilter"`
+	Capture              RustCaptureConfig `yaml:"capture"`
 }
 
 // RustCaptureConfig holds packet capture settings for the Rust engine.
@@ -108,7 +108,7 @@ func DefaultConfig() *Config {
 			Port:     1514,
 		},
 		Modules: map[string]ModuleConfig{
-			"network_guardian":    {Enabled: true, Settings: map[string]interface{}{}},
+			"network_guardian":   {Enabled: true, Settings: map[string]interface{}{}},
 			"api_fortress":       {Enabled: true, Settings: map[string]interface{}{}},
 			"iot_shield":         {Enabled: true, Settings: map[string]interface{}{}},
 			"injection_shield":   {Enabled: true, Settings: map[string]interface{}{}},

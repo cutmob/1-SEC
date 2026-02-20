@@ -19,27 +19,27 @@ const ModuleName = "api_fortress"
 // rate limiting, excessive data exposure detection, GraphQL abuse prevention,
 // JWT validation, SSRF-via-API detection, and response anomaly analysis.
 type Fortress struct {
-	logger          zerolog.Logger
-	bus             *core.EventBus
-	pipeline        *core.AlertPipeline
-	cfg             *core.Config
-	ctx             context.Context
-	cancel          context.CancelFunc
-	bolaDetector    *BOLADetector
-	bflaDetector    *BFLADetector
-	apiRegistry     *APIRegistry
-	rateLimiter     *EndpointRateLimiter
-	massAssignDet   *MassAssignmentDetector
-	dataExposureDet *DataExposureDetector
-	graphqlGuard    *GraphQLGuard
-	jwtValidator    *JWTValidator
-	ssrfDetector    *SSRFViaAPIDetector
+	logger           zerolog.Logger
+	bus              *core.EventBus
+	pipeline         *core.AlertPipeline
+	cfg              *core.Config
+	ctx              context.Context
+	cancel           context.CancelFunc
+	bolaDetector     *BOLADetector
+	bflaDetector     *BFLADetector
+	apiRegistry      *APIRegistry
+	rateLimiter      *EndpointRateLimiter
+	massAssignDet    *MassAssignmentDetector
+	dataExposureDet  *DataExposureDetector
+	graphqlGuard     *GraphQLGuard
+	jwtValidator     *JWTValidator
+	ssrfDetector     *SSRFViaAPIDetector
 	responseAnalyzer *ResponseAnomalyAnalyzer
 }
 
 func New() *Fortress { return &Fortress{} }
 
-func (f *Fortress) Name() string        { return ModuleName }
+func (f *Fortress) Name() string { return ModuleName }
 func (f *Fortress) Description() string {
 	return "BOLA/BFLA detection, mass assignment protection, API schema validation, shadow API discovery, per-endpoint rate limiting, excessive data exposure, GraphQL abuse prevention, JWT validation, SSRF-via-API detection, and response anomaly analysis"
 }
@@ -348,10 +348,10 @@ type BOLADetector struct {
 }
 
 type bolaProfile struct {
-	resources     map[string]bool
-	orderedIDs    []string
-	firstSeen     time.Time
-	lastSeen      time.Time
+	resources  map[string]bool
+	orderedIDs []string
+	firstSeen  time.Time
+	lastSeen   time.Time
 }
 
 type BOLAResult struct {
@@ -507,11 +507,11 @@ func parseNumericID(s string) int {
 // ===========================================================================
 
 type BFLADetector struct {
-	mu             sync.RWMutex
-	adminPaths     *regexp.Regexp
-	writePaths     *regexp.Regexp
-	roleHierarchy  map[string]int // role -> privilege level
-	userAttempts   map[string]*bflaTracker
+	mu            sync.RWMutex
+	adminPaths    *regexp.Regexp
+	writePaths    *regexp.Regexp
+	roleHierarchy map[string]int // role -> privilege level
+	userAttempts  map[string]*bflaTracker
 }
 
 type bflaTracker struct {
@@ -709,7 +709,7 @@ func (d *DataExposureDetector) Check(path, method, responseBody string, response
 		if d.sensitivePatterns.MatchString(responseBody) {
 			matches := d.sensitivePatterns.FindAllString(responseBody, 5)
 			return &DataExposureFinding{
-				Severity:    core.SeverityCritical,
+				Severity: core.SeverityCritical,
 				Description: fmt.Sprintf("Response contains sensitive credentials/secrets: %d matches found. Fields: %s",
 					len(matches), summarizeMatches(matches)),
 			}
@@ -718,7 +718,7 @@ func (d *DataExposureDetector) Check(path, method, responseBody string, response
 		if d.piiPatterns.MatchString(responseBody) {
 			matches := d.piiPatterns.FindAllString(responseBody, 5)
 			return &DataExposureFinding{
-				Severity:    core.SeverityHigh,
+				Severity: core.SeverityHigh,
 				Description: fmt.Sprintf("Response contains PII data: %d matches found. Fields: %s",
 					len(matches), summarizeMatches(matches)),
 			}
@@ -728,7 +728,7 @@ func (d *DataExposureDetector) Check(path, method, responseBody string, response
 	// Abnormally large response for a single-object endpoint
 	if responseSize > 1024*1024 && !strings.Contains(path, "/export") && !strings.Contains(path, "/download") && !strings.Contains(path, "/bulk") {
 		return &DataExposureFinding{
-			Severity:    core.SeverityMedium,
+			Severity: core.SeverityMedium,
 			Description: fmt.Sprintf("Response size %d bytes (%.1f MB) is unusually large for endpoint %s %s",
 				responseSize, float64(responseSize)/(1024*1024), method, path),
 		}
@@ -760,13 +760,13 @@ func summarizeMatches(matches []string) string {
 // ===========================================================================
 
 type GraphQLGuard struct {
-	maxDepth       int
-	maxAliases     int
-	maxBatchSize   int
-	maxComplexity  int
-	depthPattern   *regexp.Regexp
-	aliasPattern   *regexp.Regexp
-	introspection  *regexp.Regexp
+	maxDepth           int
+	maxAliases         int
+	maxBatchSize       int
+	maxComplexity      int
+	depthPattern       *regexp.Regexp
+	aliasPattern       *regexp.Regexp
+	introspection      *regexp.Regexp
 	dangerousMutations *regexp.Regexp
 }
 
@@ -793,13 +793,13 @@ func NewGraphQLGuard(settings map[string]interface{}) *GraphQLGuard {
 	}
 
 	return &GraphQLGuard{
-		maxDepth:     maxDepth,
-		maxAliases:   maxAliases,
-		maxBatchSize: maxBatch,
-		maxComplexity: 1000,
-		depthPattern: regexp.MustCompile(`\{`),
-		aliasPattern: regexp.MustCompile(`\w+\s*:\s*\w+\s*[\({]`),
-		introspection: regexp.MustCompile(`(?i)(__schema|__type|__typename\s*\{|introspectionQuery)`),
+		maxDepth:           maxDepth,
+		maxAliases:         maxAliases,
+		maxBatchSize:       maxBatch,
+		maxComplexity:      1000,
+		depthPattern:       regexp.MustCompile(`\{`),
+		aliasPattern:       regexp.MustCompile(`\w+\s*:\s*\w+\s*[\({]`),
+		introspection:      regexp.MustCompile(`(?i)(__schema|__type|__typename\s*\{|introspectionQuery)`),
 		dangerousMutations: regexp.MustCompile(`(?i)(deleteAll|dropDatabase|truncate|destroyAll|purge|resetAll|wipeData)`),
 	}
 }
@@ -1005,8 +1005,8 @@ type SSRFFinding struct {
 func NewSSRFViaAPIDetector() *SSRFViaAPIDetector {
 	return &SSRFViaAPIDetector{
 		internalPatterns: regexp.MustCompile(`(?i)(127\.0\.0\.1|0\.0\.0\.0|localhost|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|\[::1\]|\[0:0:0:0:0:0:0:1\]|0x7f|2130706433|017700000001|\.internal\.|\.local\.|\.corp\.|\.home\.)`),
-		cloudMetadata: regexp.MustCompile(`(?i)(169\.254\.169\.254|metadata\.google\.internal|100\.100\.100\.200|fd00:ec2::254)`),
-		urlParams:     regexp.MustCompile(`(?i)(url|uri|link|href|src|source|redirect|callback|webhook|endpoint|target|dest|fetch|load|proxy|forward)=`),
+		cloudMetadata:    regexp.MustCompile(`(?i)(169\.254\.169\.254|metadata\.google\.internal|100\.100\.100\.200|fd00:ec2::254)`),
+		urlParams:        regexp.MustCompile(`(?i)(url|uri|link|href|src|source|redirect|callback|webhook|endpoint|target|dest|fetch|load|proxy|forward)=`),
 	}
 }
 
@@ -1054,12 +1054,12 @@ type ResponseAnomalyAnalyzer struct {
 }
 
 type endpointStats struct {
-	totalRequests  int
-	errorCount     int
-	totalSize      int64
-	sizeCount      int
-	windowStart    time.Time
-	lastSeen       time.Time
+	totalRequests int
+	errorCount    int
+	totalSize     int64
+	sizeCount     int
+	windowStart   time.Time
+	lastSeen      time.Time
 	// Baseline (from previous window)
 	baselineErrorRate float64
 	baselineAvgSize   int

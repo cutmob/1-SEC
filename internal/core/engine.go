@@ -13,28 +13,32 @@ import (
 
 // Engine is the main 1SEC engine that orchestrates all components.
 type Engine struct {
-	Config       *Config
-	Bus          *EventBus
-	Registry     *ModuleRegistry
-	Pipeline     *AlertPipeline
-	RustSidecar  *RustSidecar
-	Logger       zerolog.Logger
-	ctx          context.Context
-	cancel       context.CancelFunc
-	configPath   string
+	Config      *Config
+	Bus         *EventBus
+	Registry    *ModuleRegistry
+	Pipeline    *AlertPipeline
+	RustSidecar *RustSidecar
+	Logger      zerolog.Logger
+	ctx         context.Context
+	cancel      context.CancelFunc
+	configPath  string
+	logBuffer   *LogRingBuffer
 }
 
 // NewEngine creates a new 1SEC engine.
 func NewEngine(cfg *Config) (*Engine, error) {
-	// Configure logger
+	logBuffer := NewLogRingBuffer(5000)
+
+	// Configure logger — tee output to both console/stdout and the ring buffer
 	var logger zerolog.Logger
 	if cfg.Logging.Format == "json" {
-		logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
+		logger = zerolog.New(logBuffer.MultiWriter(os.Stdout)).With().Timestamp().Logger()
 	} else {
-		logger = zerolog.New(zerolog.ConsoleWriter{
+		consoleWriter := zerolog.ConsoleWriter{
 			Out:        os.Stdout,
 			TimeFormat: time.RFC3339,
-		}).With().Timestamp().Logger()
+		}
+		logger = zerolog.New(logBuffer.MultiWriter(consoleWriter)).With().Timestamp().Logger()
 	}
 
 	switch cfg.LogLevel() {
@@ -58,6 +62,7 @@ func NewEngine(cfg *Config) (*Engine, error) {
 		Logger:      logger.With().Str("component", "engine").Logger(),
 		ctx:         ctx,
 		cancel:      cancel,
+		logBuffer:   logBuffer,
 	}
 
 	// Add console alert handler if enabled
@@ -187,6 +192,14 @@ func (e *Engine) Context() context.Context {
 // SetConfigPath stores the config file path for the Rust sidecar to use.
 func (e *Engine) SetConfigPath(path string) {
 	e.configPath = path
+}
+
+// GetLogEntries returns the most recent n log entries from the ring buffer.
+func (e *Engine) GetLogEntries(n int) []LogEntry {
+	if e.logBuffer == nil {
+		return []LogEntry{}
+	}
+	return e.logBuffer.GetEntries(n)
 }
 
 // sendWebhook sends an alert to a webhook URL.

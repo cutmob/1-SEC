@@ -18,15 +18,15 @@ const ModuleName = "quantum_crypto"
 // PQC migration tooling, crypto-agility assessment, TLS configuration auditing,
 // and harvest-now-decrypt-later (HNDL) traffic pattern detection.
 type Monitor struct {
-	logger      zerolog.Logger
-	bus         *core.EventBus
-	pipeline    *core.AlertPipeline
-	cfg         *core.Config
-	ctx         context.Context
-	cancel      context.CancelFunc
-	inventory   *CryptoInventory
-	tlsAuditor  *TLSAuditor
-	hndlDet     *HNDLDetector
+	logger     zerolog.Logger
+	bus        *core.EventBus
+	pipeline   *core.AlertPipeline
+	cfg        *core.Config
+	ctx        context.Context
+	cancel     context.CancelFunc
+	inventory  *CryptoInventory
+	tlsAuditor *TLSAuditor
+	hndlDet    *HNDLDetector
 }
 
 func New() *Monitor { return &Monitor{} }
@@ -252,8 +252,8 @@ func (ci *CryptoInventory) RecordUsage(purpose, algorithm, component string) {
 
 // TLSAuditor checks TLS configurations for security issues.
 type TLSAuditor struct {
-	weakCiphers    *regexp.Regexp
-	weakVersions   map[string]bool
+	weakCiphers     *regexp.Regexp
+	weakVersions    map[string]bool
 	weakKeyExchange map[string]bool
 }
 

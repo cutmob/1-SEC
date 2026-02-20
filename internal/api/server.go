@@ -34,8 +34,11 @@ func NewServer(engine *core.Engine) *Server {
 	mux.HandleFunc("/api/v1/status", s.handleStatus)
 	mux.HandleFunc("/api/v1/modules", s.handleModules)
 	mux.HandleFunc("/api/v1/alerts", s.handleAlerts)
+	mux.HandleFunc("/api/v1/alerts/", s.handleAlertByID)
+	mux.HandleFunc("/api/v1/alerts/clear", s.handleAlertsClear)
 	mux.HandleFunc("/api/v1/config", s.handleConfig)
 	mux.HandleFunc("/api/v1/events", s.handleIngestEvent)
+	mux.HandleFunc("/api/v1/logs", s.handleLogs)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/api/v1/shutdown", s.handleShutdown)
 
@@ -255,6 +258,87 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 			os.Exit(0)
 		}
 	}()
+}
+
+// handleAlertByID handles GET/PATCH on /api/v1/alerts/{id}
+func (s *Server) handleAlertByID(w http.ResponseWriter, r *http.Request) {
+	// Extract alert ID from path: /api/v1/alerts/{id}
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/alerts/")
+	alertID := strings.TrimSuffix(path, "/")
+	if alertID == "" || alertID == "clear" {
+		// Let the clear handler or alerts handler deal with it
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		alert := s.engine.Pipeline.GetAlertByID(alertID)
+		if alert == nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "alert not found"})
+			return
+		}
+		writeJSON(w, http.StatusOK, alert)
+
+	case http.MethodPatch:
+		var body struct {
+			Status string `json:"status"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+			return
+		}
+		status, ok := core.ParseAlertStatus(body.Status)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "invalid status — use OPEN, ACKNOWLEDGED, RESOLVED, or FALSE_POSITIVE",
+			})
+			return
+		}
+		alert, found := s.engine.Pipeline.UpdateAlertStatus(alertID, status)
+		if !found {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "alert not found"})
+			return
+		}
+		writeJSON(w, http.StatusOK, alert)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleAlertsClear handles POST /api/v1/alerts/clear
+func (s *Server) handleAlertsClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	count := s.engine.Pipeline.ClearAlerts()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "cleared",
+		"cleared": count,
+	})
+}
+
+// handleLogs streams recent log entries. The engine logs are captured in a ring buffer.
+func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	limitStr := r.URL.Query().Get("limit")
+	limit := 100
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	entries := s.engine.GetLogEntries(limit)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"logs":  entries,
+		"total": len(entries),
+	})
 }
 
 // ---------------------------------------------------------------------------

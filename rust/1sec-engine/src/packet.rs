@@ -205,23 +205,16 @@ pub async fn capture_loop(interface: &str, publisher: EventPublisher) -> Result<
         }
 
         // Extract payload preview (for pattern matching by Go modules)
-        let payload_preview = if let Some(payload) = parsed.payload.payload_raw() {
-            if !payload.is_empty() {
-                let len = payload.len().min(MAX_PAYLOAD_PREVIEW);
-                // Only include if it looks like text (printable ASCII)
-                if payload[..len]
-                    .iter()
-                    .all(|&b| b >= 0x20 && b < 0x7f || b == b'\n' || b == b'\r' || b == b'\t')
-                {
-                    String::from_utf8_lossy(&payload[..len]).to_string()
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
+        let payload_preview = match &parsed.transport {
+            Some(TransportSlice::Tcp(tcp)) => {
+                let payload = tcp.payload();
+                extract_text_preview(payload)
             }
-        } else {
-            String::new()
+            Some(TransportSlice::Udp(udp)) => {
+                let payload = udp.payload();
+                extract_text_preview(payload)
+            }
+            _ => String::new(),
         };
 
         // Only publish events that have anomalies, interesting flags, or text payloads
@@ -252,5 +245,21 @@ pub async fn capture_loop(interface: &str, publisher: EventPublisher) -> Result<
         } else {
             published_events += 1;
         }
+    }
+}
+
+/// Extract a text preview from a payload slice, returning empty string if binary.
+fn extract_text_preview(payload: &[u8]) -> String {
+    if payload.is_empty() {
+        return String::new();
+    }
+    let len = payload.len().min(MAX_PAYLOAD_PREVIEW);
+    if payload[..len]
+        .iter()
+        .all(|&b| b >= 0x20 && b < 0x7f || b == b'\n' || b == b'\r' || b == b'\t')
+    {
+        String::from_utf8_lossy(&payload[..len]).to_string()
+    } else {
+        String::new()
     }
 }

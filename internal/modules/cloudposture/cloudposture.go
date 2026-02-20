@@ -17,21 +17,23 @@ const ModuleName = "cloud_posture"
 // Manager is the Cloud Posture Manager module providing configuration drift detection,
 // misconfiguration scanning, secrets sprawl detection, and multi-cloud policy enforcement.
 type Manager struct {
-	logger       zerolog.Logger
-	bus          *core.EventBus
-	pipeline     *core.AlertPipeline
-	cfg          *core.Config
-	ctx          context.Context
-	cancel       context.CancelFunc
-	driftTracker *DriftTracker
+	logger        zerolog.Logger
+	bus           *core.EventBus
+	pipeline      *core.AlertPipeline
+	cfg           *core.Config
+	ctx           context.Context
+	cancel        context.CancelFunc
+	driftTracker  *DriftTracker
 	secretScanner *SecretScanner
-	policyEngine *CloudPolicyEngine
+	policyEngine  *CloudPolicyEngine
 }
 
 func New() *Manager { return &Manager{} }
 
-func (m *Manager) Name() string        { return ModuleName }
-func (m *Manager) Description() string { return "Cloud configuration drift detection, misconfiguration scanning, secrets sprawl detection, and multi-cloud policy enforcement" }
+func (m *Manager) Name() string { return ModuleName }
+func (m *Manager) Description() string {
+	return "Cloud configuration drift detection, misconfiguration scanning, secrets sprawl detection, and multi-cloud policy enforcement"
+}
 
 func (m *Manager) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
 	m.ctx, m.cancel = context.WithCancel(ctx)

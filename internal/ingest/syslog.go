@@ -17,13 +17,13 @@ import (
 // SyslogServer listens for syslog messages (RFC 5424 / RFC 3164) over UDP and/or TCP,
 // parses them into SecurityEvents, and publishes them to the NATS event bus.
 type SyslogServer struct {
-	cfg      *core.SyslogConfig
-	bus      *core.EventBus
-	logger   zerolog.Logger
-	ctx      context.Context
-	cancel   context.CancelFunc
-	udpConn  *net.UDPConn
-	tcpLn    net.Listener
+	cfg     *core.SyslogConfig
+	bus     *core.EventBus
+	logger  zerolog.Logger
+	ctx     context.Context
+	cancel  context.CancelFunc
+	udpConn *net.UDPConn
+	tcpLn   net.Listener
 }
 
 // NewSyslogServer creates a new syslog ingestion server.
@@ -322,15 +322,15 @@ func syslogSeverityToCore(syslogSev int) core.Severity {
 // Returns event types that match what downstream modules actually handle, so events
 // are properly processed by the auth, network, and runtime modules.
 var (
-	authFailureRe  = regexp.MustCompile(`(?i)(failed\s+password|authentication\s+failure|invalid\s+user|failed\s+login|access\s+denied|bad\s+password|account\s+locked)`)
-	authSuccessRe  = regexp.MustCompile(`(?i)(accepted\s+password|accepted\s+publickey|session\s+opened|successful\s+login|logged\s+in)`)
-	authSessionRe  = regexp.MustCompile(`(?i)(session\s+closed|session\s+expired|session\s+timeout)`)
-	sudoRe         = regexp.MustCompile(`(?i)(sudo:.*COMMAND|su:|privilege|setuid|capability)`)
-	firewallRe     = regexp.MustCompile(`(?i)(iptables|firewall|nftables|ufw|denied|blocked|drop|reject|connection\s+refused)`)
-	kernelRe       = regexp.MustCompile(`(?i)(kernel|oom|segfault|panic|oops|bug:|call\s+trace)`)
-	fileChangeRe   = regexp.MustCompile(`(?i)(file\s+changed|integrity|modified|created|deleted|inotify|auditd.*write|auditd.*unlink)`)
-	processRe      = regexp.MustCompile(`(?i)(exec|process|command|started|spawned|fork)`)
-	authGenericRe  = regexp.MustCompile(`(?i)(sshd|login|auth|pam)`)
+	authFailureRe = regexp.MustCompile(`(?i)(failed\s+password|authentication\s+failure|invalid\s+user|failed\s+login|access\s+denied|bad\s+password|account\s+locked)`)
+	authSuccessRe = regexp.MustCompile(`(?i)(accepted\s+password|accepted\s+publickey|session\s+opened|successful\s+login|logged\s+in)`)
+	authSessionRe = regexp.MustCompile(`(?i)(session\s+closed|session\s+expired|session\s+timeout)`)
+	sudoRe        = regexp.MustCompile(`(?i)(sudo:.*COMMAND|su:|privilege|setuid|capability)`)
+	firewallRe    = regexp.MustCompile(`(?i)(iptables|firewall|nftables|ufw|denied|blocked|drop|reject|connection\s+refused)`)
+	kernelRe      = regexp.MustCompile(`(?i)(kernel|oom|segfault|panic|oops|bug:|call\s+trace)`)
+	fileChangeRe  = regexp.MustCompile(`(?i)(file\s+changed|integrity|modified|created|deleted|inotify|auditd.*write|auditd.*unlink)`)
+	processRe     = regexp.MustCompile(`(?i)(exec|process|command|started|spawned|fork)`)
+	authGenericRe = regexp.MustCompile(`(?i)(sshd|login|auth|pam)`)
 )
 
 // syslogUsernameRe extracts usernames from common syslog auth messages.

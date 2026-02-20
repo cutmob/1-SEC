@@ -17,21 +17,23 @@ const ModuleName = "ai_containment"
 // Containment is the AI Agent Containment module providing action sandboxing,
 // tool-use monitoring, autonomous behavior detection, and shadow AI detection.
 type Containment struct {
-	logger      zerolog.Logger
-	bus         *core.EventBus
-	pipeline    *core.AlertPipeline
-	cfg         *core.Config
-	ctx         context.Context
-	cancel      context.CancelFunc
-	policyEng   *PolicyEngine
-	shadowDet   *ShadowAIDetector
+	logger       zerolog.Logger
+	bus          *core.EventBus
+	pipeline     *core.AlertPipeline
+	cfg          *core.Config
+	ctx          context.Context
+	cancel       context.CancelFunc
+	policyEng    *PolicyEngine
+	shadowDet    *ShadowAIDetector
 	agentTracker *AgentTracker
 }
 
 func New() *Containment { return &Containment{} }
 
-func (c *Containment) Name() string        { return ModuleName }
-func (c *Containment) Description() string { return "AI agent action sandboxing, tool-use monitoring, autonomous behavior detection, and shadow AI discovery" }
+func (c *Containment) Name() string { return ModuleName }
+func (c *Containment) Description() string {
+	return "AI agent action sandboxing, tool-use monitoring, autonomous behavior detection, and shadow AI discovery"
+}
 
 func (c *Containment) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
 	c.ctx, c.cancel = context.WithCancel(ctx)
@@ -191,9 +193,9 @@ func (c *Containment) raiseAlert(event *core.SecurityEvent, severity core.Severi
 
 // PolicyEngine enforces action policies for AI agents.
 type PolicyEngine struct {
-	mu              sync.RWMutex
-	blockedTools    map[string]bool
-	blockedActions  *regexp.Regexp
+	mu               sync.RWMutex
+	blockedTools     map[string]bool
+	blockedActions   *regexp.Regexp
 	sensitiveTargets *regexp.Regexp
 }
 
@@ -209,7 +211,7 @@ func NewPolicyEngine() *PolicyEngine {
 			"file_delete": true, "network_scan": true, "credential_access": true,
 			"registry_edit": true, "firewall_modify": true, "user_create": true,
 		},
-		blockedActions: regexp.MustCompile(`(?i)(delete\s+database|drop\s+table|rm\s+-rf|format\s+c:|shutdown|reboot|disable\s+firewall|disable\s+antivirus)`),
+		blockedActions:   regexp.MustCompile(`(?i)(delete\s+database|drop\s+table|rm\s+-rf|format\s+c:|shutdown|reboot|disable\s+firewall|disable\s+antivirus)`),
 		sensitiveTargets: regexp.MustCompile(`(?i)(/etc/shadow|/etc/passwd|\.ssh/|\.aws/credentials|\.env|secrets?\.ya?ml|password|private.?key)`),
 	}
 }
@@ -254,9 +256,9 @@ func NewShadowAIDetector() *ShadowAIDetector {
 		knownAIHosts: map[string]bool{
 			"api.openai.com": true, "api.anthropic.com": true,
 			"generativelanguage.googleapis.com": true,
-			"api.cohere.ai": true, "api.mistral.ai": true,
+			"api.cohere.ai":                     true, "api.mistral.ai": true,
 			"api-inference.huggingface.co": true,
-			"api.replicate.com": true, "api.together.xyz": true,
+			"api.replicate.com":            true, "api.together.xyz": true,
 			"api.groq.com": true, "api.perplexity.ai": true,
 			"api.deepseek.com": true,
 		},
@@ -310,9 +312,9 @@ func (at *AgentTracker) RegisterAgent(agentID, parentID string) {
 	defer at.mu.Unlock()
 	at.agents[agentID] = &agentProfile{
 		ID: agentID, Parent: parentID,
-		KnownTools: make(map[string]bool),
+		KnownTools:  make(map[string]bool),
 		CountWindow: time.Now(),
-		CreatedAt: time.Now(), LastSeen: time.Now(),
+		CreatedAt:   time.Now(), LastSeen: time.Now(),
 	}
 }
 
