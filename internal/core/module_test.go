@@ -179,8 +179,6 @@ func TestModuleRegistry_StartAll_ErrorPropagates(t *testing.T) {
 
 func TestModuleRegistry_StopAll_ReverseOrder(t *testing.T) {
 	r := newRegistry()
-	var stopOrder []string
-	var mu sync.Mutex
 
 	makeStoppable := func(name string) Module {
 		return &struct{ *mockModule }{&mockModule{
@@ -192,8 +190,6 @@ func TestModuleRegistry_StopAll_ReverseOrder(t *testing.T) {
 	r.Register(newMockModule("first"))
 	r.Register(newMockModule("second"))
 	r.Register(newMockModule("third"))
-	_ = mu
-	_ = stopOrder
 
 	// StopAll should not panic even if modules have no-op Stop
 	r.StopAll()
