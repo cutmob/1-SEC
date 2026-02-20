@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -208,7 +209,9 @@ func (s *Server) handleIngestEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var event core.SecurityEvent
-	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+	// Limit body size to 1MB to prevent memory abuse
+	limited := io.LimitReader(r.Body, 1<<20)
+	if err := json.NewDecoder(limited).Decode(&event); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid event JSON: " + err.Error()})
 		return
 	}
