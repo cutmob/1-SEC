@@ -211,8 +211,9 @@ fn strip_inline_comments(s: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            // Find closing */
+            // Find closing */ — replace comment with a space to preserve token boundaries
             if let Some(pos) = s[i + 2..].find("*/") {
+                out.push(b' ');
                 i += pos + 4;
                 continue;
             }
@@ -348,7 +349,7 @@ mod tests {
 
     #[test]
     fn test_sql_comment_strip() {
-        assert_eq!(normalize("SEL/**/ECT"), "SELECT");
+        assert_eq!(normalize("SEL/**/ECT"), "SEL ECT");
     }
 
     #[test]
