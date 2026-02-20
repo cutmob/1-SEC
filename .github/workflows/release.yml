@@ -124,11 +124,6 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Download Rust artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: rust-artifacts
-
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -136,6 +131,11 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Rust artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: rust-artifacts
 
       - name: Attach Rust binaries to release
         uses: softprops/action-gh-release@v2
