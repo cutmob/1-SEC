@@ -189,6 +189,18 @@ func (p *AlertPipeline) ClearAlerts() int {
 	p.alerts = make([]*Alert, 0, p.maxStore)
 	return count
 }
+// DeleteAlert removes a single alert by ID and returns true if found.
+func (p *AlertPipeline) DeleteAlert(id string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, a := range p.alerts {
+		if a.ID == id {
+			p.alerts = append(p.alerts[:i], p.alerts[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
 
 // ParseAlertStatus converts a string to AlertStatus.
 func ParseAlertStatus(s string) (AlertStatus, bool) {

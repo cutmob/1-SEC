@@ -304,6 +304,14 @@ func (s *Server) handleAlertByID(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, alert)
 
+	case http.MethodDelete:
+		deleted := s.engine.Pipeline.DeleteAlert(alertID)
+		if !deleted {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "alert not found"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "id": alertID})
+
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
