@@ -75,24 +75,37 @@ async fn main() -> Result<()> {
     // Load config
     let cfg = config::EngineConfig::load(&cli.config)?;
     let nats_url = cli.nats_url.unwrap_or(cfg.nats_url.clone());
+    let engine_cfg = &cfg.rust_engine;
 
-    // Compile pattern matcher
-    let matcher = matcher::PatternMatcher::new(&patterns::all_patterns());
+    // Compile pattern matcher with config-driven settings
+    let matcher = matcher::PatternMatcher::new(
+        &patterns::all_patterns(),
+        engine_cfg.min_score,
+        engine_cfg.aho_corasick_prefilter,
+    );
     info!(
         pattern_count = matcher.pattern_count(),
+        ac_prefiltered = matcher.ac_prefiltered_count(),
         "pattern matcher compiled"
     );
 
-    // Connect to NATS and start processing
-    let bridge = nats_bridge::NatsBridge::connect(&nats_url, matcher).await?;
+    // Connect to NATS and start processing with configured buffer/worker limits
+    let bridge = nats_bridge::NatsBridge::connect(
+        &nats_url,
+        matcher,
+        engine_cfg.buffer_size,
+        engine_cfg.workers,
+    )
+    .await?;
 
     // Optionally start packet capture
     #[cfg(feature = "pcap-capture")]
     if cli.capture {
         let capture_bridge = bridge.clone_publisher();
         let iface = cli.interface.clone();
+        let capture_cfg = engine_cfg.capture.clone();
         tokio::spawn(async move {
-            if let Err(e) = packet::capture_loop(&iface, capture_bridge).await {
+            if let Err(e) = packet::capture_loop(&iface, capture_bridge, &capture_cfg).await {
                 warn!(error = %e, "packet capture stopped");
             }
         });

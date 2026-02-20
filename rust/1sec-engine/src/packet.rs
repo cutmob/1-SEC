@@ -4,6 +4,7 @@
 //! detects anomalies, and publishes structured events to the NATS bus for the Go
 //! modules to consume.
 
+use crate::config::CaptureConfig;
 use crate::events::PacketEvent;
 use crate::nats_bridge::EventPublisher;
 use anyhow::{Context, Result};
@@ -66,19 +67,20 @@ impl SourceTracker {
 }
 
 /// Main packet capture loop. Runs until an error occurs or the process is killed.
-pub async fn capture_loop(interface: &str, publisher: EventPublisher) -> Result<()> {
-    info!(interface = %interface, "starting packet capture");
+pub async fn capture_loop(interface: &str, publisher: EventPublisher, cfg: &CaptureConfig) -> Result<()> {
+    info!(interface = %interface, snaplen = cfg.snaplen, promiscuous = cfg.promiscuous, "starting packet capture");
 
     let mut cap = Capture::from_device(interface)?
-        .promisc(true)
-        .snaplen(65535)
+        .promisc(cfg.promiscuous)
+        .snaplen(cfg.snaplen)
         .timeout(1000)
         .open()
         .with_context(|| format!("opening capture on {}", interface))?;
 
-    // Set BPF filter to only capture TCP/UDP traffic (skip ARP, ICMP for now)
-    if let Err(e) = cap.filter("tcp or udp", true) {
-        warn!(error = %e, "failed to set BPF filter, capturing all traffic");
+    // Set BPF filter from config, or default to TCP/UDP
+    let bpf = cfg.bpf_filter.as_deref().unwrap_or("tcp or udp");
+    if let Err(e) = cap.filter(bpf, true) {
+        warn!(error = %e, filter = %bpf, "failed to set BPF filter, capturing all traffic");
     }
 
     let mut tracker = SourceTracker::new();
@@ -102,7 +104,7 @@ pub async fn capture_loop(interface: &str, publisher: EventPublisher) -> Result<
         total_packets += 1;
 
         // Log stats periodically
-        if total_packets % 10_000 == 0 {
+        if total_packets.is_multiple_of(10_000) {
             let elapsed = stats_start.elapsed().as_secs_f64();
             let pps = total_packets as f64 / elapsed;
             info!(
@@ -256,7 +258,7 @@ fn extract_text_preview(payload: &[u8]) -> String {
     let len = payload.len().min(MAX_PAYLOAD_PREVIEW);
     if payload[..len]
         .iter()
-        .all(|&b| b >= 0x20 && b < 0x7f || b == b'\n' || b == b'\r' || b == b'\t')
+        .all(|&b| (0x20..0x7f).contains(&b) || b == b'\n' || b == b'\r' || b == b'\t')
     {
         String::from_utf8_lossy(&payload[..len]).to_string()
     } else {

@@ -33,11 +33,13 @@ pub struct PatternMatcher {
     ac_to_pattern: Vec<Vec<usize>>,
     /// Patterns that have no AC literals and must always be tested.
     always_test: Vec<usize>,
+    /// Minimum aggregate score threshold — results below this are discarded.
+    min_score: f64,
 }
 
 impl PatternMatcher {
     /// Compile all pattern definitions into the matching engine.
-    pub fn new(defs: &[PatternDef]) -> Self {
+    pub fn new(defs: &[PatternDef], min_score: f64, use_ac_prefilter: bool) -> Self {
         let mut patterns = Vec::with_capacity(defs.len());
         let mut ac_literals: Vec<String> = Vec::new();
         let mut ac_to_pattern: Vec<Vec<usize>> = Vec::new();
@@ -58,7 +60,7 @@ impl PatternMatcher {
 
             let mut ac_indices = Vec::new();
 
-            if def.literals.is_empty() {
+            if !use_ac_prefilter || def.literals.is_empty() {
                 always_test.push(pat_idx);
             } else {
                 for &lit in def.literals {
@@ -88,17 +90,35 @@ impl PatternMatcher {
             .build(&ac_literals)
             .expect("failed to build Aho-Corasick automaton");
 
+        // Log pattern compilation diagnostics using ac_indices
+        let ac_backed: usize = patterns.iter().filter(|p| !p.ac_indices.is_empty()).count();
+        let regex_only: usize = patterns.iter().filter(|p| p.ac_indices.is_empty()).count();
+        tracing::info!(
+            total = patterns.len(),
+            ac_prefiltered = ac_backed,
+            regex_only = regex_only,
+            ac_literals = ac_literals.len(),
+            min_score = min_score,
+            "pattern matcher compiled"
+        );
+
         Self {
             patterns,
             ac,
             ac_to_pattern,
             always_test,
+            min_score,
         }
     }
 
     /// Returns the number of compiled patterns.
     pub fn pattern_count(&self) -> usize {
         self.patterns.len()
+    }
+
+    /// Returns the number of patterns backed by Aho-Corasick pre-filtering.
+    pub fn ac_prefiltered_count(&self) -> usize {
+        self.patterns.iter().filter(|p| !p.ac_indices.is_empty()).count()
     }
 
     /// Match all patterns against the given input fields.
@@ -175,6 +195,18 @@ impl PatternMatcher {
 
         let elapsed = start.elapsed();
 
+        // Apply min_score threshold — discard low-confidence results
+        if aggregate_score < self.min_score && !matches.is_empty() {
+            return MatchResult {
+                event_id: event_id.to_string(),
+                timestamp: chrono::Utc::now(),
+                matches: Vec::new(),
+                aggregate_score: 0.0,
+                highest_severity: Severity::Info,
+                processing_time_us: elapsed.as_micros() as u64,
+            };
+        }
+
         MatchResult {
             event_id: event_id.to_string(),
             timestamp: chrono::Utc::now(),
@@ -192,7 +224,7 @@ mod tests {
     use crate::patterns::all_patterns;
 
     fn matcher() -> PatternMatcher {
-        PatternMatcher::new(&all_patterns())
+        PatternMatcher::new(&all_patterns(), 0.0, true)
     }
 
     #[test]

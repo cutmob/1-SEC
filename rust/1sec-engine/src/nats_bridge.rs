@@ -15,6 +15,8 @@ pub struct NatsBridge {
     jetstream: jetstream::Context,
     matcher: Arc<PatternMatcher>,
     shutdown: Arc<Notify>,
+    /// Maximum events to buffer before backpressure.
+    buffer_size: usize,
 }
 
 /// Handle for publishing events from the packet capture thread.
@@ -38,8 +40,8 @@ impl EventPublisher {
 
 impl NatsBridge {
     /// Connect to NATS and start consuming security events.
-    pub async fn connect(url: &str, matcher: PatternMatcher) -> Result<Self> {
-        info!(url = %url, "connecting to NATS");
+    pub async fn connect(url: &str, matcher: PatternMatcher, buffer_size: usize, workers: usize) -> Result<Self> {
+        info!(url = %url, buffer_size = buffer_size, workers = workers, "connecting to NATS");
 
         let client = async_nats::connect(url)
             .await
@@ -75,10 +77,11 @@ impl NatsBridge {
             jetstream,
             matcher: Arc::new(matcher),
             shutdown: Arc::new(Notify::new()),
+            buffer_size,
         };
 
         // Start the consumer loop
-        bridge.start_consumer().await?;
+        bridge.start_consumer(workers).await?;
 
         Ok(bridge)
     }
@@ -91,7 +94,7 @@ impl NatsBridge {
     }
 
     /// Start consuming events from the SECURITY_EVENTS stream.
-    async fn start_consumer(&self) -> Result<()> {
+    async fn start_consumer(&self, workers: usize) -> Result<()> {
         // Get or create a durable consumer on the events stream
         let stream = self
             .jetstream
@@ -115,24 +118,32 @@ impl NatsBridge {
         let matcher = self.matcher.clone();
         let js = self.jetstream.clone();
         let shutdown = self.shutdown.clone();
+        let batch_size = self.buffer_size.min(100);
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(workers));
 
         tokio::spawn(async move {
-            info!("event consumer started");
+            info!(workers = workers, batch_size = batch_size, "event consumer started");
             loop {
                 tokio::select! {
                     _ = shutdown.notified() => {
                         info!("consumer shutting down");
                         break;
                     }
-                    result = consumer.fetch().max_messages(100).messages() => {
+                    result = consumer.fetch().max_messages(batch_size).messages() => {
                         match result {
                             Ok(mut messages) => {
                                 use futures::StreamExt;
                                 while let Some(Ok(msg)) = messages.next().await {
-                                    process_message(&msg, &matcher, &js).await;
-                                    if let Err(e) = msg.ack().await {
-                                        warn!(error = %e, "failed to ack message");
-                                    }
+                                    let permit = semaphore.clone().acquire_owned().await;
+                                    let matcher = matcher.clone();
+                                    let js = js.clone();
+                                    tokio::spawn(async move {
+                                        let _permit = permit;
+                                        process_message(&msg, &matcher, &js).await;
+                                        if let Err(e) = msg.ack().await {
+                                            warn!(error = %e, "failed to ack message");
+                                        }
+                                    });
                                 }
                             }
                             Err(e) => {
