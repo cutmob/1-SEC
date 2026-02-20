@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/1sec-project/1sec/internal/core"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/rs/zerolog"
 )
 
@@ -60,12 +61,7 @@ func (g *Guardian) Start(ctx context.Context, bus *core.EventBus, pipeline *core
 	g.lateralMon = NewLateralMovementMonitor()
 	g.portScanDet = NewPortScanDetector()
 
-	go g.rateLimiter.CleanupLoop(g.ctx)
-	go g.dnsTunnelDet.CleanupLoop(g.ctx)
-	go g.c2Detector.CleanupLoop(g.ctx)
-	go g.lateralMon.CleanupLoop(g.ctx)
-	go g.portScanDet.CleanupLoop(g.ctx)
-
+	// Cleanup loops replaced by bounded LRU caches
 	g.logger.Info().
 		Int("max_rpm", maxReqPerMin).
 		Int("burst", burstSize).
@@ -403,7 +399,7 @@ func (g *Guardian) raiseAlert(event *core.SecurityEvent, severity core.Severity,
 
 type RateLimiter struct {
 	mu           sync.RWMutex
-	counters     map[string]*ipCounter
+	counters     *lru.Cache[string, *ipCounter]
 	maxPerMinute int
 	burstSize    int
 	globalCount  int64
@@ -420,8 +416,9 @@ type ipCounter struct {
 }
 
 func NewRateLimiter(maxPerMinute, burstSize int) *RateLimiter {
+	cache, _ := lru.New[string, *ipCounter](100000)
 	return &RateLimiter{
-		counters:     make(map[string]*ipCounter),
+		counters:     cache,
 		maxPerMinute: maxPerMinute,
 		burstSize:    burstSize,
 		globalWindow: time.Now(),
@@ -433,9 +430,9 @@ func (rl *RateLimiter) Allow(ip string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	now := time.Now()
-	counter, exists := rl.counters[ip]
+	counter, exists := rl.counters.Get(ip)
 	if !exists {
-		rl.counters[ip] = &ipCounter{count: 1, burst: 1, window: now, burstWin: now, lastSeen: now}
+		rl.counters.Add(ip, &ipCounter{count: 1, burst: 1, window: now, burstWin: now, lastSeen: now})
 		return true
 	}
 	if now.Sub(counter.window) > time.Minute {
@@ -479,26 +476,6 @@ func (rl *RateLimiter) CurrentRate() int64 {
 }
 
 func (rl *RateLimiter) DDoSThreshold() int { return rl.ddosThresh }
-
-func (rl *RateLimiter) CleanupLoop(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			rl.mu.Lock()
-			cutoff := time.Now().Add(-10 * time.Minute)
-			for ip, c := range rl.counters {
-				if c.lastSeen.Before(cutoff) {
-					delete(rl.counters, ip)
-				}
-			}
-			rl.mu.Unlock()
-		}
-	}
-}
 
 // ---------------------------------------------------------------------------
 // IPReputation — known malicious IP lists and bogon detection
@@ -617,8 +594,8 @@ func (gf *GeoFence) IsBlockedCountry(countryCode string) bool {
 
 type DNSTunnelDetector struct {
 	mu       sync.Mutex
-	queries  map[string]*dnsProfile // key: sourceIP
-	dgaCache map[string]bool        // domain -> isDGA
+	queries  *lru.Cache[string, *dnsProfile] // key: sourceIP
+	dgaCache *lru.Cache[string, bool]        // domain -> isDGA
 }
 
 type dnsProfile struct {
@@ -642,9 +619,11 @@ type DNSAnalysisResult struct {
 }
 
 func NewDNSTunnelDetector() *DNSTunnelDetector {
+	qCache, _ := lru.New[string, *dnsProfile](50000)
+	dCache, _ := lru.New[string, bool](100000)
 	return &DNSTunnelDetector{
-		queries:  make(map[string]*dnsProfile),
-		dgaCache: make(map[string]bool),
+		queries:  qCache,
+		dgaCache: dCache,
 	}
 }
 
@@ -666,14 +645,22 @@ func (d *DNSTunnelDetector) Analyze(sourceIP, domain, queryType string, response
 	result.BaseDomain = baseDomain
 
 	// Get or create profile
-	profile, exists := d.queries[sourceIP]
+	profile, exists := d.queries.Get(sourceIP)
 	if !exists || now.Sub(profile.windowStart) > 5*time.Minute {
 		profile = &dnsProfile{
 			domains:     make(map[string]int),
 			queryTypes:  make(map[string]int),
 			windowStart: now,
 		}
-		d.queries[sourceIP] = profile
+		d.queries.Add(sourceIP, profile)
+	}
+
+	// Cap map size to prevent memory explosion per-IP
+	if len(profile.domains) > 1000 {
+		profile.domains = make(map[string]int) // Reset to avoid unbounded growth
+	}
+	if len(profile.subdomainLens) > 5000 {
+		profile.subdomainLens = []int{}
 	}
 
 	profile.domains[baseDomain]++
@@ -694,7 +681,7 @@ func (d *DNSTunnelDetector) Analyze(sourceIP, domain, queryType string, response
 		consonantRatio := consonantRatio(domain)
 		if consonantRatio > 0.65 || result.Entropy > 4.0 {
 			result.DGA = true
-			d.dgaCache[domain] = true
+			d.dgaCache.Add(domain, true)
 		}
 	}
 
@@ -746,37 +733,13 @@ func (d *DNSTunnelDetector) Analyze(sourceIP, domain, queryType string, response
 	return result
 }
 
-func (d *DNSTunnelDetector) CleanupLoop(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			d.mu.Lock()
-			cutoff := time.Now().Add(-10 * time.Minute)
-			for ip, p := range d.queries {
-				if p.lastSeen.Before(cutoff) {
-					delete(d.queries, ip)
-				}
-			}
-			// Cap DGA cache
-			if len(d.dgaCache) > 10000 {
-				d.dgaCache = make(map[string]bool)
-			}
-			d.mu.Unlock()
-		}
-	}
-}
-
 // ---------------------------------------------------------------------------
 // C2Detector — detects command-and-control beaconing and covert channels
 // ---------------------------------------------------------------------------
 
 type C2Detector struct {
 	mu          sync.Mutex
-	connections map[string]*c2Profile // key: sourceIP:destIP:destPort
+	connections *lru.Cache[string, *c2Profile] // key: sourceIP:destIP:destPort
 }
 
 type c2Profile struct {
@@ -800,7 +763,8 @@ type C2AnalysisResult struct {
 }
 
 func NewC2Detector() *C2Detector {
-	return &C2Detector{connections: make(map[string]*c2Profile)}
+	cache, _ := lru.New[string, *c2Profile](100000)
+	return &C2Detector{connections: cache}
 }
 
 func (c *C2Detector) Analyze(sourceIP, destIP string, destPort int, protocol string, bytesOut, bytesIn, durationMs int) C2AnalysisResult {
@@ -811,10 +775,10 @@ func (c *C2Detector) Analyze(sourceIP, destIP string, destPort int, protocol str
 	now := time.Now()
 	key := fmt.Sprintf("%s:%s:%d", sourceIP, destIP, destPort)
 
-	profile, exists := c.connections[key]
+	profile, exists := c.connections.Get(key)
 	if !exists {
 		profile = &c2Profile{protocol: protocol}
-		c.connections[key] = profile
+		c.connections.Add(key, profile)
 	}
 
 	// Record interval since last connection
@@ -900,34 +864,14 @@ func (c *C2Detector) Analyze(sourceIP, destIP string, destPort int, protocol str
 	return result
 }
 
-func (c *C2Detector) CleanupLoop(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			c.mu.Lock()
-			cutoff := time.Now().Add(-30 * time.Minute)
-			for key, p := range c.connections {
-				if p.lastSeen.Before(cutoff) {
-					delete(c.connections, key)
-				}
-			}
-			c.mu.Unlock()
-		}
-	}
-}
-
 // ---------------------------------------------------------------------------
 // LateralMovementMonitor — detects PtH, PtT, Kerberoasting, Golden Ticket, DCSync
 // ---------------------------------------------------------------------------
 
 type LateralMovementMonitor struct {
 	mu             sync.Mutex
-	movements      map[string]*lateralProfile // key: sourceIP
-	ticketRequests map[string]*ticketProfile  // key: sourceIP
+	movements      *lru.Cache[string, *lateralProfile] // key: sourceIP
+	ticketRequests *lru.Cache[string, *ticketProfile]  // key: sourceIP
 }
 
 type lateralProfile struct {
@@ -962,9 +906,11 @@ type LateralResult struct {
 }
 
 func NewLateralMovementMonitor() *LateralMovementMonitor {
+	mCache, _ := lru.New[string, *lateralProfile](100000)
+	tCache, _ := lru.New[string, *ticketProfile](100000)
 	return &LateralMovementMonitor{
-		movements:      make(map[string]*lateralProfile),
-		ticketRequests: make(map[string]*ticketProfile),
+		movements:      mCache,
+		ticketRequests: tCache,
 	}
 }
 
@@ -976,7 +922,7 @@ func (lm *LateralMovementMonitor) Analyze(sourceIP, destIP, user, technique, aut
 	now := time.Now()
 
 	// Get or create movement profile
-	mp, exists := lm.movements[sourceIP]
+	mp, exists := lm.movements.Get(sourceIP)
 	if !exists || now.Sub(mp.windowStart) > 30*time.Minute {
 		mp = &lateralProfile{
 			targets:     make(map[string]time.Time),
@@ -984,7 +930,18 @@ func (lm *LateralMovementMonitor) Analyze(sourceIP, destIP, user, technique, aut
 			users:       make(map[string]bool),
 			windowStart: now,
 		}
-		lm.movements[sourceIP] = mp
+		lm.movements.Add(sourceIP, mp)
+	}
+
+	// Bound internal maps to prevent memory explosion
+	if len(mp.targets) > 1000 {
+		mp.targets = make(map[string]time.Time)
+	}
+	if len(mp.techniques) > 100 {
+		mp.techniques = make(map[string]int)
+	}
+	if len(mp.users) > 500 {
+		mp.users = make(map[string]bool)
 	}
 	mp.lastSeen = now
 	if destIP != "" {
@@ -998,10 +955,10 @@ func (lm *LateralMovementMonitor) Analyze(sourceIP, destIP, user, technique, aut
 	}
 
 	// Get or create ticket profile
-	tp, texists := lm.ticketRequests[sourceIP]
+	tp, texists := lm.ticketRequests.Get(sourceIP)
 	if !texists || now.Sub(tp.windowStart) > 10*time.Minute {
 		tp = &ticketProfile{windowStart: now}
-		lm.ticketRequests[sourceIP] = tp
+		lm.ticketRequests.Add(sourceIP, tp)
 	}
 	tp.lastSeen = now
 
@@ -1067,38 +1024,13 @@ func (lm *LateralMovementMonitor) Analyze(sourceIP, destIP, user, technique, aut
 	return result
 }
 
-func (lm *LateralMovementMonitor) CleanupLoop(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			lm.mu.Lock()
-			cutoff := time.Now().Add(-30 * time.Minute)
-			for ip, p := range lm.movements {
-				if p.lastSeen.Before(cutoff) {
-					delete(lm.movements, ip)
-				}
-			}
-			for ip, p := range lm.ticketRequests {
-				if p.lastSeen.Before(cutoff) {
-					delete(lm.ticketRequests, ip)
-				}
-			}
-			lm.mu.Unlock()
-		}
-	}
-}
-
 // ---------------------------------------------------------------------------
 // PortScanDetector — detects horizontal, vertical, and stealth port scans
 // ---------------------------------------------------------------------------
 
 type PortScanDetector struct {
 	mu    sync.Mutex
-	scans map[string]*scanProfile // key: sourceIP
+	scans *lru.Cache[string, *scanProfile] // key: sourceIP
 }
 
 type scanProfile struct {
@@ -1122,7 +1054,8 @@ type PortScanResult struct {
 }
 
 func NewPortScanDetector() *PortScanDetector {
-	return &PortScanDetector{scans: make(map[string]*scanProfile)}
+	sCache, _ := lru.New[string, *scanProfile](100000)
+	return &PortScanDetector{scans: sCache}
 }
 
 func (ps *PortScanDetector) Record(sourceIP, destIP string, destPort int) PortScanResult {
@@ -1132,14 +1065,22 @@ func (ps *PortScanDetector) Record(sourceIP, destIP string, destPort int) PortSc
 	result := PortScanResult{}
 	now := time.Now()
 
-	profile, exists := ps.scans[sourceIP]
+	profile, exists := ps.scans.Get(sourceIP)
 	if !exists || now.Sub(profile.windowStart) > 5*time.Minute {
 		profile = &scanProfile{
 			portsByDest: make(map[string]map[int]bool),
 			destsByPort: make(map[int]map[string]bool),
 			windowStart: now,
 		}
-		ps.scans[sourceIP] = profile
+		ps.scans.Add(sourceIP, profile)
+	}
+
+	// Bound inner maps
+	if len(profile.portsByDest) > 500 {
+		profile.portsByDest = make(map[string]map[int]bool)
+	}
+	if len(profile.destsByPort) > 500 {
+		profile.destsByPort = make(map[int]map[string]bool)
 	}
 	profile.lastSeen = now
 	profile.totalAttempts++
@@ -1196,26 +1137,6 @@ func (ps *PortScanDetector) Record(sourceIP, destIP string, destPort int) PortSc
 	}
 
 	return result
-}
-
-func (ps *PortScanDetector) CleanupLoop(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			ps.mu.Lock()
-			cutoff := time.Now().Add(-10 * time.Minute)
-			for ip, p := range ps.scans {
-				if p.lastSeen.Before(cutoff) {
-					delete(ps.scans, ip)
-				}
-			}
-			ps.mu.Unlock()
-		}
-	}
 }
 
 // ---------------------------------------------------------------------------

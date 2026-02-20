@@ -1,6 +1,7 @@
 # 1SEC Default Configuration
 # All modules are enabled by default with sane defaults.
 # Override any setting below or pass --config <path> to use a custom file.
+# Run '1sec init' to generate a fresh config, or '1sec modules' to list all modules.
 
 server:
   host: "0.0.0.0"
@@ -42,6 +43,8 @@ logging:
   level: "info"       # debug, info, warn, error
   format: "console"   # console, json
 
+# ── Tier 1: Network & Perimeter ──────────────────────────────────────────────
+
 modules:
   network_guardian:
     enabled: true
@@ -59,6 +62,8 @@ modules:
   iot_shield:
     enabled: true
 
+# ── Tier 2: Application Layer ────────────────────────────────────────────────
+
   injection_shield:
     enabled: true
 
@@ -70,6 +75,8 @@ modules:
     settings:
       encryption_threshold: 10
       exfil_mb_threshold: 100
+
+# ── Tier 3: Identity & Access ────────────────────────────────────────────────
 
   auth_fortress:
     enabled: true
@@ -84,6 +91,8 @@ modules:
   identity_monitor:
     enabled: true
 
+# ── Tier 4: AI-Specific Defense ──────────────────────────────────────────────
+
   llm_firewall:
     enabled: true
     settings:
@@ -95,53 +104,45 @@ modules:
   data_poisoning:
     enabled: true
 
+# ── Tier 5: Cryptography ────────────────────────────────────────────────────
+
   quantum_crypto:
     enabled: true
+
+# ── Tier 6: Runtime & Infrastructure ─────────────────────────────────────────
 
   runtime_watcher:
     enabled: true
     settings:
       scan_interval_seconds: 300
-      # watch_paths:
-      #   - "/etc"
-      #   - "/usr/bin"
 
   cloud_posture:
     enabled: true
 
+# ── Cross-Cutting: AI Analysis ───────────────────────────────────────────────
+
   ai_analysis_engine:
     enabled: true
     settings:
-      # Single key:
       # gemini_api_key: "YOUR_GEMINI_API_KEY"
-      #
-      # Multiple keys for rotation (rate limits are per-key):
-      # gemini_api_keys:
-      #   - "KEY_1"
-      #   - "KEY_2"
-      #   - "KEY_3"
-      #
-      # Also reads from env: GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3, GEMINI_API_KEY_4
+      # Also reads from env: GEMINI_API_KEY
       triage_model: "gemini-flash-lite-latest"
       deep_model: "gemini-flash-latest"
       api_base_url: "https://generativelanguage.googleapis.com/v1beta/models"
       triage_workers: 4
       deep_workers: 2
 
-# Rust high-performance engine (optional sidecar)
-# The Rust engine connects to the same NATS bus and provides:
-# - Hot-path regex pattern matching (5-10x faster than Go's RE2)
-# - Raw packet capture and protocol parsing
-# - Post-quantum cryptographic operations (when compiled with pqc feature)
+# ── Rust Engine (optional high-performance sidecar) ──────────────────────────
+
 rust_engine:
-  enabled: false           # Set to true to auto-start the Rust sidecar
-  binary: "1sec-engine"    # Path to the Rust binary (searches PATH if not absolute)
-  workers: 0               # 0 = auto-detect (number of CPU cores)
-  buffer_size: 10000       # Max events to buffer before backpressure
-  min_score: 0.0           # Minimum aggregate score to publish match results
-  aho_corasick_prefilter: true  # Use Aho-Corasick for fast literal pre-filtering
+  enabled: false
+  binary: "1sec-engine"
+  workers: 0               # 0 = auto-detect CPU cores
+  buffer_size: 10000
+  min_score: 0.0
+  aho_corasick_prefilter: true
   capture:
-    enabled: false         # Enable raw packet capture (requires root/CAP_NET_RAW)
-    interface: "eth0"      # Network interface to capture on
-    bpf_filter: ""         # BPF filter expression (empty = tcp or udp)
-    promiscuous: true      # Promiscuous mode
+    enabled: false
+    interface: "eth0"
+    bpf_filter: ""
+    promiscuous: true

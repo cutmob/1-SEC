@@ -13,6 +13,7 @@ import (
 
 	"github.com/1sec-project/1sec/internal/core"
 	"github.com/rs/zerolog"
+	"github.com/sony/gobreaker"
 )
 
 const ModuleName = "ai_analysis_engine"
@@ -30,6 +31,7 @@ type Engine struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	httpClient *http.Client
+	cb         *gobreaker.CircuitBreaker
 	correlator *EventCorrelator
 	keyMgr     *KeyManager
 
@@ -52,6 +54,15 @@ type analysisRequest struct {
 func New() *Engine {
 	return &Engine{
 		httpClient: &http.Client{Timeout: 30 * time.Second},
+		cb: gobreaker.NewCircuitBreaker(gobreaker.Settings{
+			Name:        "GeminiAPI",
+			MaxRequests: 3,
+			Interval:    10 * time.Second,
+			Timeout:     30 * time.Second,
+			ReadyToTrip: func(counts gobreaker.Counts) bool {
+				return counts.ConsecutiveFailures > 5
+			},
+		}),
 	}
 }
 
@@ -140,7 +151,7 @@ func (e *Engine) HandleEvent(event *core.SecurityEvent) error {
 	select {
 	case e.triageQueue <- event:
 	default:
-		e.logger.Debug().Str("event_id", event.ID).Msg("triage queue full, dropping event")
+		e.logger.Warn().Str("event_id", event.ID).Msg("triage queue full, dropping event. Queue backlog indicates system degradation.")
 	}
 
 	return nil
@@ -171,7 +182,7 @@ func (e *Engine) triageWorker() {
 				select {
 				case e.deepQueue <- req:
 				default:
-					e.logger.Debug().Msg("deep queue full, dropping analysis request")
+					e.logger.Warn().Msg("deep queue full, dropping analysis request. Queue backlog indicates system degradation.")
 				}
 			}
 		}
@@ -276,6 +287,7 @@ func (e *Engine) correlationLoop() {
 					select {
 					case e.deepQueue <- req:
 					default:
+						e.logger.Warn().Msg("deep queue full, dropping correlated analysis request. System degradation.")
 					}
 				}
 			}
@@ -425,74 +437,83 @@ func (e *Engine) callGemini(url, prompt string, maxTokens int) (string, error) {
 		maxAttempts = 4
 	}
 
-	var lastErr error
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		apiKey := e.keyMgr.CurrentKey()
-		if apiKey == "" {
-			return "", fmt.Errorf("no healthy API keys available")
-		}
-
-		fullURL := fmt.Sprintf("%s?key=%s", url, apiKey)
-		req, err := http.NewRequestWithContext(e.ctx, http.MethodPost, fullURL, bytes.NewReader(body))
-		if err != nil {
-			return "", fmt.Errorf("creating request: %w", err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := e.httpClient.Do(req)
-		if err != nil {
-			return "", fmt.Errorf("calling Gemini API: %w", err)
-		}
-
-		respBody, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return "", fmt.Errorf("reading response: %w", err)
-		}
-
-		// Check for rate limit / quota errors — rotate and retry
-		if IsRotatableError(resp.StatusCode, string(respBody)) {
-			lastErr = fmt.Errorf("Gemini API rate limited (status %d)", resp.StatusCode)
-			newKey := e.keyMgr.RotateOnError(resp.StatusCode, string(respBody))
-			if newKey == "" {
-				return "", fmt.Errorf("all API keys exhausted: %w", lastErr)
+	// Run HTTP request inside Circuit Breaker
+	result, cbErr := e.cb.Execute(func() (interface{}, error) {
+		var lastErr error
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			apiKey := e.keyMgr.CurrentKey()
+			if apiKey == "" {
+				return "", fmt.Errorf("no healthy API keys available")
 			}
-			continue
-		}
 
-		if resp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("Gemini API error (status %d): %s", resp.StatusCode, string(respBody))
-		}
+			fullURL := fmt.Sprintf("%s?key=%s", url, apiKey)
+			req, err := http.NewRequestWithContext(e.ctx, http.MethodPost, fullURL, bytes.NewReader(body))
+			if err != nil {
+				return "", fmt.Errorf("creating request: %w", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
 
-		var gemResp geminiResponse
-		if err := json.Unmarshal(respBody, &gemResp); err != nil {
-			return "", fmt.Errorf("parsing Gemini response: %w", err)
-		}
+			resp, err := e.httpClient.Do(req)
+			if err != nil {
+				return "", fmt.Errorf("calling Gemini API: %w", err)
+			}
 
-		if gemResp.Error != nil {
-			errMsg := gemResp.Error.Message
-			if IsRotatableError(gemResp.Error.Code, errMsg) {
-				lastErr = fmt.Errorf("Gemini API error: %s", errMsg)
-				newKey := e.keyMgr.RotateOnError(gemResp.Error.Code, errMsg)
+			respBody, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				return "", fmt.Errorf("reading response: %w", err)
+			}
+
+			// Check for rate limit / quota errors — rotate and retry
+			if IsRotatableError(resp.StatusCode, string(respBody)) {
+				lastErr = fmt.Errorf("Gemini API rate limited (status %d)", resp.StatusCode)
+				newKey := e.keyMgr.RotateOnError(resp.StatusCode, string(respBody))
 				if newKey == "" {
 					return "", fmt.Errorf("all API keys exhausted: %w", lastErr)
 				}
 				continue
 			}
-			return "", fmt.Errorf("Gemini API error: %s", errMsg)
+
+			if resp.StatusCode != http.StatusOK {
+				return "", fmt.Errorf("Gemini API error (status %d): %s", resp.StatusCode, string(respBody))
+			}
+
+			var gemResp geminiResponse
+			if err := json.Unmarshal(respBody, &gemResp); err != nil {
+				return "", fmt.Errorf("parsing Gemini response: %w", err)
+			}
+
+			if gemResp.Error != nil {
+				errMsg := gemResp.Error.Message
+				if IsRotatableError(gemResp.Error.Code, errMsg) {
+					lastErr = fmt.Errorf("Gemini API error: %s", errMsg)
+					newKey := e.keyMgr.RotateOnError(gemResp.Error.Code, errMsg)
+					if newKey == "" {
+						return "", fmt.Errorf("all API keys exhausted: %w", lastErr)
+					}
+					continue
+				}
+				return "", fmt.Errorf("Gemini API error: %s", errMsg)
+			}
+
+			if len(gemResp.Candidates) == 0 || len(gemResp.Candidates[0].Content.Parts) == 0 {
+				return "", fmt.Errorf("empty response from Gemini")
+			}
+
+			return gemResp.Candidates[0].Content.Parts[0].Text, nil
 		}
 
-		if len(gemResp.Candidates) == 0 || len(gemResp.Candidates[0].Content.Parts) == 0 {
-			return "", fmt.Errorf("empty response from Gemini")
+		if lastErr != nil {
+			return "", lastErr
 		}
+		return "", fmt.Errorf("no healthy API keys available")
+	})
 
-		return gemResp.Candidates[0].Content.Parts[0].Text, nil
+	if cbErr != nil {
+		return "", cbErr
 	}
 
-	if lastErr != nil {
-		return "", lastErr
-	}
-	return "", fmt.Errorf("no healthy API keys available")
+	return result.(string), nil
 }
 
 // cleanJSON extracts JSON from a response that might have markdown fencing.

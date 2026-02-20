@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/1sec-project/1sec/internal/core"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/rs/zerolog"
 )
 
@@ -64,10 +65,7 @@ func (f *Fortress) Start(ctx context.Context, bus *core.EventBus, pipeline *core
 	f.ssrfDetector = NewSSRFViaAPIDetector()
 	f.responseAnalyzer = NewResponseAnomalyAnalyzer()
 
-	go f.bolaDetector.CleanupLoop(f.ctx)
-	go f.rateLimiter.CleanupLoop(f.ctx)
-	go f.bflaDetector.CleanupLoop(f.ctx)
-	go f.responseAnalyzer.CleanupLoop(f.ctx)
+	// BOLA, BFLA, rateLimiter, and responseAnalyzer now use LRU caches internally, so no external cleanup loops are needed.
 
 	f.logger.Info().Msg("API fortress started")
 	return nil
@@ -342,8 +340,8 @@ func getAPIMitigations(alertType string) []string {
 
 type BOLADetector struct {
 	mu             sync.RWMutex
-	accessPatterns map[string]*bolaProfile // userID -> profile
-	ipPatterns     map[string]*bolaProfile // IP -> profile
+	accessPatterns *lru.Cache[string, *bolaProfile] // userID -> profile
+	ipPatterns     *lru.Cache[string, *bolaProfile] // IP -> profile
 	threshold      int
 }
 
@@ -369,9 +367,11 @@ func NewBOLADetector(settings map[string]interface{}) *BOLADetector {
 			threshold = int(v)
 		}
 	}
+	aCache, _ := lru.New[string, *bolaProfile](20000)
+	iCache, _ := lru.New[string, *bolaProfile](20000)
 	return &BOLADetector{
-		accessPatterns: make(map[string]*bolaProfile),
-		ipPatterns:     make(map[string]*bolaProfile),
+		accessPatterns: aCache,
+		ipPatterns:     iCache,
 		threshold:      threshold,
 	}
 }
@@ -423,42 +423,24 @@ func (b *BOLADetector) Detect(userID, resourceID, path, method, ip string) BOLAR
 	return result
 }
 
-func (b *BOLADetector) getOrCreateProfile(m map[string]*bolaProfile, key string, now time.Time) *bolaProfile {
-	p, exists := m[key]
+func (b *BOLADetector) getOrCreateProfile(m *lru.Cache[string, *bolaProfile], key string, now time.Time) *bolaProfile {
+	p, exists := m.Get(key)
 	if !exists || now.Sub(p.lastSeen) > 10*time.Minute {
 		p = &bolaProfile{
 			resources: make(map[string]bool),
 			firstSeen: now,
 		}
-		m[key] = p
+		m.Add(key, p)
+	}
+
+	// Cap resources map
+	if len(p.resources) > b.threshold*5 {
+		p.resources = make(map[string]bool)
 	}
 	return p
 }
 
-func (b *BOLADetector) CleanupLoop(ctx context.Context) {
-	ticker := time.NewTicker(10 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			b.mu.Lock()
-			cutoff := time.Now().Add(-15 * time.Minute)
-			cleanupProfiles(b.accessPatterns, cutoff)
-			cleanupProfiles(b.ipPatterns, cutoff)
-			b.mu.Unlock()
-		}
-	}
-}
-
-func cleanupProfiles(m map[string]*bolaProfile, cutoff time.Time) {
-	for k, p := range m {
-		if p.lastSeen.Before(cutoff) {
-			delete(m, k)
-		}
-	}
-}
+// Cleanup handled by LRU
 
 // isSequentialIDs checks if a slice of ID strings are numerically sequential.
 func isSequentialIDs(ids []string) bool {
@@ -511,7 +493,7 @@ type BFLADetector struct {
 	adminPaths    *regexp.Regexp
 	writePaths    *regexp.Regexp
 	roleHierarchy map[string]int // role -> privilege level
-	userAttempts  map[string]*bflaTracker
+	userAttempts  *lru.Cache[string, *bflaTracker]
 }
 
 type bflaTracker struct {
@@ -526,6 +508,7 @@ type BFLAViolation struct {
 }
 
 func NewBFLADetector() *BFLADetector {
+	uCache, _ := lru.New[string, *bflaTracker](50000)
 	return &BFLADetector{
 		adminPaths: regexp.MustCompile(`(?i)(/admin|/management|/internal|/debug|/actuator|/console|/config|/settings|/users/\{?id\}?/role|/system|/ops/|/superadmin)`),
 		writePaths: regexp.MustCompile(`(?i)(/users$|/accounts$|/roles|/permissions|/policies|/billing|/subscriptions|/organizations)`),
@@ -536,7 +519,7 @@ func NewBFLADetector() *BFLADetector {
 			"admin": 3, "administrator": 3,
 			"superadmin": 4, "owner": 4, "root": 4,
 		},
-		userAttempts: make(map[string]*bflaTracker),
+		userAttempts: uCache,
 	}
 }
 
@@ -586,7 +569,7 @@ func (b *BFLADetector) Check(userID, userRole, method, path, ip string) *BFLAVio
 	}
 
 	// Repeated BFLA attempts from same user
-	if tracker, ok := b.userAttempts[userID]; ok && tracker.violations >= 5 {
+	if tracker, ok := b.userAttempts.Get(userID); ok && tracker.violations >= 5 {
 		return &BFLAViolation{
 			Severity:     core.SeverityCritical,
 			RequiredRole: "admin",
@@ -598,34 +581,16 @@ func (b *BFLADetector) Check(userID, userRole, method, path, ip string) *BFLAVio
 }
 
 func (b *BFLADetector) recordAttempt(userID string) {
-	tracker, exists := b.userAttempts[userID]
+	tracker, exists := b.userAttempts.Get(userID)
 	if !exists {
 		tracker = &bflaTracker{}
-		b.userAttempts[userID] = tracker
+		b.userAttempts.Add(userID, tracker)
 	}
 	tracker.violations++
 	tracker.lastSeen = time.Now()
 }
 
-func (b *BFLADetector) CleanupLoop(ctx context.Context) {
-	ticker := time.NewTicker(15 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			b.mu.Lock()
-			cutoff := time.Now().Add(-30 * time.Minute)
-			for k, t := range b.userAttempts {
-				if t.lastSeen.Before(cutoff) {
-					delete(b.userAttempts, k)
-				}
-			}
-			b.mu.Unlock()
-		}
-	}
-}
+// Cleanup Loop eliminated by LRU
 
 // ===========================================================================
 // MassAssignmentDetector — detects attempts to set privileged fields
@@ -1050,7 +1015,7 @@ func (s *SSRFViaAPIDetector) Check(path, body, urlParam string) *SSRFFinding {
 
 type ResponseAnomalyAnalyzer struct {
 	mu        sync.RWMutex
-	endpoints map[string]*endpointStats
+	endpoints *lru.Cache[string, *endpointStats]
 }
 
 type endpointStats struct {
@@ -1078,8 +1043,9 @@ type ResponseAnomaly struct {
 }
 
 func NewResponseAnomalyAnalyzer() *ResponseAnomalyAnalyzer {
+	eCache, _ := lru.New[string, *endpointStats](20000)
 	return &ResponseAnomalyAnalyzer{
-		endpoints: make(map[string]*endpointStats),
+		endpoints: eCache,
 	}
 }
 
@@ -1090,10 +1056,10 @@ func (r *ResponseAnomalyAnalyzer) RecordRequest(method, path string, statusCode 
 	key := method + ":" + normalizePath(path)
 	now := time.Now()
 
-	stats, exists := r.endpoints[key]
+	stats, exists := r.endpoints.Get(key)
 	if !exists {
 		stats = &endpointStats{windowStart: now}
-		r.endpoints[key] = stats
+		r.endpoints.Add(key, stats)
 	}
 
 	// Rotate window every 5 minutes
@@ -1127,7 +1093,7 @@ func (r *ResponseAnomalyAnalyzer) Analyze(method, path string, statusCode, respo
 	anomaly := ResponseAnomaly{}
 	key := method + ":" + normalizePath(path)
 
-	stats, exists := r.endpoints[key]
+	stats, exists := r.endpoints.Get(key)
 	if !exists {
 		return anomaly
 	}
@@ -1171,25 +1137,7 @@ func (r *ResponseAnomalyAnalyzer) Analyze(method, path string, statusCode, respo
 	return anomaly
 }
 
-func (r *ResponseAnomalyAnalyzer) CleanupLoop(ctx context.Context) {
-	ticker := time.NewTicker(15 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			r.mu.Lock()
-			cutoff := time.Now().Add(-30 * time.Minute)
-			for key, stats := range r.endpoints {
-				if stats.lastSeen.Before(cutoff) {
-					delete(r.endpoints, key)
-				}
-			}
-			r.mu.Unlock()
-		}
-	}
-}
+// Cleanup handled by LRU
 
 // ===========================================================================
 // APIRegistry — shadow API detection with learning phase
@@ -1197,16 +1145,18 @@ func (r *ResponseAnomalyAnalyzer) CleanupLoop(ctx context.Context) {
 
 type APIRegistry struct {
 	mu            sync.RWMutex
-	documented    map[string]bool // "METHOD:/path" -> true
-	observed      map[string]int  // "METHOD:/path" -> access count
+	documented    *lru.Cache[string, bool] // "METHOD:/path" -> true
+	observed      *lru.Cache[string, int]  // "METHOD:/path" -> access count
 	learningStart time.Time
 	learningDone  bool
 }
 
 func NewAPIRegistry() *APIRegistry {
+	dCache, _ := lru.New[string, bool](50000)
+	oCache, _ := lru.New[string, int](50000)
 	return &APIRegistry{
-		documented:    make(map[string]bool),
-		observed:      make(map[string]int),
+		documented:    dCache,
+		observed:      oCache,
 		learningStart: time.Now(),
 	}
 }
@@ -1215,7 +1165,7 @@ func (r *APIRegistry) RegisterEndpoint(method, path string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := method + ":" + normalizePath(path)
-	r.documented[key] = true
+	r.documented.Add(key, true)
 }
 
 func (r *APIRegistry) IsUndocumented(method, path string) bool {
@@ -1224,14 +1174,14 @@ func (r *APIRegistry) IsUndocumented(method, path string) bool {
 
 	key := method + ":" + normalizePath(path)
 
-	if r.documented[key] {
+	if _, exists := r.documented.Get(key); exists {
 		return false
 	}
 
 	// Learning phase: first hour, absorb all endpoints as baseline
 	if !r.learningDone {
 		if time.Since(r.learningStart) < time.Hour {
-			r.documented[key] = true
+			r.documented.Add(key, true)
 			return false
 		}
 		r.learningDone = true
@@ -1244,7 +1194,8 @@ func (r *APIRegistry) RecordAccess(method, path string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := method + ":" + normalizePath(path)
-	r.observed[key]++
+	val, _ := r.observed.Get(key)
+	r.observed.Add(key, val+1)
 }
 
 // ===========================================================================
@@ -1253,7 +1204,7 @@ func (r *APIRegistry) RecordAccess(method, path string) {
 
 type EndpointRateLimiter struct {
 	mu           sync.RWMutex
-	counters     map[string]*epCounter
+	counters     *lru.Cache[string, *epCounter]
 	maxPerMinute int
 }
 
@@ -1278,8 +1229,9 @@ func NewEndpointRateLimiter(settings map[string]interface{}) *EndpointRateLimite
 			maxRPM = int(v)
 		}
 	}
+	eCache, _ := lru.New[string, *epCounter](50000)
 	return &EndpointRateLimiter{
-		counters:     make(map[string]*epCounter),
+		counters:     eCache,
 		maxPerMinute: maxRPM,
 	}
 }
@@ -1291,9 +1243,9 @@ func (rl *EndpointRateLimiter) Check(ip, method, path string) *RateLimitExceeded
 	key := ip + ":" + method + ":" + normalizePath(path)
 	now := time.Now()
 
-	counter, exists := rl.counters[key]
+	counter, exists := rl.counters.Get(key)
 	if !exists {
-		rl.counters[key] = &epCounter{count: 1, window: now, lastSeen: now}
+		rl.counters.Add(key, &epCounter{count: 1, window: now, lastSeen: now})
 		return nil
 	}
 
@@ -1328,25 +1280,7 @@ func (rl *EndpointRateLimiter) Check(ip, method, path string) *RateLimitExceeded
 	return nil
 }
 
-func (rl *EndpointRateLimiter) CleanupLoop(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			rl.mu.Lock()
-			cutoff := time.Now().Add(-10 * time.Minute)
-			for key, counter := range rl.counters {
-				if counter.lastSeen.Before(cutoff) {
-					delete(rl.counters, key)
-				}
-			}
-			rl.mu.Unlock()
-		}
-	}
-}
+// Cleanup handled by LRU
 
 // ===========================================================================
 // Helpers

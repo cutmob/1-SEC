@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/1sec-project/1sec/internal/core"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/rs/zerolog"
 )
 
@@ -26,7 +27,7 @@ type Firewall struct {
 	cancel       context.CancelFunc
 	patterns     []DetectionPattern
 	outputRules  []OutputRule
-	tokenBudgets map[string]*TokenBudget
+	tokenBudgets *lru.Cache[string, *TokenBudget]
 	multiTurn    *MultiTurnTracker
 	toolChainMon *ToolChainMonitor
 	mu           sync.RWMutex
@@ -58,8 +59,9 @@ type TokenBudget struct {
 }
 
 func New() *Firewall {
+	tCache, _ := lru.New[string, *TokenBudget](50000)
 	return &Firewall{
-		tokenBudgets: make(map[string]*TokenBudget),
+		tokenBudgets: tCache,
 		multiTurn:    NewMultiTurnTracker(),
 		toolChainMon: NewToolChainMonitor(),
 	}
@@ -298,7 +300,7 @@ func (f *Firewall) checkTokenBudget(event *core.SecurityEvent) {
 	}
 
 	f.mu.Lock()
-	budget, exists := f.tokenBudgets[userID]
+	budget, exists := f.tokenBudgets.Get(userID)
 	if !exists {
 		settings := f.cfg.GetModuleSettings(ModuleName)
 		limit := getIntSetting(settings, "token_budget_per_hour", 100000)
@@ -308,7 +310,7 @@ func (f *Firewall) checkTokenBudget(event *core.SecurityEvent) {
 			windowMs: 3600 * 1000, // 1 hour in milliseconds
 			resetAt:  now + 3600*1000,
 		}
-		f.tokenBudgets[userID] = budget
+		f.tokenBudgets.Add(userID, budget)
 	}
 	f.mu.Unlock()
 
@@ -356,6 +358,12 @@ type InputDetection struct {
 
 func (f *Firewall) scanInput(input string) []InputDetection {
 	var detections []InputDetection
+
+	// Prevent ReDoS and extreme CPU overhead by truncating inputs
+	if len(input) > 8000 {
+		input = input[:8000]
+	}
+
 	normalized := strings.ToLower(input)
 
 	for _, p := range f.patterns {
@@ -621,7 +629,7 @@ func truncate(s string, maxLen int) string {
 // over multiple turns, then exploit it. This tracker catches that pattern.
 type MultiTurnTracker struct {
 	mu       sync.RWMutex
-	sessions map[string]*conversationState
+	sessions *lru.Cache[string, *conversationState]
 }
 
 type conversationState struct {
@@ -646,8 +654,9 @@ type MultiTurnResult struct {
 }
 
 func NewMultiTurnTracker() *MultiTurnTracker {
+	sCache, _ := lru.New[string, *conversationState](50000)
 	return &MultiTurnTracker{
-		sessions: make(map[string]*conversationState),
+		sessions: sCache,
 	}
 }
 
@@ -658,12 +667,12 @@ func (mt *MultiTurnTracker) RecordAndAnalyze(sessionID, prompt string, isSuspici
 	now := time.Now()
 	result := MultiTurnResult{}
 
-	state, exists := mt.sessions[sessionID]
+	state, exists := mt.sessions.Get(sessionID)
 	if !exists || now.Sub(state.lastSeen) > 30*time.Minute {
 		state = &conversationState{
 			firstSeen: now,
 		}
-		mt.sessions[sessionID] = state
+		mt.sessions.Add(sessionID, state)
 	}
 
 	turn := turnRecord{
@@ -729,15 +738,7 @@ func (mt *MultiTurnTracker) RecordAndAnalyze(sessionID, prompt string, isSuspici
 		}
 	}
 
-	// Cleanup old sessions periodically
-	if len(mt.sessions) > 10000 {
-		cutoff := now.Add(-1 * time.Hour)
-		for id, s := range mt.sessions {
-			if s.lastSeen.Before(cutoff) {
-				delete(mt.sessions, id)
-			}
-		}
-	}
+	// Cleanup old sessions periodically handled by LRU
 
 	return result
 }
@@ -751,7 +752,7 @@ func (mt *MultiTurnTracker) RecordAndAnalyze(sessionID, prompt string, isSuspici
 // Each step is individually benign; the chain is the attack.
 type ToolChainMonitor struct {
 	mu              sync.RWMutex
-	agents          map[string]*toolChainState
+	agents          *lru.Cache[string, *toolChainState]
 	dangerousChains []dangerousChain
 }
 
@@ -780,8 +781,9 @@ type ToolChainResult struct {
 }
 
 func NewToolChainMonitor() *ToolChainMonitor {
+	aCache, _ := lru.New[string, *toolChainState](50000)
 	return &ToolChainMonitor{
-		agents: make(map[string]*toolChainState),
+		agents: aCache,
 		dangerousChains: []dangerousChain{
 			{name: "credential_exfiltration", sequence: []string{"file_read", "encode", "http_request"}, severity: core.SeverityCritical},
 			{name: "data_staging", sequence: []string{"database_query", "file_write", "compress"}, severity: core.SeverityCritical},
@@ -800,10 +802,10 @@ func (tc *ToolChainMonitor) RecordAndAnalyze(agentID, tool, target string) ToolC
 	now := time.Now()
 	result := ToolChainResult{}
 
-	state, exists := tc.agents[agentID]
+	state, exists := tc.agents.Get(agentID)
 	if !exists || now.Sub(state.lastSeen) > 10*time.Minute {
 		state = &toolChainState{}
-		tc.agents[agentID] = state
+		tc.agents.Add(agentID, state)
 	}
 
 	category := categorizeToolUse(tool, target)

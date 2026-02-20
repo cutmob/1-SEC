@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/1sec-project/1sec/internal/core"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/rs/zerolog"
 )
 
@@ -54,8 +55,6 @@ func (f *Fortress) Start(ctx context.Context, bus *core.EventBus, pipeline *core
 	f.oauthMon = NewOAuthMonitor()
 	f.sprayDet = NewPasswordSprayDetector()
 
-	go f.loginTracker.CleanupLoop(f.ctx)
-	go f.sessionMon.CleanupLoop(f.ctx)
 	go f.oauthMon.CleanupLoop(f.ctx)
 	go f.sprayDet.CleanupLoop(f.ctx)
 
@@ -332,10 +331,10 @@ func (f *Fortress) raiseAlert(event *core.SecurityEvent, severity core.Severity,
 
 type LoginTracker struct {
 	mu                sync.RWMutex
-	failures          map[string]*failureRecord
-	userFailures      map[string]*failureRecord
-	mfaFailures       map[string]int
-	lockouts          map[string]time.Time
+	failures          *lru.Cache[string, *failureRecord]
+	userFailures      *lru.Cache[string, *failureRecord]
+	mfaFailures       *lru.Cache[string, int]
+	lockouts          *lru.Cache[string, time.Time]
 	maxPerMinute      int
 	stuffingThreshold int
 	lockoutDuration   time.Duration
@@ -356,11 +355,15 @@ type LoginResult struct {
 }
 
 func NewLoginTracker(maxPerMinute, stuffingThreshold int, lockoutDuration time.Duration) *LoginTracker {
+	fCache, _ := lru.New[string, *failureRecord](50000)
+	uCache, _ := lru.New[string, *failureRecord](50000)
+	mCache, _ := lru.New[string, int](50000)
+	lCache, _ := lru.New[string, time.Time](50000)
 	return &LoginTracker{
-		failures:          make(map[string]*failureRecord),
-		userFailures:      make(map[string]*failureRecord),
-		mfaFailures:       make(map[string]int),
-		lockouts:          make(map[string]time.Time),
+		failures:          fCache,
+		userFailures:      uCache,
+		mfaFailures:       mCache,
+		lockouts:          lCache,
 		maxPerMinute:      maxPerMinute,
 		stuffingThreshold: stuffingThreshold,
 		lockoutDuration:   lockoutDuration,
@@ -374,24 +377,28 @@ func (lt *LoginTracker) RecordFailure(ip, username string) LoginResult {
 	now := time.Now()
 	result := LoginResult{}
 
-	rec, exists := lt.failures[ip]
+	rec, exists := lt.failures.Get(ip)
 	if !exists || now.Sub(rec.window) > time.Minute {
 		rec = &failureRecord{uniqueUsers: make(map[string]bool), window: now}
-		lt.failures[ip] = rec
+		lt.failures.Add(ip, rec)
+	}
+
+	if len(rec.uniqueUsers) > 100 { // Cap unique users to prevent OOM
+		rec.uniqueUsers = make(map[string]bool)
+	}
+	if username != "" {
+		rec.uniqueUsers[username] = true
 	}
 
 	rec.count++
 	rec.lastSeen = now
-	if username != "" {
-		rec.uniqueUsers[username] = true
-	}
 
 	result.FailureCount = rec.count
 	result.UniqueUsers = len(rec.uniqueUsers)
 
 	if rec.count >= lt.maxPerMinute {
 		result.BruteForce = true
-		lt.lockouts[ip] = now.Add(lt.lockoutDuration)
+		lt.lockouts.Add(ip, now.Add(lt.lockoutDuration))
 	}
 	if len(rec.uniqueUsers) >= lt.stuffingThreshold {
 		result.CredentialStuffing = true
@@ -402,21 +409,23 @@ func (lt *LoginTracker) RecordFailure(ip, username string) LoginResult {
 func (lt *LoginTracker) RecordMFAFailure(ip string) int {
 	lt.mu.Lock()
 	defer lt.mu.Unlock()
-	lt.mfaFailures[ip]++
-	return lt.mfaFailures[ip]
+	val, _ := lt.mfaFailures.Get(ip) // Use ip as key
+	val++
+	lt.mfaFailures.Add(ip, val) // Use ip as key
+	return val
 }
 
 func (lt *LoginTracker) IsLockedOut(ip string) bool {
 	lt.mu.RLock()
 	defer lt.mu.RUnlock()
-	lockoutEnd, exists := lt.lockouts[ip]
+	lockoutEnd, exists := lt.lockouts.Get(ip)
 	return exists && time.Now().Before(lockoutEnd)
 }
 
 func (lt *LoginTracker) WasRecentlyBlocked(ip string) bool {
 	lt.mu.RLock()
 	defer lt.mu.RUnlock()
-	rec, exists := lt.failures[ip]
+	rec, exists := lt.failures.Get(ip)
 	if !exists {
 		return false
 	}
@@ -426,33 +435,8 @@ func (lt *LoginTracker) WasRecentlyBlocked(ip string) bool {
 func (lt *LoginTracker) ClearFailures(ip, username string) {
 	lt.mu.Lock()
 	defer lt.mu.Unlock()
-	delete(lt.failures, ip)
-	delete(lt.mfaFailures, ip)
-}
-
-func (lt *LoginTracker) CleanupLoop(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			lt.mu.Lock()
-			cutoff := time.Now().Add(-30 * time.Minute)
-			for ip, rec := range lt.failures {
-				if rec.lastSeen.Before(cutoff) {
-					delete(lt.failures, ip)
-				}
-			}
-			for ip, end := range lt.lockouts {
-				if time.Now().After(end) {
-					delete(lt.lockouts, ip)
-				}
-			}
-			lt.mu.Unlock()
-		}
-	}
+	lt.failures.Remove(ip)
+	lt.mfaFailures.Remove(ip)
 }
 
 // ---------------------------------------------------------------------------
@@ -461,7 +445,7 @@ func (lt *LoginTracker) CleanupLoop(ctx context.Context) {
 
 type SessionMonitor struct {
 	mu       sync.RWMutex
-	sessions map[string]*sessionRecord
+	sessions *lru.Cache[string, *sessionRecord]
 }
 
 type sessionRecord struct {
@@ -483,16 +467,17 @@ type SessionAnomaly struct {
 }
 
 func NewSessionMonitor() *SessionMonitor {
-	return &SessionMonitor{sessions: make(map[string]*sessionRecord)}
+	sCache, _ := lru.New[string, *sessionRecord](100000)
+	return &SessionMonitor{sessions: sCache}
 }
 
 func (sm *SessionMonitor) RegisterSession(sessionID, username, ip, country, userAgent string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	sm.sessions[sessionID] = &sessionRecord{
+	sm.sessions.Add(sessionID, &sessionRecord{
 		username: username, ip: ip, country: country,
 		userAgent: userAgent, created: time.Now(), lastSeen: time.Now(),
-	}
+	})
 }
 
 func (sm *SessionMonitor) CheckAnomaly(sessionID, currentIP, currentCountry, currentUA string) SessionAnomaly {
@@ -500,7 +485,7 @@ func (sm *SessionMonitor) CheckAnomaly(sessionID, currentIP, currentCountry, cur
 	defer sm.mu.Unlock()
 
 	anomaly := SessionAnomaly{}
-	rec, exists := sm.sessions[sessionID]
+	rec, exists := sm.sessions.Get(sessionID)
 	if !exists {
 		return anomaly
 	}
@@ -542,27 +527,13 @@ func (sm *SessionMonitor) CheckAnomaly(sessionID, currentIP, currentCountry, cur
 	if currentCountry != "" {
 		rec.country = currentCountry
 	}
+	sm.sessions.Add(sessionID, rec) // Update the LRU cache with the modified record
 	return anomaly
 }
 
 func (sm *SessionMonitor) CleanupLoop(ctx context.Context) {
-	ticker := time.NewTicker(10 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			sm.mu.Lock()
-			cutoff := time.Now().Add(-24 * time.Hour)
-			for id, rec := range sm.sessions {
-				if rec.lastSeen.Before(cutoff) {
-					delete(sm.sessions, id)
-				}
-			}
-			sm.mu.Unlock()
-		}
-	}
+	// LRU cache handles cleanup automatically based on size.
+	// No explicit time-based cleanup loop needed for sessions.
 }
 
 // ---------------------------------------------------------------------------

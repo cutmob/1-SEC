@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/1sec-project/1sec/internal/core"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/rs/zerolog"
 )
 
@@ -45,8 +46,6 @@ func (c *Containment) Start(ctx context.Context, bus *core.EventBus, pipeline *c
 	c.policyEng = NewPolicyEngine()
 	c.shadowDet = NewShadowAIDetector()
 	c.agentTracker = NewAgentTracker()
-
-	go c.agentTracker.CleanupLoop(c.ctx)
 
 	c.logger.Info().Msg("AI agent containment started")
 	return nil
@@ -248,10 +247,11 @@ func (pe *PolicyEngine) Check(agentID, action, tool, target string) *PolicyViola
 type ShadowAIDetector struct {
 	mu           sync.RWMutex
 	knownAIHosts map[string]bool
-	apiCalls     map[string]int // IP -> count
+	apiCalls     *lru.Cache[string, int] // IP -> count
 }
 
 func NewShadowAIDetector() *ShadowAIDetector {
+	aCache, _ := lru.New[string, int](50000)
 	return &ShadowAIDetector{
 		knownAIHosts: map[string]bool{
 			"api.openai.com": true, "api.anthropic.com": true,
@@ -262,7 +262,7 @@ func NewShadowAIDetector() *ShadowAIDetector {
 			"api.groq.com": true, "api.perplexity.ai": true,
 			"api.deepseek.com": true,
 		},
-		apiCalls: make(map[string]int),
+		apiCalls: aCache,
 	}
 }
 
@@ -275,13 +275,14 @@ func (sd *ShadowAIDetector) IsKnownAIEndpoint(host string) bool {
 func (sd *ShadowAIDetector) RecordAPICall(endpoint, model, ip, user string) {
 	sd.mu.Lock()
 	defer sd.mu.Unlock()
-	sd.apiCalls[ip]++
+	val, _ := sd.apiCalls.Get(ip)
+	sd.apiCalls.Add(ip, val+1)
 }
 
 // AgentTracker monitors AI agent behavior over time.
 type AgentTracker struct {
 	mu     sync.RWMutex
-	agents map[string]*agentProfile
+	agents *lru.Cache[string, *agentProfile]
 }
 
 type agentProfile struct {
@@ -304,18 +305,19 @@ type AgentAnomaly struct {
 }
 
 func NewAgentTracker() *AgentTracker {
-	return &AgentTracker{agents: make(map[string]*agentProfile)}
+	aCache, _ := lru.New[string, *agentProfile](50000)
+	return &AgentTracker{agents: aCache}
 }
 
 func (at *AgentTracker) RegisterAgent(agentID, parentID string) {
 	at.mu.Lock()
 	defer at.mu.Unlock()
-	at.agents[agentID] = &agentProfile{
+	at.agents.Add(agentID, &agentProfile{
 		ID: agentID, Parent: parentID,
 		KnownTools:  make(map[string]bool),
 		CountWindow: time.Now(),
 		CreatedAt:   time.Now(), LastSeen: time.Now(),
-	}
+	})
 }
 
 func (at *AgentTracker) RecordAction(agentID, action, tool, target string) AgentAnomaly {
@@ -325,14 +327,14 @@ func (at *AgentTracker) RecordAction(agentID, action, tool, target string) Agent
 	anomaly := AgentAnomaly{}
 	now := time.Now()
 
-	profile, exists := at.agents[agentID]
+	profile, exists := at.agents.Get(agentID)
 	if !exists {
 		profile = &agentProfile{
 			ID: agentID, KnownTools: map[string]bool{tool: true},
 			CountWindow: now, CreatedAt: now, LastSeen: now,
 			ActionCount: 1,
 		}
-		at.agents[agentID] = profile
+		at.agents.Add(agentID, profile)
 		return anomaly
 	}
 
@@ -389,25 +391,7 @@ func (at *AgentTracker) RecordAction(agentID, action, tool, target string) Agent
 	return anomaly
 }
 
-func (at *AgentTracker) CleanupLoop(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			at.mu.Lock()
-			cutoff := time.Now().Add(-24 * time.Hour)
-			for id, profile := range at.agents {
-				if profile.LastSeen.Before(cutoff) {
-					delete(at.agents, id)
-				}
-			}
-			at.mu.Unlock()
-		}
-	}
-}
+// Cleanup handled by LRU
 
 func getStringDetail(event *core.SecurityEvent, key string) string {
 	if event.Details == nil {
