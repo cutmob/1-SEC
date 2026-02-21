@@ -87,20 +87,21 @@ type ResponseRecord struct {
 
 // ResponseEngine subscribes to alerts and executes configured response actions.
 type ResponseEngine struct {
-	logger     zerolog.Logger
-	bus        *EventBus
-	pipeline   *AlertPipeline
-	cfg        *Config
-	policies   map[string]*ResponsePolicy // keyed by module name
-	executors  map[ActionType]ActionExecutor
-	records    []*ResponseRecord
-	maxRecords int
-	cooldowns  map[string]time.Time // "module:action:target" → last fired
-	mu         sync.RWMutex
-	ctx        context.Context
-	cancel     context.CancelFunc
-	actionRate map[string]int // per-minute action counter per module
-	rateReset  time.Time
+	logger       zerolog.Logger
+	bus          *EventBus
+	pipeline     *AlertPipeline
+	cfg          *Config
+	policies     map[string]*ResponsePolicy // keyed by module name
+	executors    map[ActionType]ActionExecutor
+	records      []*ResponseRecord
+	maxRecords   int
+	cooldowns    map[string]time.Time // "module:action:target" → last fired
+	mu           sync.RWMutex
+	ctx          context.Context
+	cancel       context.CancelFunc
+	actionRate   map[string]int // per-minute action counter per module
+	rateReset    time.Time
+	ApprovalGate *ApprovalGate // exported for command poller access
 }
 
 // ActionExecutor is the interface for pluggable response action handlers.
@@ -140,6 +141,30 @@ func NewResponseEngine(logger zerolog.Logger, bus *EventBus, pipeline *AlertPipe
 
 	// Load policies from config
 	re.loadPolicies()
+
+	// Initialize approval gate if configured
+	if cfg.Enforcement != nil && cfg.Enforcement.ApprovalGate.Enabled {
+		re.ApprovalGate = NewApprovalGate(logger, cfg.Enforcement.ApprovalGate)
+		// When an action is approved, re-execute it
+		re.ApprovalGate.AddHandler(func(pa *PendingApproval) {
+			executor, exists := re.executors[pa.Action]
+			if !exists {
+				re.logger.Error().Str("action", string(pa.Action)).Msg("approved action has no executor")
+				return
+			}
+			start := time.Now()
+			target, details, err := executor.Execute(re.ctx, pa.Alert, pa.Rule, re.logger)
+			durationMs := time.Since(start).Milliseconds()
+			if target != "" {
+				pa.Target = target
+			}
+			if err != nil {
+				re.recordAction(pa.Alert, pa.Rule, pa.Target, ActionStatusFailed, details, durationMs, err)
+			} else {
+				re.recordAction(pa.Alert, pa.Rule, pa.Target, ActionStatusSuccess, details, durationMs, nil)
+			}
+		})
+	}
 
 	return re
 }
@@ -233,6 +258,9 @@ func (re *ResponseEngine) Start(ctx context.Context) {
 // Stop shuts down the response engine.
 func (re *ResponseEngine) Stop() {
 	re.cancel()
+	if re.ApprovalGate != nil {
+		re.ApprovalGate.Stop()
+	}
 	re.logger.Info().Msg("response engine stopped")
 }
 
@@ -295,6 +323,19 @@ func (re *ResponseEngine) handleAlert(alert *Alert) {
 				Str("target", target).
 				Msg("[DRY RUN] would execute response action")
 			re.recordAction(alert, rule, target, ActionStatusDryRun, "dry run — no action taken", 0, nil)
+			continue
+		}
+
+		// Check if this action requires human approval before execution
+		if re.ApprovalGate != nil && re.ApprovalGate.RequiresApproval(rule.Action) {
+			approvalID := re.ApprovalGate.Submit(alert, rule, target)
+			re.logger.Warn().
+				Str("alert_id", alert.ID).
+				Str("action", string(rule.Action)).
+				Str("target", target).
+				Str("approval_id", approvalID).
+				Msg("action held for human approval — approve via dashboard or CLI")
+			re.recordAction(alert, rule, target, ActionStatusSkipped, "held for approval: "+approvalID, 0, nil)
 			continue
 		}
 
@@ -456,6 +497,19 @@ func (re *ResponseEngine) GetRecords(limit int, moduleFilter string) []*Response
 		count++
 	}
 	return result
+}
+
+// FindRecord returns a single record by ID, or nil if not found.
+func (re *ResponseEngine) FindRecord(id string) *ResponseRecord {
+	re.mu.RLock()
+	defer re.mu.RUnlock()
+
+	for _, r := range re.records {
+		if r.ID == id {
+			return r
+		}
+	}
+	return nil
 }
 
 // GetPolicies returns all loaded response policies.

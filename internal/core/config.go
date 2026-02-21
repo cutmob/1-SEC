@@ -25,10 +25,11 @@ type Config struct {
 
 // CloudConfig holds settings for reporting to the 1SEC cloud dashboard.
 type CloudConfig struct {
-	Enabled           bool   `yaml:"enabled"`
-	APIURL            string `yaml:"api_url"`
-	APIKey            string `yaml:"api_key"`
-	HeartbeatInterval int    `yaml:"heartbeat_interval"` // seconds, 0 = disabled
+	Enabled             bool   `yaml:"enabled"`
+	APIURL              string `yaml:"api_url"`
+	APIKey              string `yaml:"api_key"`
+	HeartbeatInterval   int    `yaml:"heartbeat_interval"`    // seconds, 0 = disabled
+	CommandPollInterval int    `yaml:"command_poll_interval"`  // seconds, 0 = disabled, default 15
 }
 
 // EnforcementConfig holds the automated response / enforcement layer settings.
@@ -38,6 +39,7 @@ type EnforcementConfig struct {
 	Preset          string                        `yaml:"preset,omitempty"` // "lax", "balanced", "strict"
 	GlobalAllowList []string                      `yaml:"global_allow_list,omitempty"`
 	Policies        map[string]ResponsePolicyYAML `yaml:"policies,omitempty"`
+	ApprovalGate    ApprovalGateConfig            `yaml:"approval_gate"`
 }
 
 // ResponsePolicyYAML is the YAML-friendly representation of a response policy.

@@ -58,6 +58,9 @@ func NewServer(engine *core.Engine) *Server {
 	mux.HandleFunc("/api/v1/enforce/policies/", s.handleEnforcePolicyAction)
 	mux.HandleFunc("/api/v1/enforce/dry-run/", s.handleEnforceDryRun)
 	mux.HandleFunc("/api/v1/enforce/test/", s.handleEnforceTest)
+	mux.HandleFunc("/api/v1/enforce/approve/", s.handleEnforceApprove)
+	mux.HandleFunc("/api/v1/enforce/reject/", s.handleEnforceReject)
+	mux.HandleFunc("/api/v1/enforce/rollback/", s.handleEnforceRollback)
 	mux.HandleFunc("/api/v1/shutdown", s.handleShutdown)
 	mux.HandleFunc("/api/v1/config/reload", s.handleConfigReload)
 

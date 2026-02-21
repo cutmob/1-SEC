@@ -25,6 +25,7 @@ type Engine struct {
 	Dedup            *EventDedup
 	Logger           zerolog.Logger
 	CloudReporter    *CloudReporter
+	CommandPoller    *CommandPoller
 	ctx            context.Context
 	cancel         context.CancelFunc
 	configPath     string
@@ -207,6 +208,10 @@ func (e *Engine) Start() error {
 	if e.Config.Cloud.Enabled && e.Config.Cloud.APIKey != "" {
 		e.CloudReporter = NewCloudReporter(e)
 		e.CloudReporter.Start()
+
+		// Start command poller — receives enforcement commands from the dashboard
+		e.CommandPoller = NewCommandPoller(e)
+		e.CommandPoller.Start()
 	}
 
 	return nil
@@ -240,6 +245,11 @@ func (e *Engine) Shutdown() error {
 	// Stop cloud reporter
 	if e.CloudReporter != nil {
 		e.CloudReporter.Stop()
+	}
+
+	// Stop command poller
+	if e.CommandPoller != nil {
+		e.CommandPoller.Stop()
 	}
 
 	// Stop Rust sidecar first (it depends on the bus)

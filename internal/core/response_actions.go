@@ -201,6 +201,11 @@ func unblockIP(ip string, logger zerolog.Logger) {
 	}
 }
 
+// ExportedUnblockIP is the exported version of unblockIP for use by the API layer.
+func ExportedUnblockIP(ip string, logger zerolog.Logger) {
+	unblockIP(ip, logger)
+}
+
 // ---------------------------------------------------------------------------
 // KillProcessExecutor — terminates a malicious process by PID or name
 // ---------------------------------------------------------------------------

@@ -220,3 +220,146 @@ func (s *Server) handleEnforceTest(w http.ResponseWriter, r *http.Request) {
 		"total_matching":  len(matchingActions),
 	})
 }
+
+// handleEnforceApprove approves a pending approval gate action.
+// URL pattern: POST /api/v1/enforce/approve/{id}
+func (s *Server) handleEnforceApprove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	re := s.engine.ResponseEngine
+	if re == nil || re.ApprovalGate == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "approval gate not configured"})
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/enforce/approve/")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "approval ID required"})
+		return
+	}
+
+	decidedBy := "api:" + r.RemoteAddr
+	pa, err := re.ApprovalGate.Approve(id, decidedBy)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	s.logger.Warn().
+		Str("approval_id", id).
+		Str("action", string(pa.Action)).
+		Str("target", pa.Target).
+		Str("decided_by", decidedBy).
+		Msg("action approved via API")
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":         pa.ID,
+		"action":     string(pa.Action),
+		"target":     pa.Target,
+		"status":     pa.Status,
+		"decided_by": pa.DecidedBy,
+	})
+}
+
+// handleEnforceReject rejects a pending approval gate action.
+// URL pattern: POST /api/v1/enforce/reject/{id}
+func (s *Server) handleEnforceReject(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	re := s.engine.ResponseEngine
+	if re == nil || re.ApprovalGate == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "approval gate not configured"})
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/enforce/reject/")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "approval ID required"})
+		return
+	}
+
+	decidedBy := "api:" + r.RemoteAddr
+	pa, err := re.ApprovalGate.Reject(id, decidedBy)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	s.logger.Warn().
+		Str("approval_id", id).
+		Str("action", string(pa.Action)).
+		Str("decided_by", decidedBy).
+		Msg("action rejected via API")
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":         pa.ID,
+		"action":     string(pa.Action),
+		"target":     pa.Target,
+		"status":     pa.Status,
+		"decided_by": pa.DecidedBy,
+	})
+}
+
+// handleEnforceRollback rolls back a reversible enforcement action.
+// URL pattern: POST /api/v1/enforce/rollback/{id}
+func (s *Server) handleEnforceRollback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	re := s.engine.ResponseEngine
+	if re == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "enforcement engine not configured"})
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/enforce/rollback/")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "record ID required"})
+		return
+	}
+
+	record := re.FindRecord(id)
+	if record == nil {
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": "enforcement record not found"})
+		return
+	}
+
+	if record.Status != core.ActionStatusSuccess {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error":  "can only roll back successful actions",
+			"status": string(record.Status),
+		})
+		return
+	}
+
+	switch record.Action {
+	case core.ActionBlockIP:
+		core.ExportedUnblockIP(record.Target, s.logger)
+		record.Status = core.ActionStatusSkipped
+		s.logger.Warn().
+			Str("record_id", id).
+			Str("action", string(record.Action)).
+			Str("target", record.Target).
+			Str("ip", r.RemoteAddr).
+			Msg("enforcement action rolled back via API")
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"id":       id,
+			"action":   string(record.Action),
+			"target":   record.Target,
+			"rollback": "completed",
+		})
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error":  "rollback not supported for this action type",
+			"action": string(record.Action),
+		})
+	}
+}
