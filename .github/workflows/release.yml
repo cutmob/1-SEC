@@ -62,7 +62,7 @@ jobs:
 
       - name: Install musl tools (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools libpcap-dev
 
       - name: Install cross-compilation tools (Linux ARM64)
         if: matrix.target == 'aarch64-unknown-linux-musl'
@@ -88,12 +88,12 @@ jobs:
 
       - name: Build Rust engine
         working-directory: rust/1sec-engine
-        run: cargo build --release --no-default-features --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Test (native targets only)
         if: matrix.target != 'aarch64-unknown-linux-musl'
         working-directory: rust/1sec-engine
-        run: cargo test --no-default-features --target ${{ matrix.target }}
+        run: cargo test --target ${{ matrix.target }}
 
       - name: Rename artifact
         shell: bash
@@ -137,10 +137,16 @@ jobs:
         with:
           path: rust-artifacts
 
+      - name: Checksum Rust binaries
+        working-directory: rust-artifacts
+        run: |
+          find . -type f \( -name "1sec-engine-*" \) -exec sha256sum {} \; | sed 's|  \./[^/]*/|  |' >> ../dist/checksums.txt
+
       - name: Attach Rust binaries to release
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            dist/checksums.txt
             rust-artifacts/1sec-engine-linux-amd64/1sec-engine-linux-amd64
             rust-artifacts/1sec-engine-linux-arm64/1sec-engine-linux-arm64
             rust-artifacts/1sec-engine-darwin-amd64/1sec-engine-darwin-amd64

@@ -33,6 +33,7 @@ archives:
       - README.md
       - LICENSE
       - configs/default.yaml
+      - install.sh
 
 # Rust engine is built separately via CI (see .github/workflows)
 # and attached as extra release artifacts.
