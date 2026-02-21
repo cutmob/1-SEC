@@ -81,7 +81,7 @@ func cmdEnforceUsage() {
   disable <module>    Disable enforcement for a specific module
   dry-run [on|off]    Toggle global dry-run mode
   test    <module>    Simulate an alert to preview enforcement actions
-  preset  <name>      Apply an enforcement preset (lax, balanced, strict)
+  preset  <name>      Apply an enforcement preset (lax, balanced, strict, vps-agent)
   webhooks            Webhook dispatcher stats, dead letters, and retry
   approvals           Manage pending human approval gates
   batching            Alert batcher stats and active batches
@@ -98,8 +98,13 @@ func cmdEnforceUsage() {
              Good default for production environments.
   strict     Aggressive enforcement on MEDIUM+. Short cooldowns,
              high rate limits. For high-security environments.
+  vps-agent  Purpose-built for VPS-hosted AI agents (OpenClaw,
+             Moltbot, Manus). Aggressive on auth, LLM firewall,
+             containment, runtime, and supply chain. Standalone
+             profile, not part of the escalation ladder.
 
   Recommended progression: lax → safe → balanced → strict
+  Note: vps-agent is a standalone profile for AI agent deployments.
 
 %s
   --host     API host (default: from config or 127.0.0.1)

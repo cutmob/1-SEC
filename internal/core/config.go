@@ -37,7 +37,7 @@ type CloudConfig struct {
 type EnforcementConfig struct {
 	Enabled         bool                          `yaml:"enabled"`
 	DryRun          bool                          `yaml:"dry_run"`
-	Preset          string                        `yaml:"preset,omitempty"` // "lax", "safe", "balanced", "strict"
+	Preset          string                        `yaml:"preset,omitempty"` // "lax", "safe", "balanced", "strict", "vps-agent"
 	GlobalAllowList []string                      `yaml:"global_allow_list,omitempty"`
 	Policies        map[string]ResponsePolicyYAML `yaml:"policies,omitempty"`
 	ApprovalGate    ApprovalGateConfig            `yaml:"approval_gate"`

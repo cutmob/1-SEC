@@ -187,11 +187,12 @@ rust_engine:
 enforcement:
   enabled: true
   dry_run: true             # IMPORTANT: start in dry-run to audit before going live
-  preset: "safe"            # "lax", "safe", "balanced", or "strict"
+  preset: "safe"            # "lax", "safe", "balanced", "strict", or "vps-agent"
                             # lax:      log + webhook only, never blocks/kills
                             # safe:     log + webhook, block_ip only for brute force + port scans (recommended first deploy)
                             # balanced: blocks IPs on HIGH, kills on CRITICAL
                             # strict:   aggressive enforcement on MEDIUM+, short cooldowns
+                            # vps-agent: purpose-built for VPS-hosted AI agents (OpenClaw, Moltbot, Manus)
   global_allow_list: []     # IPs that are never blocked (e.g., monitoring, VPN, load balancers)
   # To switch presets via CLI:  1sec enforce preset strict --dry-run
   # To see what a preset does:  1sec enforce preset balanced --show

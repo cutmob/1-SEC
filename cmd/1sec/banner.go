@@ -124,7 +124,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "  1sec enforce status\n\n")
 	fmt.Fprintf(w, "  %s\n", dim("# Preview what a preset does before applying"))
 	fmt.Fprintf(w, "  1sec enforce preset balanced --show\n\n")
-	fmt.Fprintf(w, "  %s\n", dim("# Apply a preset (lax → safe → balanced → strict)"))
+	fmt.Fprintf(w, "  %s\n", dim("# Apply a preset (lax → safe → balanced → strict, or vps-agent for AI agent VPS)"))
 	fmt.Fprintf(w, "  1sec enforce preset balanced\n\n")
 	fmt.Fprintf(w, "  %s\n", dim("# Test what enforcement would do for a module"))
 	fmt.Fprintf(w, "  1sec enforce test ransomware --severity CRITICAL\n\n")

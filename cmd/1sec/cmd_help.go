@@ -273,7 +273,7 @@ func cmdHelp(subcmd string) {
 		fmt.Printf("  %-20s  %s\n", "disable <module>", "Disable enforcement for a specific module")
 		fmt.Printf("  %-20s  %s\n", "dry-run [on|off]", "Toggle global dry-run mode")
 		fmt.Printf("  %-20s  %s\n", "test <module>", "Simulate an alert to preview enforcement actions")
-		fmt.Printf("  %-20s  %s\n", "preset <name>", "Apply an enforcement preset (lax, safe, balanced, strict)")
+		fmt.Printf("  %-20s  %s\n", "preset <name>", "Apply an enforcement preset (lax, safe, balanced, strict, vps-agent)")
 		fmt.Printf("  %-20s  %s\n", "webhooks", "Webhook dispatcher stats, dead letters, and retry")
 		fmt.Printf("  %-20s  %s\n", "approvals", "Manage pending human approval gates")
 		fmt.Printf("  %-20s  %s\n", "batching", "Alert batcher stats and active batches")

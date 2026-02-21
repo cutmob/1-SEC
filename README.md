@@ -148,7 +148,7 @@ helm install 1sec ./deploy/helm \
 1sec enforce disable <module>    Disable enforcement for a module
 1sec enforce dry-run [on|off]    Toggle global dry-run mode
 1sec enforce test <module>       Simulate alert to preview actions
-1sec enforce preset <name>       Apply preset (lax, safe, balanced, strict)
+1sec enforce preset <name>       Apply preset (lax, safe, balanced, strict, vps-agent)
 1sec enforce webhooks stats      Webhook dispatcher statistics
 1sec enforce webhooks dead-letters  Dead letter queue
 1sec enforce webhooks retry <id> Retry a failed webhook delivery
@@ -223,8 +223,11 @@ export GEMINI_API_KEY=your_key_here
 | `safe` ⭐ | Log + webhook for most modules. `block_ip` only for brute force + port scans at CRITICAL. `kill_process` only for confirmed ransomware at CRITICAL. | **Default.** First deploy, low-risk enforcement |
 | `balanced` | Blocks IPs on HIGH, kills processes on CRITICAL. Quarantines files. Disables compromised accounts. | Production environments with tuned allow lists |
 | `strict` | Aggressive enforcement on MEDIUM+. Short cooldowns, high rate limits. Blocks, drops, kills on MEDIUM. | High-security environments, active incidents |
+| `vps-agent` | Purpose-built for VPS-hosted AI agents (OpenClaw, Moltbot, Manus). Aggressive on auth, LLM firewall, containment, runtime, supply chain. Relaxed on IoT, deepfake, quantum. | Self-hosted AI agent deployments |
 
 Recommended progression: `lax` → `safe` → `balanced` → `strict`
+
+`vps-agent` is a standalone profile, not part of the escalation ladder.
 
 ```bash
 # See what you're currently running
