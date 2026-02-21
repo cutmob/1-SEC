@@ -679,6 +679,9 @@ var mutatingPaths = map[string]bool{
 	"/api/v1/enforce/policies/":   true,
 	"/api/v1/enforce/dry-run/":    true,
 	"/api/v1/enforce/test/":       true,
+	"/api/v1/enforce/approve/":    true,
+	"/api/v1/enforce/reject/":     true,
+	"/api/v1/enforce/rollback/":   true,
 }
 
 // isMutatingPath returns true if the request path requires write scope.
