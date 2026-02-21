@@ -225,6 +225,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	cloudStatus := "disabled"
+	if s.engine.Config.Cloud.Enabled && s.engine.Config.Cloud.APIKey != "" {
+		cloudStatus = "reporting"
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"version":       "1.0.0",
 		"status":        "running",
@@ -233,6 +238,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"alerts_total":  s.engine.Pipeline.Count(),
 		"rust_engine":   rustEngineStatus,
 		"enforcement":   enforcementStatus,
+		"cloud":         cloudStatus,
 		"modules":       modules,
 		"timestamp":     time.Now().UTC(),
 	})

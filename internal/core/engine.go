@@ -24,11 +24,13 @@ type Engine struct {
 	Archiver         *Archiver
 	Dedup            *EventDedup
 	Logger           zerolog.Logger
+	CloudReporter    *CloudReporter
 	ctx            context.Context
 	cancel         context.CancelFunc
 	configPath     string
 	logBuffer      *LogRingBuffer
 	stopDedup      func()
+	startTime      time.Time
 }
 
 // NewEngine creates a new 1SEC engine.
@@ -199,6 +201,14 @@ func (e *Engine) Start() error {
 		e.Logger.Info().Msg("Rust sidecar disabled — set rust_engine.enabled: true and install the 1sec-engine binary for high-throughput pattern matching and optional packet capture")
 	}
 
+	// Start cloud reporter — sends heartbeats, enforcement records, and
+	// correlations to the 1SEC cloud dashboard for remote monitoring.
+	e.startTime = time.Now()
+	if e.Config.Cloud.Enabled && e.Config.Cloud.APIKey != "" {
+		e.CloudReporter = NewCloudReporter(e)
+		e.CloudReporter.Start()
+	}
+
 	return nil
 }
 
@@ -226,6 +236,11 @@ func (e *Engine) Run() error {
 func (e *Engine) Shutdown() error {
 	e.Logger.Info().Msg("shutting down 1SEC engine")
 	e.cancel()
+
+	// Stop cloud reporter
+	if e.CloudReporter != nil {
+		e.CloudReporter.Stop()
+	}
 
 	// Stop Rust sidecar first (it depends on the bus)
 	if e.RustSidecar != nil {

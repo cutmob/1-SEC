@@ -94,6 +94,18 @@ func cmdStatus(args []string) {
 		}
 		fmt.Fprintf(w, "  %-18s %s\n", "Rust Engine:", reDisplay)
 	}
+	if cloud, ok := status["cloud"].(string); ok {
+		var cloudDisplay string
+		switch cloud {
+		case "reporting":
+			cloudDisplay = green("reporting")
+		case "disabled":
+			cloudDisplay = dim("disabled")
+		default:
+			cloudDisplay = yellow(cloud)
+		}
+		fmt.Fprintf(w, "  %-18s %s\n", "Cloud Dashboard:", cloudDisplay)
+	}
 	fmt.Fprintf(w, "  %-18s %v\n", "Timestamp:", status["timestamp"])
 
 	if modules, ok := status["modules"].([]interface{}); ok && len(modules) > 0 {

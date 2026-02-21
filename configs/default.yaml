@@ -234,6 +234,21 @@ enforcement:
 # Files are rotated by size or time interval. To restore a time window for
 # investigation, gunzip the file and POST events back via /api/v1/events.
 
+# ── Cloud Dashboard ──────────────────────────────────────────────────────────
+# Report enforcement records, correlations, and heartbeats to the 1SEC cloud
+# dashboard at https://1-sec.dev for remote monitoring and fleet management.
+# Get your API key at https://1-sec.dev/pricing
+#
+# Can also be set via environment variables:
+#   ONESEC_CLOUD_API_KEY — your 1SEC cloud API key (enables cloud reporting)
+#   ONESEC_CLOUD_API_URL — override the cloud API URL (default: https://1-sec.dev/api/v1)
+
+cloud:
+  enabled: false
+  api_url: "https://1-sec.dev/api/v1"
+  # api_key: "1sec_pro_your_key_here"
+  heartbeat_interval: 60    # seconds between heartbeats (0 = disabled)
+
 archive:
   enabled: false              # enable cold archiver
   dir: "./data/archive"       # directory for archive files

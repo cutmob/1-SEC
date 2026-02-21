@@ -20,6 +20,15 @@ type Config struct {
 	RustEngine  RustEngineConfig        `yaml:"rust_engine"`
 	Enforcement *EnforcementConfig      `yaml:"enforcement,omitempty"`
 	Archive     ArchiveConfig           `yaml:"archive"`
+	Cloud       CloudConfig             `yaml:"cloud"`
+}
+
+// CloudConfig holds settings for reporting to the 1SEC cloud dashboard.
+type CloudConfig struct {
+	Enabled           bool   `yaml:"enabled"`
+	APIURL            string `yaml:"api_url"`
+	APIKey            string `yaml:"api_key"`
+	HeartbeatInterval int    `yaml:"heartbeat_interval"` // seconds, 0 = disabled
 }
 
 // EnforcementConfig holds the automated response / enforcement layer settings.
@@ -179,6 +188,11 @@ func DefaultConfig() *Config {
 			},
 		},
 		Archive: DefaultArchiveConfig(),
+		Cloud: CloudConfig{
+			Enabled:           false,
+			APIURL:            "https://1-sec.dev/api/v1",
+			HeartbeatInterval: 60,
+		},
 	}
 }
 
@@ -217,6 +231,17 @@ func LoadConfig(path string) (*Config, error) {
 				cfg.Server.CORSOrigins = append(cfg.Server.CORSOrigins, origin)
 			}
 		}
+	}
+
+	// Load cloud dashboard API key from environment if not set in config
+	if cfg.Cloud.APIKey == "" {
+		if envKey := os.Getenv("ONESEC_CLOUD_API_KEY"); envKey != "" {
+			cfg.Cloud.APIKey = envKey
+			cfg.Cloud.Enabled = true
+		}
+	}
+	if envURL := os.Getenv("ONESEC_CLOUD_API_URL"); envURL != "" {
+		cfg.Cloud.APIURL = envURL
 	}
 
 	return cfg, nil
