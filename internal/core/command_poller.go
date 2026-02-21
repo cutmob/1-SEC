@@ -314,8 +314,8 @@ func (cp *CommandPoller) executeSetDryRun(cmd CloudCommand) (string, error) {
 		return "", fmt.Errorf("dryRun value missing")
 	}
 
-	previous := cfg.DryRun
-	cfg.DryRun = *cmd.DryRun
+	previous := cfg.GetDryRun()
+	cfg.SetDryRun(*cmd.DryRun)
 
 	cp.logger.Warn().
 		Bool("previous", previous).

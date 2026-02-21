@@ -179,7 +179,7 @@ func cmdUp(args []string) {
 		}
 		enforceStatus := ""
 		if cfg.Enforcement != nil && cfg.Enforcement.Enabled {
-			if cfg.Enforcement.DryRun {
+			if cfg.Enforcement.GetDryRun() {
 				enforceStatus = fmt.Sprintf(", enforcement %s", yellow("dry-run"))
 			} else {
 				enforceStatus = fmt.Sprintf(", enforcement %s", green("live"))

@@ -221,7 +221,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	enforcementStatus := "disabled"
 	if s.engine.Config.Enforcement != nil && s.engine.Config.Enforcement.Enabled {
-		if s.engine.Config.Enforcement.DryRun {
+		if s.engine.Config.Enforcement.GetDryRun() {
 			enforcementStatus = "dry_run"
 		} else {
 			enforcementStatus = "live"

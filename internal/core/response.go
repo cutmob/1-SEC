@@ -251,7 +251,7 @@ func (re *ResponseEngine) Start(ctx context.Context) {
 	go re.cleanupLoop(ctx)
 	re.logger.Info().
 		Int("policies", len(re.policies)).
-		Bool("global_dry_run", re.cfg.Enforcement != nil && re.cfg.Enforcement.DryRun).
+		Bool("global_dry_run", re.cfg.Enforcement != nil && re.cfg.Enforcement.GetDryRun()).
 		Msg("response engine started")
 }
 
@@ -290,7 +290,7 @@ func (re *ResponseEngine) handleAlert(alert *Alert) {
 		return
 	}
 
-	globalDryRun := re.cfg.Enforcement != nil && re.cfg.Enforcement.DryRun
+	globalDryRun := re.cfg.Enforcement != nil && re.cfg.Enforcement.GetDryRun()
 
 	for _, rule := range policy.Actions {
 		if alert.Severity < rule.MinSeverity {

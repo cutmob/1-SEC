@@ -45,8 +45,8 @@ func ReloadConfig(engine *Engine, configPath string, logger zerolog.Logger) ([]s
 			engine.Config.Enforcement = newCfg.Enforcement
 			changes = append(changes, "enforcement enabled")
 		} else {
-			if newCfg.Enforcement.DryRun != engine.Config.Enforcement.DryRun {
-				engine.Config.Enforcement.DryRun = newCfg.Enforcement.DryRun
+			if newCfg.Enforcement.DryRun != engine.Config.Enforcement.GetDryRun() {
+				engine.Config.Enforcement.SetDryRun(newCfg.Enforcement.DryRun)
 				changes = append(changes, fmt.Sprintf("enforcement.dry_run → %v", newCfg.Enforcement.DryRun))
 			}
 			if newCfg.Enforcement.Preset != engine.Config.Enforcement.Preset {

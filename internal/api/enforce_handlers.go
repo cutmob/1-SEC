@@ -33,7 +33,7 @@ func (s *Server) handleEnforceStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"enabled":           cfg != nil && cfg.Enabled,
-		"dry_run":           cfg != nil && cfg.DryRun,
+		"dry_run":           cfg != nil && cfg.GetDryRun(),
 		"global_allow_list": allowList,
 		"stats":             re.Stats(),
 	})
@@ -146,8 +146,8 @@ func (s *Server) handleEnforceDryRun(w http.ResponseWriter, r *http.Request) {
 
 	switch mode {
 	case "on":
-		previous := cfg.DryRun
-		cfg.DryRun = true
+		previous := cfg.GetDryRun()
+		cfg.SetDryRun(true)
 		s.logger.Warn().
 			Bool("previous", previous).
 			Bool("new", true).
@@ -155,8 +155,8 @@ func (s *Server) handleEnforceDryRun(w http.ResponseWriter, r *http.Request) {
 			Msg("enforcement dry-run toggled via API")
 		writeJSON(w, http.StatusOK, map[string]interface{}{"dry_run": true, "previous": previous, "message": "global dry-run enabled"})
 	case "off":
-		previous := cfg.DryRun
-		cfg.DryRun = false
+		previous := cfg.GetDryRun()
+		cfg.SetDryRun(false)
 		s.logger.Warn().
 			Bool("previous", previous).
 			Bool("new", false).

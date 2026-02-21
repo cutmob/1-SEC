@@ -101,7 +101,7 @@ enforcement:
 	if !found {
 		t.Errorf("expected dry_run change in %v", changes)
 	}
-	if e.Config.Enforcement.DryRun {
+	if e.Config.Enforcement.GetDryRun() {
 		t.Error("dry_run should be false after reload")
 	}
 }

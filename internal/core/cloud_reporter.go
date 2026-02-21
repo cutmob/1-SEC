@@ -163,7 +163,7 @@ func (cr *CloudReporter) sendHeartbeat() {
 	enforcementMode := "disabled"
 	preset := ""
 	if cr.cfg.Enforcement != nil && cr.cfg.Enforcement.Enabled {
-		if cr.cfg.Enforcement.DryRun {
+		if cr.cfg.Enforcement.GetDryRun() {
 			enforcementMode = "dry_run"
 		} else {
 			enforcementMode = "active"

@@ -551,7 +551,7 @@ func cmdEnforcePreset(args []string) {
 	cfg.Enforcement.Policies = policies
 
 	if *dryRun {
-		cfg.Enforcement.DryRun = true
+		cfg.Enforcement.SetDryRun(true)
 	}
 
 	if err := core.SaveConfig(cfg, *configPath); err != nil {
@@ -559,7 +559,7 @@ func cmdEnforcePreset(args []string) {
 	}
 
 	modeStr := green("LIVE")
-	if *dryRun || cfg.Enforcement.DryRun {
+	if *dryRun || cfg.Enforcement.GetDryRun() {
 		modeStr = yellow("DRY RUN")
 	}
 

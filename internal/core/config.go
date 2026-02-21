@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -40,6 +41,21 @@ type EnforcementConfig struct {
 	GlobalAllowList []string                      `yaml:"global_allow_list,omitempty"`
 	Policies        map[string]ResponsePolicyYAML `yaml:"policies,omitempty"`
 	ApprovalGate    ApprovalGateConfig            `yaml:"approval_gate"`
+	mu              sync.RWMutex                  `yaml:"-"` // protects DryRun from concurrent access
+}
+
+// GetDryRun returns the current dry-run state (thread-safe).
+func (ec *EnforcementConfig) GetDryRun() bool {
+	ec.mu.RLock()
+	defer ec.mu.RUnlock()
+	return ec.DryRun
+}
+
+// SetDryRun sets the dry-run state (thread-safe).
+func (ec *EnforcementConfig) SetDryRun(v bool) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	ec.DryRun = v
 }
 
 // ResponsePolicyYAML is the YAML-friendly representation of a response policy.

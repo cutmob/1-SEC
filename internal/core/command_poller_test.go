@@ -230,7 +230,7 @@ func TestCommandPoller_ExecuteRollback_NotSuccessStatus(t *testing.T) {
 
 	// Generate a dry-run record (not SUCCESS)
 	alert := testAlertWithIP("injection_shield", "10.0.0.1", SeverityHigh)
-	engine.Config.Enforcement.DryRun = true
+	engine.Config.Enforcement.SetDryRun(true)
 	engine.ResponseEngine.handleAlert(alert)
 
 	records := engine.ResponseEngine.GetRecords(1, "")
@@ -309,14 +309,14 @@ func TestCommandPoller_ExecuteSetDryRun_MissingValue(t *testing.T) {
 
 func TestCommandPoller_ExecuteSetDryRun_EnableDryRun(t *testing.T) {
 	engine := testEngineForPoller(t, false)
-	engine.Config.Enforcement.DryRun = false
+	engine.Config.Enforcement.SetDryRun(false)
 	cp := NewCommandPoller(engine)
 
 	result, err := cp.executeSetDryRun(CloudCommand{DryRun: boolPtr(true), IssuedBy: "admin"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !engine.Config.Enforcement.DryRun {
+	if !engine.Config.Enforcement.GetDryRun() {
 		t.Error("expected DryRun to be true after command")
 	}
 	if result == "" {
@@ -326,14 +326,14 @@ func TestCommandPoller_ExecuteSetDryRun_EnableDryRun(t *testing.T) {
 
 func TestCommandPoller_ExecuteSetDryRun_DisableDryRun(t *testing.T) {
 	engine := testEngineForPoller(t, false)
-	engine.Config.Enforcement.DryRun = true
+	engine.Config.Enforcement.SetDryRun(true)
 	cp := NewCommandPoller(engine)
 
 	result, err := cp.executeSetDryRun(CloudCommand{DryRun: boolPtr(false), IssuedBy: "admin"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if engine.Config.Enforcement.DryRun {
+	if engine.Config.Enforcement.GetDryRun() {
 		t.Error("expected DryRun to be false after command")
 	}
 	if result == "" {
