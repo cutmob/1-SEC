@@ -128,7 +128,10 @@ func renderDashboard(base, apiKey string, timeout time.Duration) {
 	if modules, ok := status["modules"].([]interface{}); ok && len(modules) > 0 {
 		enabledCount := 0
 		for _, m := range modules {
-			mod := m.(map[string]interface{})
+			mod, ok := m.(map[string]interface{})
+			if !ok {
+				continue
+			}
 			if enabled, ok := mod["enabled"].(bool); ok && enabled {
 				enabledCount++
 			}
@@ -137,8 +140,12 @@ func renderDashboard(base, apiKey string, timeout time.Duration) {
 		fmt.Printf("  %s  %s\n", bold("MODULES"), dim(fmt.Sprintf("%d/%d active", enabledCount, len(modules))))
 
 		cols := 3
-		for i, m := range modules {
-			mod := m.(map[string]interface{})
+		printed := 0
+		for _, m := range modules {
+			mod, ok := m.(map[string]interface{})
+			if !ok {
+				continue
+			}
 			name := fmt.Sprintf("%v", mod["name"])
 			marker := green("●")
 			if enabled, ok := mod["enabled"].(bool); ok && !enabled {
@@ -149,11 +156,12 @@ func renderDashboard(base, apiKey string, timeout time.Duration) {
 				name = name[:19] + "..."
 			}
 			fmt.Printf("  %s %-22s", marker, name)
-			if (i+1)%cols == 0 {
+			printed++
+			if printed%cols == 0 {
 				fmt.Println()
 			}
 		}
-		if len(modules)%cols != 0 {
+		if printed%cols != 0 {
 			fmt.Println()
 		}
 		fmt.Println()
@@ -172,7 +180,10 @@ func renderDashboard(base, apiKey string, timeout time.Duration) {
 
 			sevCounts := map[string]int{}
 			for _, a := range alerts {
-				alert := a.(map[string]interface{})
+				alert, ok := a.(map[string]interface{})
+				if !ok {
+					continue
+				}
 				sev := fmt.Sprintf("%v", alert["severity"])
 				sevCounts[sev]++
 			}
@@ -204,7 +215,10 @@ func renderDashboard(base, apiKey string, timeout time.Duration) {
 					shown = len(alerts)
 				}
 				for i := 0; i < shown; i++ {
-					alert := alerts[i].(map[string]interface{})
+					alert, ok := alerts[i].(map[string]interface{})
+					if !ok {
+						continue
+					}
 					sev := fmt.Sprintf("%v", alert["severity"])
 					sevColor := dim
 					switch sev {
@@ -258,18 +272,21 @@ func renderDashboard(base, apiKey string, timeout time.Duration) {
 				if byStatus, ok := stats["by_status"].(map[string]interface{}); ok && len(byStatus) > 0 {
 					parts := make([]string, 0)
 					for k, v := range byStatus {
-						count := int(v.(float64))
+						count, ok := v.(float64)
+						if !ok {
+							continue
+						}
 						switch k {
 						case "SUCCESS":
-							parts = append(parts, green(fmt.Sprintf("OK:%d", count)))
+							parts = append(parts, green(fmt.Sprintf("OK:%d", int(count))))
 						case "FAILED":
-							parts = append(parts, red(fmt.Sprintf("FAIL:%d", count)))
+							parts = append(parts, red(fmt.Sprintf("FAIL:%d", int(count))))
 						case "DRY_RUN":
-							parts = append(parts, yellow(fmt.Sprintf("DRY:%d", count)))
+							parts = append(parts, yellow(fmt.Sprintf("DRY:%d", int(count))))
 						case "COOLDOWN":
-							parts = append(parts, dim(fmt.Sprintf("CD:%d", count)))
+							parts = append(parts, dim(fmt.Sprintf("CD:%d", int(count))))
 						case "SKIPPED":
-							parts = append(parts, dim(fmt.Sprintf("SKIP:%d", count)))
+							parts = append(parts, dim(fmt.Sprintf("SKIP:%d", int(count))))
 						}
 					}
 					if len(parts) > 0 {

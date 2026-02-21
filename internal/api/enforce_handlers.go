@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,7 +11,7 @@ import (
 // handleEnforceStatus returns the enforcement engine status and stats.
 func (s *Server) handleEnforceStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -43,7 +42,7 @@ func (s *Server) handleEnforceStatus(w http.ResponseWriter, r *http.Request) {
 // handleEnforcePolicies returns all configured response policies.
 func (s *Server) handleEnforcePolicies(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -60,7 +59,7 @@ func (s *Server) handleEnforcePolicies(w http.ResponseWriter, r *http.Request) {
 // URL pattern: /api/v1/enforce/policies/{module}/{action}
 func (s *Server) handleEnforcePolicyAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -102,7 +101,7 @@ func (s *Server) handleEnforcePolicyAction(w http.ResponseWriter, r *http.Reques
 // handleEnforceHistory returns response action execution history.
 func (s *Server) handleEnforceHistory(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -132,7 +131,7 @@ func (s *Server) handleEnforceHistory(w http.ResponseWriter, r *http.Request) {
 // URL pattern: /api/v1/enforce/dry-run/{on|off}
 func (s *Server) handleEnforceDryRun(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -159,7 +158,7 @@ func (s *Server) handleEnforceDryRun(w http.ResponseWriter, r *http.Request) {
 // URL pattern: /api/v1/enforce/test/{module}?severity=HIGH
 func (s *Server) handleEnforceTest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -207,6 +206,3 @@ func (s *Server) handleEnforceTest(w http.ResponseWriter, r *http.Request) {
 		"total_matching":  len(matchingActions),
 	})
 }
-
-// Ensure json import is used
-var _ = json.Marshal

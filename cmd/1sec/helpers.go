@@ -112,6 +112,7 @@ func envPort(flagVal int) int {
 func apiBase(configPath, hostOverride string, portOverride int) string {
 	host := "127.0.0.1"
 	port := 1780
+	scheme := "http"
 
 	cfg, err := core.LoadConfig(configPath)
 	if err == nil && cfg != nil {
@@ -120,6 +121,9 @@ func apiBase(configPath, hostOverride string, portOverride int) string {
 		}
 		if cfg.Server.Port != 0 {
 			port = cfg.Server.Port
+		}
+		if cfg.TLSEnabled() {
+			scheme = "https"
 		}
 	}
 
@@ -130,7 +134,7 @@ func apiBase(configPath, hostOverride string, portOverride int) string {
 		port = portOverride
 	}
 
-	return fmt.Sprintf("http://%s:%d", host, port)
+	return fmt.Sprintf("%s://%s:%d", scheme, host, port)
 }
 
 // resolveAPIKey returns the API key from flag, env, or config (in that order).
