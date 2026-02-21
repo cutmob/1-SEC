@@ -350,6 +350,13 @@ See [1-sec.dev/pricing](https://1-sec.dev/pricing) for details.
 
 ## License
 
-AGPLv3 — see [LICENSE](LICENSE).
+1-SEC is dual-licensed:
 
-The core engine and all 16 modules are free and open source, forever.
+- **Open Source** — [AGPLv3](LICENSE) for community use. The core engine and all 16 modules are free to use, modify, and self-host under the terms of the GNU Affero General Public License v3.
+- **Commercial License** — available for organizations that need to use 1-SEC without AGPLv3 obligations (e.g., embedding in proprietary products, reselling, or offering as a managed service without source disclosure). Contact [support@driftrail.com](mailto:support@driftrail.com) for details.
+
+You may not rebrand, resell, or offer 1-SEC as a competing commercial product or managed service without a commercial license.
+
+## Contributing
+
+1-SEC does not accept external pull requests at this time. This is to maintain licensing clarity under our dual-license model. Bug reports and feature requests via [Issues](https://github.com/cutmob/1-SEC/issues) are welcome and encouraged. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
