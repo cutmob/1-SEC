@@ -20,6 +20,11 @@ var (
 )
 
 func main() {
+	// Check for updates on every launch (non-blocking, skips if checked recently).
+	// Disable with ONESEC_NO_UPDATE=1.
+	quiet := hasFlag(os.Args, "-q", "--quiet")
+	selfUpdate(version, quiet)
+
 	if len(os.Args) >= 2 {
 		switch os.Args[1] {
 		case "--version", "-V":
