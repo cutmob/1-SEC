@@ -148,7 +148,7 @@ helm install 1sec ./deploy/helm \
 1sec enforce disable <module>    Disable enforcement for a module
 1sec enforce dry-run [on|off]    Toggle global dry-run mode
 1sec enforce test <module>       Simulate alert to preview actions
-1sec enforce preset <name>       Apply preset (lax, balanced, strict)
+1sec enforce preset <name>       Apply preset (lax, safe, balanced, strict)
 1sec enforce webhooks stats      Webhook dispatcher statistics
 1sec enforce webhooks dead-letters  Dead letter queue
 1sec enforce webhooks retry <id> Retry a failed webhook delivery
@@ -203,6 +203,40 @@ AI keys are read from environment variables — no key required for the 15 rule-
 export GEMINI_API_KEY=your_key_here
 1sec up
 ```
+
+---
+
+## Enforcement Presets
+
+1-SEC ships with `dry_run: true` and the `safe` preset by default. This means all 16 modules detect threats immediately, but no enforcement actions (block IP, kill process, etc.) are actually executed until you're ready.
+
+| Preset | Behavior | When to use |
+|--------|----------|-------------|
+| `lax` | Log + webhook only. Never blocks, kills, or quarantines. | Initial rollout, auditing, learning what fires |
+| `safe` ⭐ | Log + webhook for most modules. `block_ip` only for brute force + port scans at CRITICAL. `kill_process` only for confirmed ransomware at CRITICAL. | **Default.** First deploy, low-risk enforcement |
+| `balanced` | Blocks IPs on HIGH, kills processes on CRITICAL. Quarantines files. Disables compromised accounts. | Production environments with tuned allow lists |
+| `strict` | Aggressive enforcement on MEDIUM+. Short cooldowns, high rate limits. Blocks, drops, kills on MEDIUM. | High-security environments, active incidents |
+
+Recommended progression: `lax` → `safe` → `balanced` → `strict`
+
+```bash
+# See what you're currently running
+1sec enforce status
+
+# Preview a preset before applying
+1sec enforce preset balanced --show
+
+# Apply a preset (starts in dry-run by default)
+1sec enforce preset balanced
+
+# Go live when you're confident
+1sec enforce dry-run off
+
+# Test what would happen for a specific module
+1sec enforce test ransomware --severity CRITICAL
+```
+
+Override individual module policies in `configs/default.yaml` under `enforcement.policies` — these merge on top of the active preset.
 
 ---
 

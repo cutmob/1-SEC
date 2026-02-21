@@ -106,6 +106,27 @@ func cmdStatus(args []string) {
 		}
 		fmt.Fprintf(w, "  %-18s %s\n", "Cloud Dashboard:", cloudDisplay)
 	}
+
+	// Enforcement status
+	if enforce, ok := status["enforcement"].(map[string]interface{}); ok {
+		enabled, _ := enforce["enabled"].(bool)
+		dryRun, _ := enforce["dry_run"].(bool)
+		preset, _ := enforce["preset"].(string)
+		if enabled {
+			mode := green("live")
+			if dryRun {
+				mode = yellow("dry-run")
+			}
+			presetStr := ""
+			if preset != "" {
+				presetStr = fmt.Sprintf(" (%s)", preset)
+			}
+			fmt.Fprintf(w, "  %-18s %s%s\n", "Enforcement:", mode, dim(presetStr))
+		} else {
+			fmt.Fprintf(w, "  %-18s %s\n", "Enforcement:", dim("disabled"))
+		}
+	}
+
 	fmt.Fprintf(w, "  %-18s %v\n", "Timestamp:", status["timestamp"])
 
 	if modules, ok := status["modules"].([]interface{}); ok && len(modules) > 0 {

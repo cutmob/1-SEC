@@ -34,9 +34,18 @@ func (s *Server) handleEnforceStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"enabled":           cfg != nil && cfg.Enabled,
 		"dry_run":           cfg != nil && cfg.GetDryRun(),
+		"preset":            presetName(cfg),
 		"global_allow_list": allowList,
 		"stats":             re.Stats(),
 	})
+}
+
+// presetName returns the active preset name from config, or empty string.
+func presetName(cfg *core.EnforcementConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.Preset
 }
 
 // handleEnforcePolicies returns all configured response policies.

@@ -219,13 +219,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	enforcementStatus := "disabled"
+	enforcementInfo := map[string]interface{}{
+		"enabled": false,
+		"dry_run": false,
+		"preset":  "",
+	}
 	if s.engine.Config.Enforcement != nil && s.engine.Config.Enforcement.Enabled {
-		if s.engine.Config.Enforcement.GetDryRun() {
-			enforcementStatus = "dry_run"
-		} else {
-			enforcementStatus = "live"
-		}
+		enforcementInfo["enabled"] = true
+		enforcementInfo["dry_run"] = s.engine.Config.Enforcement.GetDryRun()
+		enforcementInfo["preset"] = s.engine.Config.Enforcement.Preset
 	}
 
 	cloudStatus := "disabled"
@@ -240,7 +242,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"modules_total": s.engine.Registry.Count(),
 		"alerts_total":  s.engine.Pipeline.Count(),
 		"rust_engine":   rustEngineStatus,
-		"enforcement":   enforcementStatus,
+		"enforcement":   enforcementInfo,
 		"cloud":         cloudStatus,
 		"modules":       modules,
 		"timestamp":     time.Now().UTC(),

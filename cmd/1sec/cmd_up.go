@@ -187,6 +187,15 @@ func cmdUp(args []string) {
 		}
 		fmt.Fprintf(os.Stderr, "%s 1SEC running — %d modules active, API on :%d%s%s\n",
 			green("✓"), engine.Registry.Count(), cfg.Server.Port, rustStatus, enforceStatus)
+
+		// Show helpful hints for new users about enforcement state
+		if cfg.Enforcement != nil && cfg.Enforcement.Enabled && cfg.Enforcement.GetDryRun() {
+			fmt.Fprintf(os.Stderr, "%s Enforcement is in %s mode (actions are simulated, not executed)\n",
+				dim("▸"), yellow("dry-run"))
+			fmt.Fprintf(os.Stderr, "%s Run %s to go live, or %s to preview policies\n",
+				dim("▸"), bold("1sec enforce dry-run off"), bold("1sec enforce policies"))
+		}
+
 		fmt.Fprintf(os.Stderr, "%s Press Ctrl+C to stop\n", dim("▸"))
 	}
 

@@ -91,10 +91,15 @@ func cmdEnforceUsage() {
 %s
   lax        Log and webhook only. Never blocks, kills, or quarantines.
              Safe for initial rollout and auditing.
+  safe       Log + webhook for most modules. Blocks only brute force
+             and port scans at CRITICAL. Kills only confirmed ransomware.
+             This is the DEFAULT preset shipped with 1SEC.
   balanced   Blocks IPs on HIGH, kills processes on CRITICAL.
              Good default for production environments.
   strict     Aggressive enforcement on MEDIUM+. Short cooldowns,
              high rate limits. For high-security environments.
+
+  Recommended progression: lax → safe → balanced → strict
 
 %s
   --host     API host (default: from config or 127.0.0.1)
@@ -167,6 +172,7 @@ func cmdEnforceStatus(args []string) {
 
 	enabled, _ := data["enabled"].(bool)
 	dryRun, _ := data["dry_run"].(bool)
+	preset, _ := data["preset"].(string)
 
 	if enabled {
 		fmt.Fprintf(os.Stdout, "  Status:    %s\n", green("ACTIVE"))
@@ -175,9 +181,15 @@ func cmdEnforceStatus(args []string) {
 	}
 
 	if dryRun {
-		fmt.Fprintf(os.Stdout, "  Mode:      %s\n", yellow("DRY RUN"))
+		fmt.Fprintf(os.Stdout, "  Mode:      %s %s\n", yellow("DRY RUN"), dim("(actions are simulated, not executed)"))
 	} else {
 		fmt.Fprintf(os.Stdout, "  Mode:      %s\n", green("LIVE"))
+	}
+
+	if preset != "" {
+		fmt.Fprintf(os.Stdout, "  Preset:    %s\n", bold(preset))
+	} else {
+		fmt.Fprintf(os.Stdout, "  Preset:    %s\n", dim("custom"))
 	}
 
 	if stats, ok := data["stats"].(map[string]interface{}); ok {
@@ -491,17 +503,19 @@ func cmdEnforcePreset(args []string) {
 
 	if len(fs.Args()) == 0 {
 		fmt.Fprintf(os.Stderr, "%s Available presets:\n\n", bold("1sec enforce preset"))
-		fmt.Fprintf(os.Stderr, "  %-12s  %s\n", green("lax"), "Log + webhook only. Safe for initial rollout.")
-		fmt.Fprintf(os.Stderr, "  %-12s  %s\n", yellow("balanced"), "Block on HIGH, kill on CRITICAL. Good default.")
-		fmt.Fprintf(os.Stderr, "  %-12s  %s\n", red("strict"), "Aggressive enforcement on MEDIUM+. High-security.")
-		fmt.Fprintf(os.Stderr, "\nUsage: 1sec enforce preset <lax|balanced|strict> [--dry-run] [--show]\n\n")
+		fmt.Fprintf(os.Stderr, "  %-12s  %s\n", green("lax"), "Log + webhook only. Never blocks or kills. Observe mode.")
+		fmt.Fprintf(os.Stderr, "  %-12s  %s\n", cyan("safe"), "Log + webhook for most modules. Blocks only brute force + port scans. (DEFAULT)")
+		fmt.Fprintf(os.Stderr, "  %-12s  %s\n", yellow("balanced"), "Block on HIGH, kill on CRITICAL. Good production default.")
+		fmt.Fprintf(os.Stderr, "  %-12s  %s\n", red("strict"), "Aggressive enforcement on MEDIUM+. High-security environments.")
+		fmt.Fprintf(os.Stderr, "\n%s lax → safe → balanced → strict\n", dim("  Recommended progression:"))
+		fmt.Fprintf(os.Stderr, "\nUsage: 1sec enforce preset <lax|safe|balanced|strict> [--dry-run] [--show]\n\n")
 		os.Exit(0)
 	}
 
 	presetName := strings.ToLower(fs.Args()[0])
 	policies := core.GetPresetPolicies(presetName)
 	if policies == nil {
-		errorf("unknown preset %q — valid presets: lax, balanced, strict", presetName)
+		errorf("unknown preset %q — valid presets: lax, safe, balanced, strict", presetName)
 	}
 
 	if *showOnly {

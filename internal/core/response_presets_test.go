@@ -4,10 +4,13 @@ import (
 	"testing"
 )
 
+// allPresetNames is the single source of truth for test iteration.
+var allPresetNames = []string{"lax", "safe", "balanced", "strict"}
+
 // ─── GetPresetPolicies ──────────────────────────────────────────────────────
 
 func TestGetPresetPolicies_ValidPresets(t *testing.T) {
-	for _, name := range []string{"lax", "balanced", "strict"} {
+	for _, name := range allPresetNames {
 		policies := GetPresetPolicies(name)
 		if policies == nil {
 			t.Errorf("GetPresetPolicies(%q) returned nil", name)
@@ -56,7 +59,7 @@ var allModules = []string{
 }
 
 func TestPresets_CoverAll16Modules(t *testing.T) {
-	for _, preset := range []string{"lax", "balanced", "strict"} {
+	for _, preset := range allPresetNames {
 		policies := GetPresetPolicies(preset)
 		for _, mod := range allModules {
 			if _, ok := policies[mod]; !ok {
@@ -73,7 +76,7 @@ func TestPresets_CoverAll16Modules(t *testing.T) {
 // ─── Preset policy structure validation ─────────────────────────────────────
 
 func TestPresets_AllPoliciesHaveActions(t *testing.T) {
-	for _, preset := range []string{"lax", "balanced", "strict"} {
+	for _, preset := range allPresetNames {
 		policies := GetPresetPolicies(preset)
 		for module, policy := range policies {
 			if len(policy.Actions) == 0 {
@@ -84,7 +87,7 @@ func TestPresets_AllPoliciesHaveActions(t *testing.T) {
 }
 
 func TestPresets_AllPoliciesEnabled(t *testing.T) {
-	for _, preset := range []string{"lax", "balanced", "strict"} {
+	for _, preset := range allPresetNames {
 		policies := GetPresetPolicies(preset)
 		for module, policy := range policies {
 			if !policy.Enabled {
@@ -101,7 +104,7 @@ func TestPresets_ValidActionTypes(t *testing.T) {
 		"command": true, "log_only": true,
 	}
 
-	for _, preset := range []string{"lax", "balanced", "strict"} {
+	for _, preset := range allPresetNames {
 		policies := GetPresetPolicies(preset)
 		for module, policy := range policies {
 			for _, action := range policy.Actions {
@@ -118,7 +121,7 @@ func TestPresets_ValidSeverityLevels(t *testing.T) {
 		"LOW": true, "MEDIUM": true, "HIGH": true, "CRITICAL": true,
 	}
 
-	for _, preset := range []string{"lax", "balanced", "strict"} {
+	for _, preset := range allPresetNames {
 		policies := GetPresetPolicies(preset)
 		for module, policy := range policies {
 			if !validSeverities[policy.MinSeverity] {
@@ -135,7 +138,7 @@ func TestPresets_ValidSeverityLevels(t *testing.T) {
 }
 
 func TestPresets_PositiveCooldownsAndRateLimits(t *testing.T) {
-	for _, preset := range []string{"lax", "balanced", "strict"} {
+	for _, preset := range allPresetNames {
 		policies := GetPresetPolicies(preset)
 		for module, policy := range policies {
 			if policy.CooldownSeconds < 0 {
@@ -161,6 +164,30 @@ func TestLaxPreset_NoBlockingActions(t *testing.T) {
 		for _, action := range policy.Actions {
 			if blockingActions[action.Action] {
 				t.Errorf("lax preset should not have blocking action %q in module %q", action.Action, module)
+			}
+		}
+	}
+}
+
+func TestSafePreset_OnlyBlocksBruteForceAndPortScans(t *testing.T) {
+	policies := GetPresetPolicies("safe")
+
+	// Only auth_fortress, network_guardian, and ransomware should have enforcement actions
+	allowedEnforcement := map[string]bool{
+		"auth_fortress":    true,
+		"network_guardian": true,
+		"ransomware":       true,
+	}
+
+	blockingActions := map[string]bool{
+		"block_ip": true, "kill_process": true, "quarantine_file": true,
+		"drop_connection": true, "disable_user": true,
+	}
+
+	for module, policy := range policies {
+		for _, action := range policy.Actions {
+			if blockingActions[action.Action] && !allowedEnforcement[module] {
+				t.Errorf("safe preset should not have blocking action %q in module %q (only auth_fortress, network_guardian, ransomware)", action.Action, module)
 			}
 		}
 	}
@@ -215,10 +242,48 @@ func TestPresetConstants(t *testing.T) {
 	if PresetLax != "lax" {
 		t.Errorf("PresetLax = %q, want lax", PresetLax)
 	}
+	if PresetSafe != "safe" {
+		t.Errorf("PresetSafe = %q, want safe", PresetSafe)
+	}
 	if PresetBalanced != "balanced" {
 		t.Errorf("PresetBalanced = %q, want balanced", PresetBalanced)
 	}
 	if PresetStrict != "strict" {
 		t.Errorf("PresetStrict = %q, want strict", PresetStrict)
+	}
+}
+
+// ─── Preset escalation: each level should be >= the previous ────────────────
+
+func TestPresets_EscalationOrder(t *testing.T) {
+	// safe should have >= as many blocking actions as lax (lax has 0)
+	// balanced should have >= as many as safe
+	// strict should have >= as many as balanced
+	ordered := []string{"lax", "safe", "balanced", "strict"}
+
+	countBlocking := func(preset string) int {
+		policies := GetPresetPolicies(preset)
+		count := 0
+		blockingActions := map[string]bool{
+			"block_ip": true, "kill_process": true, "quarantine_file": true,
+			"drop_connection": true, "disable_user": true,
+		}
+		for _, policy := range policies {
+			for _, action := range policy.Actions {
+				if blockingActions[action.Action] {
+					count++
+				}
+			}
+		}
+		return count
+	}
+
+	for i := 1; i < len(ordered); i++ {
+		prev := countBlocking(ordered[i-1])
+		curr := countBlocking(ordered[i])
+		if curr < prev {
+			t.Errorf("preset %q has fewer blocking actions (%d) than %q (%d) — escalation order violated",
+				ordered[i], curr, ordered[i-1], prev)
+		}
 	}
 }
