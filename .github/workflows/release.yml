@@ -137,20 +137,18 @@ jobs:
         with:
           path: rust-artifacts
 
-      - name: Checksum Rust binaries
-        working-directory: rust-artifacts
+      - name: Prepare Rust binaries
         run: |
-          find . -type f \( -name "1sec-engine-*" \) -exec sha256sum {} \; | sed 's|  \./[^/]*/|  |' >> ../dist/checksums.txt
+          mkdir -p upload
+          cp rust-artifacts/1sec-engine-linux-amd64/1sec-engine-linux-amd64 upload/
+          cp rust-artifacts/1sec-engine-linux-arm64/1sec-engine-linux-arm64 upload/
+          cp rust-artifacts/1sec-engine-darwin-amd64/1sec-engine-darwin-amd64 upload/
+          cp rust-artifacts/1sec-engine-darwin-arm64/1sec-engine-darwin-arm64 upload/
+          cp rust-artifacts/1sec-engine-windows-amd64.exe/1sec-engine-windows-amd64.exe upload/
+          cd upload && sha256sum * > rust-checksums.txt
 
       - name: Attach Rust binaries to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/checksums.txt
-            rust-artifacts/1sec-engine-linux-amd64/1sec-engine-linux-amd64
-            rust-artifacts/1sec-engine-linux-arm64/1sec-engine-linux-arm64
-            rust-artifacts/1sec-engine-darwin-amd64/1sec-engine-darwin-amd64
-            rust-artifacts/1sec-engine-darwin-arm64/1sec-engine-darwin-arm64
-            rust-artifacts/1sec-engine-windows-amd64.exe/1sec-engine-windows-amd64.exe
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ github.ref_name }} upload/* --clobber
