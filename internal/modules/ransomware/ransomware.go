@@ -36,6 +36,17 @@ func (i *Interceptor) Name() string { return ModuleName }
 func (i *Interceptor) Description() string {
 	return "Ransomware detection via file encryption patterns, canary files, data exfiltration monitoring, wiper detection, shadow copy deletion, and backup destruction detection"
 }
+func (i *Interceptor) EventTypes() []string {
+	return []string{
+		"file_modified", "file_change", "file_renamed", "file_created",
+		"network_egress", "data_transfer", "upload",
+		"canary_triggered",
+		"process_execution", "command_execution",
+		"shadow_copy_delete", "vss_manipulation",
+		"backup_destruction", "backup_delete",
+		"wiper_activity", "disk_write", "mbr_write", "partition_write",
+	}
+}
 
 func (i *Interceptor) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
 	i.ctx, i.cancel = context.WithCancel(ctx)

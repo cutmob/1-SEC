@@ -39,6 +39,14 @@ type Shield struct {
 func New() *Shield { return &Shield{} }
 
 func (s *Shield) Name() string { return ModuleName }
+func (s *Shield) EventTypes() []string {
+	return []string{
+		"voice_call", "audio_message", "audio_upload", "audio_analysis",
+		"video_call", "video_upload", "video_analysis",
+		"email_received", "email_sent", "message_received",
+		"executive_request", "wire_transfer_request", "urgent_request", "high_value_request",
+	}
+}
 func (s *Shield) Description() string {
 	return "Heuristic audio/video deepfake detection, AI-generated phishing detection, domain spoofing, and communication anomaly analysis"
 }

@@ -30,6 +30,14 @@ type Monitor struct {
 func New() *Monitor { return &Monitor{} }
 
 func (m *Monitor) Name() string { return ModuleName }
+func (m *Monitor) EventTypes() []string {
+	return []string{
+		"user_created", "identity_created", "account_created",
+		"role_change", "privilege_change", "permission_grant",
+		"service_account_activity", "api_key_usage",
+		"identity_verification", "kyc_check",
+	}
+}
 func (m *Monitor) Description() string {
 	return "Synthetic identity detection, privilege escalation monitoring, service account behavior analysis, and identity lifecycle anomalies"
 }

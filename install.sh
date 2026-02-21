@@ -123,6 +123,9 @@ main() {
     echo "  ${BINARY} up        # Start all defense modules"
     echo "  ${BINARY} status    # Check engine status"
     echo "  ${BINARY} modules   # List all modules"
+    echo "  ${BINARY} collect   # Start log collectors (nginx, auth, pfsense, json, github)"
+    echo "  ${BINARY} archive   # Manage cold archive (status, list, restore)"
+    echo "  ${BINARY} enforce   # Manage automated threat response"
     echo ""
     ok "Done. Stay secure."
 }

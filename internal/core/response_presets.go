@@ -16,6 +16,7 @@ package core
 // EnforcementPreset names.
 const (
 	PresetLax      = "lax"
+	PresetSafe     = "safe"
 	PresetBalanced = "balanced"
 	PresetStrict   = "strict"
 )
@@ -26,6 +27,8 @@ func GetPresetPolicies(preset string) map[string]ResponsePolicyYAML {
 	switch preset {
 	case PresetLax:
 		return laxPreset()
+	case PresetSafe:
+		return safePreset()
 	case PresetBalanced:
 		return balancedPreset()
 	case PresetStrict:
@@ -37,7 +40,60 @@ func GetPresetPolicies(preset string) map[string]ResponsePolicyYAML {
 
 // ValidPresets returns the list of valid preset names.
 func ValidPresets() []string {
-	return []string{PresetLax, PresetBalanced, PresetStrict}
+	return []string{PresetLax, PresetSafe, PresetBalanced, PresetStrict}
+}
+
+// ---------------------------------------------------------------------------
+// SAFE preset — recommended for production. Log everything, block_ip only for
+// the highest-confidence, lowest-FP detections: brute force and port scans.
+// Everything else is log + webhook. This is the "enforcement safe defaults"
+// that the audit recommended.
+// ---------------------------------------------------------------------------
+
+func safePreset() map[string]ResponsePolicyYAML {
+	return map[string]ResponsePolicyYAML{
+		// Only auth brute force and network port scans get block_ip
+		"auth_fortress": {
+			Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 300, MaxActionsPerMin: 10,
+			Actions: []ResponseRuleYAML{
+				{Action: "block_ip", MinSeverity: "CRITICAL", Description: "Block confirmed brute force / credential stuffing source", Params: map[string]string{"duration": "1h"}},
+				{Action: "webhook", MinSeverity: "HIGH", Description: "Notify on auth attacks", Params: map[string]string{"url": ""}},
+				{Action: "log_only", MinSeverity: "HIGH", Description: "Log all auth threats"},
+			},
+		},
+		"network_guardian": {
+			Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 300, MaxActionsPerMin: 10,
+			Actions: []ResponseRuleYAML{
+				{Action: "block_ip", MinSeverity: "CRITICAL", Description: "Block confirmed port scan / DDoS source", Params: map[string]string{"duration": "1h"}},
+				{Action: "webhook", MinSeverity: "HIGH", Description: "Notify on network threats", Params: map[string]string{"url": ""}},
+				{Action: "log_only", MinSeverity: "HIGH", Description: "Log all network threats"},
+			},
+		},
+		// Ransomware gets kill_process only on CRITICAL (confirmed mass encryption)
+		"ransomware": {
+			Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 60, MaxActionsPerMin: 5,
+			Actions: []ResponseRuleYAML{
+				{Action: "kill_process", MinSeverity: "CRITICAL", Description: "Kill confirmed ransomware encryption process"},
+				{Action: "webhook", MinSeverity: "HIGH", Description: "Notify on ransomware indicators", Params: map[string]string{"url": ""}},
+				{Action: "log_only", MinSeverity: "HIGH", Description: "Log ransomware indicators"},
+			},
+		},
+		// Everything else: log + webhook only
+		"api_fortress":      {Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 300, MaxActionsPerMin: 10, Actions: []ResponseRuleYAML{{Action: "log_only", MinSeverity: "HIGH"}, {Action: "webhook", MinSeverity: "CRITICAL", Params: map[string]string{"url": ""}}}},
+		"injection_shield":  {Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 300, MaxActionsPerMin: 10, Actions: []ResponseRuleYAML{{Action: "log_only", MinSeverity: "HIGH"}, {Action: "webhook", MinSeverity: "CRITICAL", Params: map[string]string{"url": ""}}}},
+		"iot_shield":        {Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 300, MaxActionsPerMin: 10, Actions: []ResponseRuleYAML{{Action: "log_only", MinSeverity: "HIGH"}, {Action: "webhook", MinSeverity: "CRITICAL", Params: map[string]string{"url": ""}}}},
+		"supply_chain":      {Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 600, MaxActionsPerMin: 5, Actions: []ResponseRuleYAML{{Action: "log_only", MinSeverity: "HIGH"}, {Action: "webhook", MinSeverity: "CRITICAL", Params: map[string]string{"url": ""}}}},
+		"deepfake_shield":   {Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 600, MaxActionsPerMin: 5, Actions: []ResponseRuleYAML{{Action: "log_only", MinSeverity: "HIGH"}, {Action: "webhook", MinSeverity: "CRITICAL", Params: map[string]string{"url": ""}}}},
+		"identity_monitor":  {Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 600, MaxActionsPerMin: 5, Actions: []ResponseRuleYAML{{Action: "log_only", MinSeverity: "HIGH"}, {Action: "webhook", MinSeverity: "CRITICAL", Params: map[string]string{"url": ""}}}},
+		"llm_firewall":      {Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 300, MaxActionsPerMin: 10, Actions: []ResponseRuleYAML{{Action: "log_only", MinSeverity: "HIGH"}, {Action: "webhook", MinSeverity: "CRITICAL", Params: map[string]string{"url": ""}}}},
+		"ai_containment":    {Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 300, MaxActionsPerMin: 10, Actions: []ResponseRuleYAML{{Action: "log_only", MinSeverity: "HIGH"}, {Action: "webhook", MinSeverity: "CRITICAL", Params: map[string]string{"url": ""}}}},
+		"data_poisoning":    {Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 600, MaxActionsPerMin: 5, Actions: []ResponseRuleYAML{{Action: "log_only", MinSeverity: "HIGH"}, {Action: "webhook", MinSeverity: "CRITICAL", Params: map[string]string{"url": ""}}}},
+		"quantum_crypto":    {Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 600, MaxActionsPerMin: 5, Actions: []ResponseRuleYAML{{Action: "log_only", MinSeverity: "HIGH"}, {Action: "webhook", MinSeverity: "CRITICAL", Params: map[string]string{"url": ""}}}},
+		"runtime_watcher":   {Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 300, MaxActionsPerMin: 10, Actions: []ResponseRuleYAML{{Action: "log_only", MinSeverity: "HIGH"}, {Action: "webhook", MinSeverity: "CRITICAL", Params: map[string]string{"url": ""}}}},
+		"cloud_posture":     {Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 600, MaxActionsPerMin: 5, Actions: []ResponseRuleYAML{{Action: "log_only", MinSeverity: "HIGH"}, {Action: "webhook", MinSeverity: "CRITICAL", Params: map[string]string{"url": ""}}}},
+		"ai_analysis_engine": {Enabled: true, MinSeverity: "CRITICAL", CooldownSeconds: 600, MaxActionsPerMin: 5, Actions: []ResponseRuleYAML{{Action: "log_only", MinSeverity: "CRITICAL"}, {Action: "webhook", MinSeverity: "CRITICAL", Params: map[string]string{"url": ""}}}},
+		"*":                 {Enabled: true, MinSeverity: "CRITICAL", CooldownSeconds: 600, MaxActionsPerMin: 5, Actions: []ResponseRuleYAML{{Action: "log_only", MinSeverity: "CRITICAL"}}},
+	}
 }
 
 // ---------------------------------------------------------------------------

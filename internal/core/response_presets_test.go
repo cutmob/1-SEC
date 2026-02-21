@@ -33,10 +33,10 @@ func TestGetPresetPolicies_EmptyString(t *testing.T) {
 
 func TestValidPresets(t *testing.T) {
 	presets := ValidPresets()
-	if len(presets) != 3 {
-		t.Errorf("expected 3 valid presets, got %d", len(presets))
+	if len(presets) != 4 {
+		t.Errorf("expected 4 valid presets, got %d", len(presets))
 	}
-	expected := map[string]bool{"lax": true, "balanced": true, "strict": true}
+	expected := map[string]bool{"lax": true, "safe": true, "balanced": true, "strict": true}
 	for _, p := range presets {
 		if !expected[p] {
 			t.Errorf("unexpected preset: %q", p)

@@ -33,6 +33,14 @@ type Guard struct {
 func New() *Guard { return &Guard{} }
 
 func (g *Guard) Name() string { return ModuleName }
+func (g *Guard) EventTypes() []string {
+	return []string{
+		"training_update", "training_data_update", "dataset_update", "dataset_change", "data_ingestion",
+		"rag_retrieval", "rag_query", "context_injection",
+		"inference_result", "model_inference", "prediction",
+		"model_update", "model_deploy", "weight_change",
+	}
+}
 func (g *Guard) Description() string {
 	return "Training data integrity validation, RAG source verification, adversarial input detection, and model weight drift monitoring"
 }

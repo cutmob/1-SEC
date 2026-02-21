@@ -95,6 +95,10 @@ func main() {
 		cmdRust(args)
 	case "enforce":
 		cmdEnforce(args)
+	case "collect":
+		cmdCollect(args)
+	case "archive":
+		cmdArchive(args)
 	default:
 		fmt.Fprintf(os.Stderr, red("error: ")+"unknown command %q\n\n", subcmd)
 		if s := suggest(subcmd); s != "" {

@@ -36,6 +36,14 @@ func (s *Sentinel) Name() string { return ModuleName }
 func (s *Sentinel) Description() string {
 	return "SBOM generation, package integrity verification, CI/CD pipeline hardening, and typosquatting detection"
 }
+func (s *Sentinel) EventTypes() []string {
+	return []string{
+		"package_install", "dependency_add", "package_update",
+		"build_artifact", "artifact_deploy",
+		"cicd_event", "pipeline_run", "pipeline_config_change",
+		"sbom_scan",
+	}
+}
 
 func (s *Sentinel) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
 	s.ctx, s.cancel = context.WithCancel(ctx)

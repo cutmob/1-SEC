@@ -331,6 +331,14 @@ var (
 	fileChangeRe  = regexp.MustCompile(`(?i)(file\s+changed|integrity|modified|created|deleted|inotify|auditd.*write|auditd.*unlink)`)
 	processRe     = regexp.MustCompile(`(?i)(exec|process|command|started|spawned|fork)`)
 	authGenericRe = regexp.MustCompile(`(?i)(sshd|login|auth|pam)`)
+
+	// Extended classifiers for richer event routing
+	dnsRe         = regexp.MustCompile(`(?i)(named|dnsmasq|unbound|bind|query|NXDOMAIN|SERVFAIL)`)
+	dhcpRe        = regexp.MustCompile(`(?i)(dhcpd|dhclient|DHCPACK|DHCPREQUEST|DHCPDISCOVER)`)
+	cronRe        = regexp.MustCompile(`(?i)(cron|CRON|anacron)`)
+	mfaRe         = regexp.MustCompile(`(?i)(mfa|2fa|two.factor|otp|totp|yubikey|duo)`)
+	pfSenseRe     = regexp.MustCompile(`(?i)(filterlog|pf:)`)
+	nginxAccessRe = regexp.MustCompile(`(?i)(\d+\.\d+\.\d+\.\d+\s+-\s+-\s+\[|"(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+)`)
 )
 
 // syslogUsernameRe extracts usernames from common syslog auth messages.
@@ -338,6 +346,18 @@ var syslogUsernameRe = regexp.MustCompile(`(?i)(?:for(?:\s+invalid)?\s+user\s+|u
 
 // syslogSrcIPRe extracts source IPs from syslog messages (e.g., "from 1.2.3.4 port 22").
 var syslogSrcIPRe = regexp.MustCompile(`(?:from|src|SRC=|source[=:\s])[\s=]*(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})`)
+
+// syslogDstIPRe extracts destination IPs from syslog messages.
+var syslogDstIPRe = regexp.MustCompile(`(?:to|dst|DST=|dest[=:\s])[\s=]*(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})`)
+
+// syslogPortRe extracts port numbers from syslog messages.
+var syslogPortRe = regexp.MustCompile(`(?:port|DPT=|SPT=|dport|sport)[=:\s]*(\d{1,5})`)
+
+// syslogProtoRe extracts protocol from syslog messages.
+var syslogProtoRe = regexp.MustCompile(`(?:PROTO=|protocol[=:\s]*)(\w+)`)
+
+// nginxFieldsRe extracts HTTP method, path, status, and size from nginx-style access logs.
+var nginxFieldsRe = regexp.MustCompile(`"(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+(\S+)\s+HTTP/\S+"\s+(\d{3})\s+(\d+)`)
 
 func classifySyslogEvent(msg *syslogMessage) string {
 	combined := msg.AppName + " " + msg.Message
@@ -352,13 +372,27 @@ func classifySyslogEvent(msg *syslogMessage) string {
 	if authSessionRe.MatchString(combined) {
 		return "session_activity"
 	}
+	if mfaRe.MatchString(combined) {
+		return "mfa_attempt"
+	}
 	if sudoRe.MatchString(combined) {
 		return "privilege_change"
 	}
 
 	// Network/firewall events — produce types the network module handles
+	if pfSenseRe.MatchString(combined) {
+		return "network_connection"
+	}
 	if firewallRe.MatchString(combined) {
 		return "network_connection"
+	}
+	if dnsRe.MatchString(combined) {
+		return "dns_query"
+	}
+
+	// HTTP access logs — produce types the injection/API modules handle
+	if nginxAccessRe.MatchString(combined) {
+		return "http_request"
 	}
 
 	// Kernel/system events — produce types the runtime module handles
@@ -367,6 +401,9 @@ func classifySyslogEvent(msg *syslogMessage) string {
 	}
 	if fileChangeRe.MatchString(combined) {
 		return "file_change"
+	}
+	if cronRe.MatchString(combined) {
+		return "scheduled_task"
 	}
 	if processRe.MatchString(combined) {
 		return "process_exec"
@@ -388,9 +425,9 @@ func classifySyslogEvent(msg *syslogMessage) string {
 	}
 }
 
-// enrichEventFromSyslog extracts structured fields (username, source IP) from
-// syslog message content and populates the event's Details map so downstream
-// modules can process the event properly.
+// enrichEventFromSyslog extracts structured fields (username, source IP, dest IP,
+// ports, protocol, HTTP fields) from syslog message content and populates the
+// event's Details map so downstream modules can process the event properly.
 func enrichEventFromSyslog(event *core.SecurityEvent, msg *syslogMessage) {
 	combined := msg.AppName + " " + msg.Message
 
@@ -408,12 +445,45 @@ func enrichEventFromSyslog(event *core.SecurityEvent, msg *syslogMessage) {
 		}
 	}
 
+	// Extract destination IP
+	if m := syslogDstIPRe.FindStringSubmatch(combined); m != nil {
+		event.DestIP = m[1]
+	}
+
+	// Extract port numbers
+	if ports := syslogPortRe.FindAllStringSubmatch(combined, -1); len(ports) > 0 {
+		event.Details["dest_port"] = ports[0][1]
+		if len(ports) > 1 {
+			event.Details["src_port"] = ports[1][1]
+		}
+	}
+
+	// Extract protocol
+	if m := syslogProtoRe.FindStringSubmatch(combined); m != nil {
+		event.Details["protocol"] = m[1]
+	}
+
+	// Extract HTTP fields from nginx/apache-style access logs
+	if m := nginxFieldsRe.FindStringSubmatch(combined); m != nil {
+		event.Details["method"] = m[1]
+		event.Details["path"] = m[2]
+		event.Details["status_code"] = m[3]
+		event.Details["response_size"] = m[4]
+	}
+
 	// Extract process/command info for runtime module
 	if msg.AppName != "" {
 		event.Details["process_name"] = msg.AppName
 	}
 	if msg.ProcID != "" {
 		event.Details["pid"] = msg.ProcID
+	}
+
+	// Extract command line from sudo messages
+	if sudoRe.MatchString(combined) {
+		if idx := strings.Index(combined, "COMMAND="); idx >= 0 {
+			event.Details["command_line"] = strings.TrimSpace(combined[idx+8:])
+		}
 	}
 }
 

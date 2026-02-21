@@ -19,6 +19,7 @@ type Config struct {
 	Logging     LoggingConfig           `yaml:"logging"`
 	RustEngine  RustEngineConfig        `yaml:"rust_engine"`
 	Enforcement *EnforcementConfig      `yaml:"enforcement,omitempty"`
+	Archive     ArchiveConfig           `yaml:"archive"`
 }
 
 // EnforcementConfig holds the automated response / enforcement layer settings.
@@ -53,10 +54,13 @@ type ResponseRuleYAML struct {
 
 // ServerConfig holds API server settings.
 type ServerConfig struct {
-	Host        string   `yaml:"host"`
-	Port        int      `yaml:"port"`
-	APIKeys     []string `yaml:"api_keys"`
-	CORSOrigins []string `yaml:"cors_origins"`
+	Host          string   `yaml:"host"`
+	Port          int      `yaml:"port"`
+	APIKeys       []string `yaml:"api_keys"`
+	ReadOnlyKeys  []string `yaml:"read_only_keys"`
+	CORSOrigins   []string `yaml:"cors_origins"`
+	TLSCert       string   `yaml:"tls_cert"`       // path to TLS certificate file
+	TLSKey        string   `yaml:"tls_key"`         // path to TLS private key file
 }
 
 // SyslogConfig holds syslog ingestion settings.
@@ -161,7 +165,7 @@ func DefaultConfig() *Config {
 			Format: "console",
 		},
 		RustEngine: RustEngineConfig{
-			Enabled:              true,
+			Enabled:              false,
 			Binary:               "1sec-engine",
 			Workers:              0,
 			BufferSize:           10000,
@@ -174,6 +178,7 @@ func DefaultConfig() *Config {
 				Promiscuous: true,
 			},
 		},
+		Archive: DefaultArchiveConfig(),
 	}
 }
 
@@ -279,13 +284,24 @@ func (c *Config) AuthEnabled() bool {
 	return len(c.Server.APIKeys) > 0
 }
 
+// TLSEnabled returns true if TLS certificate and key are configured.
+func (c *Config) TLSEnabled() bool {
+	return c.Server.TLSCert != "" && c.Server.TLSKey != ""
+}
+
 // ValidateAPIKey checks if the provided key matches any configured API key.
 // Uses constant-time comparison to prevent timing attacks.
-func (c *Config) ValidateAPIKey(key string) bool {
+// Returns "write" for full-access keys, "read" for read-only keys, "" for invalid.
+func (c *Config) ValidateAPIKey(key string) string {
 	for _, valid := range c.Server.APIKeys {
 		if subtle.ConstantTimeCompare([]byte(key), []byte(valid)) == 1 {
-			return true
+			return "write"
 		}
 	}
-	return false
+	for _, valid := range c.Server.ReadOnlyKeys {
+		if subtle.ConstantTimeCompare([]byte(key), []byte(valid)) == 1 {
+			return "read"
+		}
+	}
+	return ""
 }

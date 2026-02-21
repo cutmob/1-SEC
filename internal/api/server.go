@@ -33,25 +33,33 @@ func NewServer(engine *core.Engine) *Server {
 	}
 
 	mux := http.NewServeMux()
+
+	// ── Read-only endpoints (safe for dashboards) ───────────────────
 	mux.HandleFunc("/api/v1/status", s.handleStatus)
 	mux.HandleFunc("/api/v1/modules", s.handleModules)
 	mux.HandleFunc("/api/v1/alerts", s.handleAlerts)
 	mux.HandleFunc("/api/v1/alerts/", s.handleAlertByID)
-	mux.HandleFunc("/api/v1/alerts/clear", s.handleAlertsClear)
 	mux.HandleFunc("/api/v1/config", s.handleConfig)
-	mux.HandleFunc("/api/v1/events", s.handleIngestEvent)
 	mux.HandleFunc("/api/v1/logs", s.handleLogs)
 	mux.HandleFunc("/api/v1/correlator", s.handleCorrelator)
 	mux.HandleFunc("/api/v1/threats", s.handleThreats)
 	mux.HandleFunc("/api/v1/rust", s.handleRustStatus)
 	mux.HandleFunc("/api/v1/enforce/status", s.handleEnforceStatus)
 	mux.HandleFunc("/api/v1/enforce/policies", s.handleEnforcePolicies)
-	mux.HandleFunc("/api/v1/enforce/policies/", s.handleEnforcePolicyAction)
 	mux.HandleFunc("/api/v1/enforce/history", s.handleEnforceHistory)
+	mux.HandleFunc("/api/v1/metrics", s.handleMetrics)
+	mux.HandleFunc("/api/v1/event-schemas", s.handleEventSchemas)
+	mux.HandleFunc("/api/v1/archive/status", s.handleArchiveStatus)
+	mux.HandleFunc("/health", s.handleHealth)
+
+	// ── Mutating endpoints (require write scope) ────────────────────
+	mux.HandleFunc("/api/v1/alerts/clear", s.handleAlertsClear)
+	mux.HandleFunc("/api/v1/events", s.handleIngestEvent)
+	mux.HandleFunc("/api/v1/enforce/policies/", s.handleEnforcePolicyAction)
 	mux.HandleFunc("/api/v1/enforce/dry-run/", s.handleEnforceDryRun)
 	mux.HandleFunc("/api/v1/enforce/test/", s.handleEnforceTest)
-	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/api/v1/shutdown", s.handleShutdown)
+	mux.HandleFunc("/api/v1/config/reload", s.handleConfigReload)
 
 	// Build middleware chain: CORS -> logging -> rate limit -> auth -> handler
 	handler := corsMiddleware(
@@ -84,11 +92,26 @@ func (s *Server) Start() error {
 	} else {
 		s.logger.Warn().Msg("⚠ API running in OPEN MODE — no authentication required. Set api_keys in config or ONESEC_API_KEY env var to secure the API")
 	}
-	go func() {
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			s.logger.Error().Err(err).Msg("API server error")
-		}
-	}()
+
+	if s.engine.Config.TLSEnabled() {
+		s.logger.Info().
+			Str("cert", s.engine.Config.Server.TLSCert).
+			Msg("API server starting with TLS")
+		go func() {
+			if err := s.server.ListenAndServeTLS(
+				s.engine.Config.Server.TLSCert,
+				s.engine.Config.Server.TLSKey,
+			); err != nil && err != http.ErrServerClosed {
+				s.logger.Error().Err(err).Msg("API server TLS error")
+			}
+		}()
+	} else {
+		go func() {
+			if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				s.logger.Error().Err(err).Msg("API server error")
+			}
+		}()
+	}
 	return nil
 }
 
@@ -101,28 +124,80 @@ func (s *Server) Stop() error {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status":    "healthy",
-		"timestamp": time.Now().UTC(),
-	})
+
+	checks := make(map[string]interface{})
+	healthy := true
+
+	// Check bus connection (nil bus = not yet started, not a failure)
+	if s.engine.Bus != nil {
+		busOK := s.engine.Bus.IsConnected()
+		checks["bus_connected"] = busOK
+		if !busOK {
+			healthy = false
+		}
+	} else {
+		checks["bus_connected"] = false
+	}
+
+	// Check modules registered
+	moduleCount := s.engine.Registry.Count()
+	checks["modules_running"] = moduleCount
+
+	// Check archiver if enabled
+	if s.engine.Config.Archive.Enabled {
+		if s.engine.Archiver != nil {
+			checks["archiver"] = "running"
+		} else {
+			checks["archiver"] = "failed"
+			healthy = false
+		}
+	}
+
+	// Check enforcement if enabled
+	if s.engine.Config.Enforcement != nil && s.engine.Config.Enforcement.Enabled {
+		if s.engine.ResponseEngine != nil {
+			checks["enforcement"] = "running"
+		} else {
+			checks["enforcement"] = "failed"
+			healthy = false
+		}
+	}
+
+	status := "healthy"
+	httpStatus := http.StatusOK
+	if !healthy {
+		status = "degraded"
+		httpStatus = http.StatusServiceUnavailable
+	}
+
+	checks["status"] = status
+	checks["timestamp"] = time.Now().UTC()
+
+	writeJSON(w, httpStatus, checks)
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
 	modules := make([]map[string]interface{}, 0)
 	for _, mod := range s.engine.Registry.All() {
-		modules = append(modules, map[string]interface{}{
+		modInfo := map[string]interface{}{
 			"name":        mod.Name(),
 			"description": mod.Description(),
 			"enabled":     s.engine.Config.IsModuleEnabled(mod.Name()),
-		})
+		}
+		if types := mod.EventTypes(); len(types) > 0 {
+			modInfo["event_types"] = types
+		} else {
+			modInfo["event_types"] = "all"
+		}
+		modules = append(modules, modInfo)
 	}
 
 	rustEngineStatus := "disabled"
@@ -158,7 +233,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleModules(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -179,7 +254,7 @@ func (s *Server) handleModules(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -213,7 +288,7 @@ func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 	// Redact API keys from the response
@@ -224,7 +299,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleIngestEvent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -246,6 +321,15 @@ func (s *Server) handleIngestEvent(w http.ResponseWriter, r *http.Request) {
 		event.Source = "external"
 	}
 
+	// Validate event against canonical schema — warn on missing required keys
+	// but still accept the event (graceful degradation).
+	if missing := core.ValidateEvent(&event); len(missing) > 0 {
+		s.logger.Warn().
+			Str("event_type", event.Type).
+			Strs("missing_keys", missing).
+			Msg("event missing recommended Details keys — detection quality may be reduced")
+	}
+
 	if err := s.engine.Bus.PublishEvent(&event); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to publish event"})
 		return
@@ -259,7 +343,7 @@ func (s *Server) handleIngestEvent(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
@@ -281,6 +365,29 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 			os.Exit(0)
 		}
 	}()
+}
+
+// handleConfigReload hot-reloads the configuration from disk.
+func (s *Server) handleConfigReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	configPath := s.engine.GetConfigPath()
+	changes, err := core.ReloadConfig(s.engine, configPath, s.logger)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"error":   "reload failed",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "reloaded",
+		"changes": changes,
+	})
 }
 
 // handleAlertByID handles GET/PATCH on /api/v1/alerts/{id}
@@ -334,14 +441,14 @@ func (s *Server) handleAlertByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "id": alertID})
 
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	}
 }
 
 // handleAlertsClear handles POST /api/v1/alerts/clear
 func (s *Server) handleAlertsClear(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 	count := s.engine.Pipeline.ClearAlerts()
@@ -354,7 +461,7 @@ func (s *Server) handleAlertsClear(w http.ResponseWriter, r *http.Request) {
 // handleLogs streams recent log entries. The engine logs are captured in a ring buffer.
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -375,7 +482,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCorrelator(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 	if s.engine.Correlator == nil {
@@ -389,7 +496,7 @@ func (s *Server) handleCorrelator(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleThreats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -427,7 +534,7 @@ func (s *Server) handleThreats(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRustStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
@@ -455,6 +562,73 @@ func (s *Server) handleRustStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
+// Metrics & Schema endpoints
+// ---------------------------------------------------------------------------
+
+// handleMetrics returns bus + routing metrics for observability.
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	busMetrics := s.engine.Bus.GetMetrics()
+	routingMetrics := s.engine.Registry.GetMetrics()
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"bus":     busMetrics,
+		"routing": routingMetrics,
+	})
+}
+
+// handleEventSchemas returns the canonical event type spec so adapters and
+// users know exactly what Details keys each event type expects.
+func (s *Server) handleEventSchemas(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	// Optional filter by category
+	category := r.URL.Query().Get("category")
+	schemas := core.CanonicalEventSchemas()
+
+	if category != "" {
+		filtered := make([]core.EventSchema, 0)
+		for _, s := range schemas {
+			if s.Category == category {
+				filtered = append(filtered, s)
+			}
+		}
+		schemas = filtered
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"version": "1.0.0",
+		"schemas": schemas,
+		"total":   len(schemas),
+	})
+}
+
+// handleArchiveStatus returns cold archiver metrics.
+func (s *Server) handleArchiveStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	if s.engine.Archiver == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"enabled": false,
+			"status":  "disabled",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, s.engine.Archiver.Status())
+}
+
+// ---------------------------------------------------------------------------
 // Middleware
 // ---------------------------------------------------------------------------
 
@@ -464,9 +638,45 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	_ = json.NewEncoder(w).Encode(data)
 }
 
+// writeError writes a structured JSON error response. Replaces http.Error()
+// calls so all error responses are consistent JSON with error code.
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, map[string]interface{}{
+		"error":   message,
+		"code":    code,
+		"status":  status,
+	})
+}
+
+// mutatingPaths lists URL path prefixes that require write-scope API keys.
+var mutatingPaths = map[string]bool{
+	"/api/v1/events":              true,
+	"/api/v1/alerts/clear":        true,
+	"/api/v1/shutdown":            true,
+	"/api/v1/config/reload":       true,
+	"/api/v1/enforce/policies/":   true,
+	"/api/v1/enforce/dry-run/":    true,
+	"/api/v1/enforce/test/":       true,
+}
+
+// isMutatingPath returns true if the request path requires write scope.
+func isMutatingPath(path, method string) bool {
+	// DELETE and PATCH on alerts are mutating
+	if strings.HasPrefix(path, "/api/v1/alerts/") && (method == http.MethodDelete || method == http.MethodPatch) {
+		return true
+	}
+	for prefix := range mutatingPaths {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // authMiddleware enforces API key authentication on all endpoints except /health.
-// Keys are read from config (server.api_keys) or env (ONESEC_API_KEY).
+// Keys are read from config (server.api_keys / server.read_only_keys) or env (ONESEC_API_KEY).
 // If no keys are configured, all requests are allowed (open mode with warning logged on startup).
+// Write-scope keys (api_keys) can access everything. Read-only keys are blocked from mutating endpoints.
 func authMiddleware(next http.Handler, cfg *core.Config, logger zerolog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Always allow health checks without auth
@@ -483,34 +693,35 @@ func authMiddleware(next http.Handler, cfg *core.Config, logger zerolog.Logger) 
 
 		// Extract key from Authorization header: "Bearer <key>"
 		authHeader := r.Header.Get("Authorization")
+		key := ""
 		if authHeader == "" {
 			// Also check X-API-Key header as fallback
-			authHeader = r.Header.Get("X-API-Key")
-			if authHeader == "" {
+			key = r.Header.Get("X-API-Key")
+			if key == "" {
 				writeJSON(w, http.StatusUnauthorized, map[string]string{
 					"error": "missing authentication — provide Authorization: Bearer <key> or X-API-Key header",
 				})
 				return
 			}
-			// X-API-Key is the raw key
-			if !cfg.ValidateAPIKey(authHeader) {
-				logger.Warn().Str("path", r.URL.Path).Str("ip", r.RemoteAddr).Msg("invalid API key")
-				writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid API key"})
-				return
+		} else {
+			key = authHeader
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				key = authHeader[7:]
 			}
-			next.ServeHTTP(w, r)
+		}
+
+		scope := cfg.ValidateAPIKey(key)
+		if scope == "" {
+			logger.Warn().Str("path", r.URL.Path).Str("ip", r.RemoteAddr).Msg("invalid API key")
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid API key"})
 			return
 		}
 
-		// Parse "Bearer <key>"
-		key := authHeader
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			key = authHeader[7:]
-		}
-
-		if !cfg.ValidateAPIKey(key) {
-			logger.Warn().Str("path", r.URL.Path).Str("ip", r.RemoteAddr).Msg("invalid API key")
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid API key"})
+		// Enforce write scope for mutating endpoints
+		if scope == "read" && isMutatingPath(r.URL.Path, r.Method) {
+			writeJSON(w, http.StatusForbidden, map[string]string{
+				"error": "read-only API key cannot access mutating endpoints — use a full-access key",
+			})
 			return
 		}
 

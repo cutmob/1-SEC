@@ -44,6 +44,14 @@ func (f *Fortress) Name() string { return ModuleName }
 func (f *Fortress) Description() string {
 	return "BOLA/BFLA detection, mass assignment protection, API schema validation, shadow API discovery, per-endpoint rate limiting, excessive data exposure, GraphQL abuse prevention, JWT validation, SSRF-via-API detection, and response anomaly analysis"
 }
+func (f *Fortress) EventTypes() []string {
+	return []string{
+		"http_request", "api_request",
+		"http_response", "api_response",
+		"graphql_request",
+		"jwt_validation", "token_event",
+	}
+}
 
 func (f *Fortress) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
 	f.ctx, f.cancel = context.WithCancel(ctx)

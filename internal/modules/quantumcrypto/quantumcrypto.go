@@ -32,6 +32,15 @@ type Monitor struct {
 func New() *Monitor { return &Monitor{} }
 
 func (m *Monitor) Name() string { return ModuleName }
+func (m *Monitor) EventTypes() []string {
+	return []string{
+		"tls_handshake", "tls_connection", "ssl_connection",
+		"crypto_usage", "encryption_operation", "key_generation",
+		"certificate_event", "cert_expiry", "cert_issued",
+		"crypto_scan", "crypto_inventory",
+		"traffic_capture", "bulk_data_transfer", "bulk_transfer", "encrypted_exfiltration",
+	}
+}
 func (m *Monitor) Description() string {
 	return "Cryptographic inventory scanning, post-quantum migration assessment, crypto-agility framework, TLS configuration auditing, and harvest-now-decrypt-later detection"
 }

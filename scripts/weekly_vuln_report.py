@@ -125,6 +125,7 @@ EDITORIAL_SOURCES = [
     {"name": "Zero Day Initiative",  "url": "https://www.zerodayinitiative.com/advisories/published/"},
     {"name": "Dark Reading",         "url": "https://www.darkreading.com/"},
     {"name": "The Record",           "url": "https://therecord.media/"},
+    {"name": "PromptArmor Threat Intel", "url": "https://www.promptarmor.com/resources/threat-intelligence"},
 ]
 
 CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"

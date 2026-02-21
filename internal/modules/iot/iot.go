@@ -43,6 +43,15 @@ func (s *Shield) Name() string { return ModuleName }
 func (s *Shield) Description() string {
 	return "IoT/OT device fingerprinting, protocol anomaly detection, firmware integrity, default credential scanning, rogue device detection, OT command validation, device behavior baselining, network segmentation enforcement, and firmware vulnerability tracking"
 }
+func (s *Shield) EventTypes() []string {
+	return []string{
+		"device_connect", "device_activity", "iot_traffic",
+		"protocol_message",
+		"firmware_update", "firmware_check",
+		"ot_command", "scada_command", "plc_command",
+		"network_flow", "iot_network",
+	}
+}
 
 func (s *Shield) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
 	s.ctx, s.cancel = context.WithCancel(ctx)

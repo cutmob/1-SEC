@@ -34,6 +34,15 @@ func (m *Manager) Name() string { return ModuleName }
 func (m *Manager) Description() string {
 	return "Cloud configuration drift detection, misconfiguration scanning, secrets sprawl detection, and multi-cloud policy enforcement"
 }
+func (m *Manager) EventTypes() []string {
+	return []string{
+		"config_change", "resource_update", "iac_deploy",
+		"config_scan", "posture_check",
+		"secret_detected", "credential_found",
+		"log_entry", "audit_log",
+		"policy_check", "compliance_scan",
+	}
+}
 
 func (m *Manager) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
 	m.ctx, m.cancel = context.WithCancel(ctx)

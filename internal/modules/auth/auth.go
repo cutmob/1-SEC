@@ -37,6 +37,18 @@ func (f *Fortress) Name() string { return ModuleName }
 func (f *Fortress) Description() string {
 	return "Brute force, credential stuffing, session theft, impossible travel, MFA bypass, password spraying, OAuth token abuse, and consent phishing detection"
 }
+func (f *Fortress) EventTypes() []string {
+	return []string{
+		"login_attempt", "auth_attempt",
+		"login_success", "auth_success",
+		"login_failure", "auth_failure",
+		"session_activity",
+		"mfa_attempt",
+		"oauth_grant", "oauth_consent", "oauth_token",
+		"token_usage", "api_key_usage",
+		"password_spray", "distributed_auth",
+	}
+}
 
 func (f *Fortress) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
 	f.ctx, f.cancel = context.WithCancel(ctx)

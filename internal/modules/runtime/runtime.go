@@ -38,6 +38,19 @@ func (w *Watcher) Name() string { return ModuleName }
 func (w *Watcher) Description() string {
 	return "File integrity monitoring, container escape detection, privilege escalation, LOLBin detection, fileless malware, UEFI/bootkit indicators, memory injection, and persistence mechanism detection"
 }
+func (w *Watcher) EventTypes() []string {
+	return []string{
+		"file_change", "file_modified", "file_created", "file_deleted",
+		"process_start", "process_exec",
+		"privilege_change", "setuid", "capability_change",
+		"container_event",
+		"memory_injection", "process_hollowing", "dll_injection",
+		"persistence_created", "scheduled_task", "wmi_subscription",
+		"registry_run_key", "startup_item", "cron_job", "systemd_service",
+		"firmware_event", "uefi_event", "bootloader_change",
+		"fileless_execution", "powershell_exec", "wmi_exec", "mshta_exec",
+	}
+}
 
 func (w *Watcher) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
 	w.ctx, w.cancel = context.WithCancel(ctx)

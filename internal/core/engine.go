@@ -21,11 +21,14 @@ type Engine struct {
 	Correlator       *ThreatCorrelator
 	ResponseEngine   *ResponseEngine
 	RustMatchBridge  *RustMatchBridge
+	Archiver         *Archiver
+	Dedup            *EventDedup
 	Logger           zerolog.Logger
 	ctx            context.Context
 	cancel         context.CancelFunc
 	configPath     string
 	logBuffer      *LogRingBuffer
+	stopDedup      func()
 }
 
 // NewEngine creates a new 1SEC engine.
@@ -135,23 +138,40 @@ func (e *Engine) Start() error {
 		}
 	}
 
+	// Start cold archiver — separate durable consumer for indefinite retention
+	if e.Config.Archive.Enabled {
+		archiver, err := NewArchiver(e.Config.Archive, bus, e.Logger)
+		if err != nil {
+			e.Logger.Warn().Err(err).Msg("failed to create cold archiver")
+		} else {
+			e.Archiver = archiver
+			if err := e.Archiver.Start(e.ctx); err != nil {
+				e.Logger.Warn().Err(err).Msg("failed to start cold archiver")
+			}
+		}
+	}
+
 	// Start all enabled modules
 	if err := e.Registry.StartAll(e.ctx, e.Bus, e.Pipeline, e.Config); err != nil {
 		return fmt.Errorf("starting modules: %w", err)
 	}
 
-	// Subscribe to all events and route to modules
+	// Start event dedup cache — prevents duplicate processing when syslog
+	// listener and a collector both ingest the same log line.
+	e.Dedup = NewEventDedup(30*time.Second, 50000)
+	e.stopDedup = e.Dedup.StartCleanup(10 * time.Second)
+
+	// Subscribe to all events and route to interested modules only.
+	// Dedup check happens here so duplicates never reach modules.
 	if err := e.Bus.SubscribeToAllEvents(func(event *SecurityEvent) {
-		for _, mod := range e.Registry.All() {
-			if mod.Name() != event.Module {
-				if err := mod.HandleEvent(event); err != nil {
-					e.Logger.Error().Err(err).
-						Str("module", mod.Name()).
-						Str("event_id", event.ID).
-						Msg("module failed to handle event")
-				}
-			}
+		if e.Dedup.IsDuplicate(event) {
+			e.Logger.Debug().
+				Str("event_id", event.ID).
+				Str("event_type", event.Type).
+				Msg("duplicate event suppressed")
+			return
 		}
+		e.Registry.RouteEvent(event, e.Logger)
 	}); err != nil {
 		return fmt.Errorf("subscribing to events: %w", err)
 	}
@@ -161,10 +181,14 @@ func (e *Engine) Start() error {
 		Msg("1SEC engine started")
 
 	// Start Rust sidecar if enabled (after bus is ready so it can connect)
-	if e.RustSidecar != nil {
-		if err := e.RustSidecar.Start(e.ctx, e.configPath); err != nil {
-			e.Logger.Warn().Err(err).Msg("failed to start rust engine sidecar")
+	if e.Config.RustEngine.Enabled {
+		if e.RustSidecar != nil {
+			if err := e.RustSidecar.Start(e.ctx, e.configPath); err != nil {
+				e.Logger.Warn().Err(err).Msg("failed to start rust engine sidecar")
+			}
 		}
+	} else {
+		e.Logger.Info().Msg("Rust sidecar disabled — set rust_engine.enabled: true and install the 1sec-engine binary for high-throughput pattern matching and optional packet capture")
 	}
 
 	return nil
@@ -207,6 +231,11 @@ func (e *Engine) Shutdown() error {
 
 	e.Registry.StopAll()
 
+	// Stop dedup cleanup
+	if e.stopDedup != nil {
+		e.stopDedup()
+	}
+
 	if e.Bus != nil {
 		if err := e.Bus.Close(); err != nil {
 			e.Logger.Error().Err(err).Msg("error closing event bus")
@@ -225,6 +254,11 @@ func (e *Engine) Context() context.Context {
 // SetConfigPath stores the config file path for the Rust sidecar to use.
 func (e *Engine) SetConfigPath(path string) {
 	e.configPath = path
+}
+
+// GetConfigPath returns the config file path.
+func (e *Engine) GetConfigPath() string {
+	return e.configPath
 }
 
 // GetLogEntries returns the most recent n log entries from the ring buffer.
@@ -253,4 +287,31 @@ func sendWebhook(url string, alert *Alert, logger zerolog.Logger) {
 	if resp.StatusCode >= 400 {
 		logger.Warn().Int("status", resp.StatusCode).Str("url", url).Msg("webhook returned error status")
 	}
+}
+
+// NewCollectorLogger creates a standalone logger for collector CLI commands.
+func NewCollectorLogger(format, level string) zerolog.Logger {
+	var logger zerolog.Logger
+	if format == "json" {
+		logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
+	} else {
+		consoleWriter := zerolog.ConsoleWriter{
+			Out:        os.Stdout,
+			TimeFormat: time.RFC3339,
+		}
+		logger = zerolog.New(consoleWriter).With().Timestamp().Logger()
+	}
+
+	switch level {
+	case "debug":
+		logger = logger.Level(zerolog.DebugLevel)
+	case "warn":
+		logger = logger.Level(zerolog.WarnLevel)
+	case "error":
+		logger = logger.Level(zerolog.ErrorLevel)
+	default:
+		logger = logger.Level(zerolog.InfoLevel)
+	}
+
+	return logger
 }

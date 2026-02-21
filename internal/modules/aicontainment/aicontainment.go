@@ -32,6 +32,14 @@ type Containment struct {
 func New() *Containment { return &Containment{} }
 
 func (c *Containment) Name() string { return ModuleName }
+func (c *Containment) EventTypes() []string {
+	return []string{
+		"agent_action", "tool_call", "function_call",
+		"ai_api_call", "llm_api_call", "model_inference",
+		"network_request", "network_connection",
+		"agent_spawn", "agent_created",
+	}
+}
 func (c *Containment) Description() string {
 	return "AI agent action sandboxing, tool-use monitoring, autonomous behavior detection, and shadow AI discovery"
 }

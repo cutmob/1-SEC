@@ -42,6 +42,13 @@ func (g *Guardian) Name() string { return ModuleName }
 func (g *Guardian) Description() string {
 	return "DDoS mitigation, rate limiting, IP reputation, geo-fencing, DNS tunneling detection, C2 covert channel detection, lateral movement detection, and port scan detection"
 }
+func (g *Guardian) EventTypes() []string {
+	// Network guardian is a catch-all: it needs to see events from ALL modules
+	// for cross-module dynamic IP threat scoring (any event with a SourceIP and
+	// severity >= MEDIUM accumulates threat points). It also handles its own
+	// specific event types (DNS, connections, lateral movement, port scans).
+	return nil
+}
 
 // GetIPReputation returns the IP reputation tracker for external access (API).
 func (g *Guardian) GetIPReputation() *IPReputation {

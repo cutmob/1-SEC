@@ -71,6 +71,14 @@ func (f *Firewall) Name() string { return ModuleName }
 func (f *Firewall) Description() string {
 	return "Prompt injection detection, jailbreak prevention, output filtering, and token budget monitoring for LLM applications"
 }
+func (f *Firewall) EventTypes() []string {
+	return []string{
+		"llm_input", "prompt", "llm_request",
+		"llm_output", "llm_response", "completion",
+		"llm_token_usage",
+		"agent_action", "tool_call", "function_call",
+	}
+}
 
 func (f *Firewall) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
 	f.ctx, f.cancel = context.WithCancel(ctx)

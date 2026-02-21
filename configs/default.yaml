@@ -12,6 +12,11 @@ server:
   # api_keys:
   #   - "your-secret-api-key-here"
   #
+  # Read-only API keys — can only access GET endpoints (dashboards, monitoring).
+  # Cannot ingest events, clear alerts, change enforcement, or trigger shutdown.
+  # read_only_keys:
+  #   - "your-dashboard-readonly-key"
+  #
   # CORS — restrict allowed origins for the REST API.
   # In production these should match your dashboard domain(s).
   # Can also be set via ONESEC_CORS_ORIGINS environment variable (comma-separated).
@@ -19,6 +24,11 @@ server:
     - "https://1-sec.netlify.app"
     - "https://1-sec.dev"
     - "https://www.1-sec.dev"
+  # TLS — enable HTTPS on the API server.
+  # Provide paths to a PEM-encoded certificate and private key.
+  # When configured, the API server uses ListenAndServeTLS.
+  # tls_cert: "/etc/1sec/tls/server.crt"
+  # tls_key:  "/etc/1sec/tls/server.key"
 
 bus:
   url: "nats://127.0.0.1:4222"
@@ -134,9 +144,12 @@ modules:
       deep_workers: 2
 
 # ── Rust Engine (optional high-performance sidecar) ──────────────────────────
+# The Rust sidecar is OPTIONAL. The Go binary is fully self-contained and
+# production-ready without it. Enable this only if you have the 1sec-engine
+# Rust binary installed and want high-throughput pattern matching or packet capture.
 
 rust_engine:
-  enabled: true
+  enabled: false
   binary: "1sec-engine"
   workers: 0               # 0 = auto-detect CPU cores
   buffer_size: 10000
@@ -147,6 +160,12 @@ rust_engine:
     interface: "eth0"
     bpf_filter: ""
     promiscuous: true
+    # NOTE: Capture mode requires the Rust sidecar binary (1sec-engine) which is
+    # built separately from the Go binary. When enabled, the sidecar performs
+    # high-throughput packet capture via libpcap and emits canonical events to
+    # NATS. The Go engine manages the sidecar lifecycle (start/stop/health).
+    # Without the Rust binary, all other features work — capture is the "power
+    # user" upgrade for environments that need wire-level visibility.
 
 # ── Enforcement / Automated Response ─────────────────────────────────────────
 # The enforcement layer subscribes to alerts and executes configurable response
@@ -168,9 +187,10 @@ rust_engine:
 enforcement:
   enabled: true
   dry_run: true             # IMPORTANT: start in dry-run to audit before going live
-  preset: "balanced"        # "lax", "balanced", or "strict" — sets defaults for all 16 modules
+  preset: "safe"            # "lax", "safe", "balanced", or "strict"
                             # lax:      log + webhook only, never blocks/kills
-                            # balanced: blocks IPs on HIGH, kills on CRITICAL (recommended)
+                            # safe:     log + webhook, block_ip only for brute force + port scans (recommended first deploy)
+                            # balanced: blocks IPs on HIGH, kills on CRITICAL
                             # strict:   aggressive enforcement on MEDIUM+, short cooldowns
   global_allow_list: []     # IPs that are never blocked (e.g., monitoring, VPN, load balancers)
   # To switch presets via CLI:  1sec enforce preset strict --dry-run
@@ -205,3 +225,44 @@ enforcement:
   #         params:
   #           command: "/opt/1sec/scripts/block-ip.sh {{source_ip}}"
   #           timeout: "30s"
+
+# ── Cold Archive — indefinite retention ──────────────────────────────────────
+# The archiver subscribes to all events, alerts, and responses with a separate
+# durable consumer and writes compressed NDJSON files for cold retention.
+# JetStream remains the "hot buffer" (7-30 days); the archive is forever.
+#
+# Files are rotated by size or time interval. To restore a time window for
+# investigation, gunzip the file and POST events back via /api/v1/events.
+
+archive:
+  enabled: false              # enable cold archiver
+  dir: "./data/archive"       # directory for archive files
+  rotate_bytes: 104857600     # rotate after 100MB (bytes)
+  rotate_interval: "1h"       # rotate after 1 hour
+  compress: true              # gzip compress (recommended)
+  # Sampling rules — reduce archive volume for high-frequency, low-severity events.
+  # Each rule keeps 1 in N events matching the criteria. Events above max_severity
+  # are always kept. Alerts and responses are never sampled.
+  # sample_rules:
+  #   - event_type: "dns_query"
+  #     max_severity: "INFO"
+  #     sample_rate: 100        # keep 1% of INFO-level dns_query events
+  #   - event_type: "http_request"
+  #     max_severity: "LOW"
+  #     sample_rate: 10         # keep 10% of LOW-or-below http_request events
+
+# ── Reference Collectors — built-in log tailers ──────────────────────────────
+# Collectors tail log files and emit canonical schema events to the bus.
+# They run inside the 1SEC binary — no external agents needed.
+#
+# Standalone usage (connects to running 1SEC instance):
+#   1sec collect nginx  --log-path /var/log/nginx/access.log
+#   1sec collect auth   --log-path /var/log/auth.log
+#   1sec collect pfsense --log-path /var/log/filterlog.log
+#   1sec collect json   --log-path /var/log/cloudtrail.json
+#
+# Supported types:
+#   nginx    — nginx/apache combined access logs → http_request events
+#   auth     — /var/log/auth.log → auth_failure, auth_success, session_activity
+#   pfsense  — pfSense/OPNsense filterlog → network_connection events
+#   json     — JSON-line logs (CloudTrail, k8s audit) → auto-classified events

@@ -22,6 +22,7 @@ type mockModule struct {
 func (m *mockModule) Name() string        { return m.name }
 func (m *mockModule) Description() string { return m.description }
 func (m *mockModule) Stop() error         { return m.stopErr }
+func (m *mockModule) EventTypes() []string { return nil } // catch-all for tests
 func (m *mockModule) HandleEvent(event *SecurityEvent) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -57,6 +57,12 @@ func (s *Shield) Name() string { return ModuleName }
 func (s *Shield) Description() string {
 	return "Detects SQL injection, XSS, command injection, SSRF, LDAP injection, template injection, NoSQL injection, and path traversal attacks"
 }
+func (s *Shield) EventTypes() []string {
+	return []string{
+		"http_request", "api_request", "query",
+		"file_upload",
+	}
+}
 
 func (s *Shield) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
 	s.ctx, s.cancel = context.WithCancel(ctx)

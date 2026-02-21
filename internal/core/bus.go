@@ -19,6 +19,19 @@ type EventBus struct {
 	logger zerolog.Logger
 	mu     sync.RWMutex
 	subs   []*nats.Subscription
+
+	// Metrics
+	metrics *BusMetrics
+}
+
+// BusMetrics tracks event bus performance counters.
+type BusMetrics struct {
+	mu              sync.Mutex `json:"-"`
+	EventsPublished int64 `json:"events_published"`
+	EventsFailed    int64 `json:"events_failed"`
+	AlertsPublished int64 `json:"alerts_published"`
+	MessagesAcked   int64 `json:"messages_acked"`
+	MessagesNaked   int64 `json:"messages_naked"`
 }
 
 // NewEventBus creates a new EventBus. If cfg.Embedded is true, it starts an embedded NATS server.
@@ -26,6 +39,7 @@ func NewEventBus(cfg *BusConfig, logger zerolog.Logger) (*EventBus, error) {
 	bus := &EventBus{
 		logger: logger.With().Str("component", "event_bus").Logger(),
 		subs:   make([]*nats.Subscription, 0),
+		metrics: &BusMetrics{},
 	}
 
 	if cfg.Embedded {
@@ -154,8 +168,15 @@ func (b *EventBus) PublishEvent(event *SecurityEvent) error {
 	subject := fmt.Sprintf("sec.events.%s.%s", event.Module, event.Type)
 	_, err = b.js.Publish(subject, data)
 	if err != nil {
+		b.metrics.mu.Lock()
+		b.metrics.EventsFailed++
+		b.metrics.mu.Unlock()
 		return fmt.Errorf("publishing event to %s: %w", subject, err)
 	}
+
+	b.metrics.mu.Lock()
+	b.metrics.EventsPublished++
+	b.metrics.mu.Unlock()
 
 	b.logger.Debug().
 		Str("event_id", event.ID).
@@ -179,12 +200,20 @@ func (b *EventBus) PublishAlert(alert *Alert) error {
 		return fmt.Errorf("publishing alert to %s: %w", subject, err)
 	}
 
+	b.metrics.mu.Lock()
+	b.metrics.AlertsPublished++
+	b.metrics.mu.Unlock()
+
 	return nil
 }
 
 // Subscribe creates a durable subscription to a subject pattern.
-func (b *EventBus) Subscribe(subject string, handler func(msg *nats.Msg)) error {
-	sub, err := b.js.Subscribe(subject, handler, nats.DeliverNew(), nats.AckExplicit())
+func (b *EventBus) Subscribe(subject, durableName string, handler func(msg *nats.Msg)) error {
+	opts := []nats.SubOpt{nats.DeliverNew(), nats.AckExplicit()}
+	if durableName != "" {
+		opts = append(opts, nats.Durable(durableName))
+	}
+	sub, err := b.js.Subscribe(subject, handler, opts...)
 	if err != nil {
 		return fmt.Errorf("subscribing to %s: %w", subject, err)
 	}
@@ -193,21 +222,27 @@ func (b *EventBus) Subscribe(subject string, handler func(msg *nats.Msg)) error 
 	b.subs = append(b.subs, sub)
 	b.mu.Unlock()
 
-	b.logger.Debug().Str("subject", subject).Msg("subscribed")
+	b.logger.Debug().Str("subject", subject).Str("durable", durableName).Msg("subscribed")
 	return nil
 }
 
-// SubscribeToAllEvents subscribes to all security events.
+// SubscribeToAllEvents subscribes to all security events with a durable consumer.
 func (b *EventBus) SubscribeToAllEvents(handler func(event *SecurityEvent)) error {
-	return b.Subscribe("sec.events.>", func(msg *nats.Msg) {
+	return b.Subscribe("sec.events.>", "1sec-engine-events", func(msg *nats.Msg) {
 		event, err := UnmarshalSecurityEvent(msg.Data)
 		if err != nil {
 			b.logger.Error().Err(err).Msg("failed to unmarshal event")
 			_ = msg.Nak()
+			b.metrics.mu.Lock()
+			b.metrics.MessagesNaked++
+			b.metrics.mu.Unlock()
 			return
 		}
 		handler(event)
 		_ = msg.Ack()
+		b.metrics.mu.Lock()
+		b.metrics.MessagesAcked++
+		b.metrics.mu.Unlock()
 	})
 }
 
@@ -260,9 +295,22 @@ func (b *EventBus) SubscribeToRustMatches(handler func(data []byte)) error {
 		}
 	}
 
-	return b.Subscribe("sec.matches.>", func(msg *nats.Msg) {
+	return b.Subscribe("sec.matches.>", "1sec-rust-matches", func(msg *nats.Msg) {
 		handler(msg.Data)
 		_ = msg.Ack()
 	})
+}
+
+// GetMetrics returns a snapshot of bus metrics.
+func (b *EventBus) GetMetrics() map[string]int64 {
+	b.metrics.mu.Lock()
+	defer b.metrics.mu.Unlock()
+	return map[string]int64{
+		"events_published": b.metrics.EventsPublished,
+		"events_failed":    b.metrics.EventsFailed,
+		"alerts_published": b.metrics.AlertsPublished,
+		"messages_acked":   b.metrics.MessagesAcked,
+		"messages_naked":   b.metrics.MessagesNaked,
+	}
 }
 

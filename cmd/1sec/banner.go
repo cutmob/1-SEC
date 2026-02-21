@@ -86,6 +86,8 @@ func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "  %-14s  %s\n", bold("threats"), "Query dynamic IP threat scoring")
 	fmt.Fprintf(w, "  %-14s  %s\n", bold("rust"), "Check Rust sidecar engine status")
 	fmt.Fprintf(w, "  %-14s  %s\n", bold("enforce"), "Manage automated threat response / enforcement")
+	fmt.Fprintf(w, "  %-14s  %s\n", bold("collect"), "Start reference collectors (log tailers, GitHub)")
+	fmt.Fprintf(w, "  %-14s  %s\n", bold("archive"), "Manage cold archive (status, list, restore)")
 	fmt.Fprintf(w, "  %-14s  %s\n", bold("completions"), "Generate shell completion scripts")
 	fmt.Fprintf(w, "  %-14s  %s\n", bold("version"), "Print version and build info")
 	fmt.Fprintf(w, "  %-14s  %s\n", bold("help"), "Show help for a command")

@@ -36,9 +36,9 @@ func TestDefaultConfig_Values(t *testing.T) {
 	if cfg.Logging.Format != "console" {
 		t.Errorf("default Format = %q, want console", cfg.Logging.Format)
 	}
-	// Rust engine should be enabled by default
-	if !cfg.RustEngine.Enabled {
-		t.Error("RustEngine should be enabled by default")
+	// Rust engine should be disabled by default (optional sidecar)
+	if cfg.RustEngine.Enabled {
+		t.Error("RustEngine should be disabled by default")
 	}
 	if cfg.RustEngine.MinScore != 0.1 {
 		t.Errorf("RustEngine.MinScore = %v, want 0.1", cfg.RustEngine.MinScore)
@@ -271,17 +271,21 @@ func TestAuthEnabled(t *testing.T) {
 func TestValidateAPIKey(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Server.APIKeys = []string{"correct-key", "another-key"}
+	cfg.Server.ReadOnlyKeys = []string{"readonly-key"}
 
-	if !cfg.ValidateAPIKey("correct-key") {
-		t.Error("should accept 'correct-key'")
+	if cfg.ValidateAPIKey("correct-key") != "write" {
+		t.Error("should accept 'correct-key' as write")
 	}
-	if !cfg.ValidateAPIKey("another-key") {
-		t.Error("should accept 'another-key'")
+	if cfg.ValidateAPIKey("another-key") != "write" {
+		t.Error("should accept 'another-key' as write")
 	}
-	if cfg.ValidateAPIKey("wrong-key") {
+	if cfg.ValidateAPIKey("readonly-key") != "read" {
+		t.Error("should accept 'readonly-key' as read")
+	}
+	if cfg.ValidateAPIKey("wrong-key") != "" {
 		t.Error("should reject 'wrong-key'")
 	}
-	if cfg.ValidateAPIKey("") {
+	if cfg.ValidateAPIKey("") != "" {
 		t.Error("should reject empty key")
 	}
 }

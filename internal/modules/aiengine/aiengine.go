@@ -71,6 +71,9 @@ func (e *Engine) Description() string {
 	return "Two-tier AI analysis: Gemini Flash Lite for triage, Gemini Flash for deep threat classification and cross-module correlation"
 }
 
+// EventTypes returns nil — the AI engine receives all events for correlation.
+func (e *Engine) EventTypes() []string { return nil }
+
 func (e *Engine) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
 	e.ctx, e.cancel = context.WithCancel(ctx)
 	e.bus = bus
