@@ -18,6 +18,7 @@ import (
 func testEngine() *core.Engine {
 	cfg := core.DefaultConfig()
 	cfg.RustEngine.Enabled = false
+	cfg.Server.APIKeys = []string{"test-key"} // enable auth so mutating endpoint tests work
 	logger := zerolog.Nop()
 
 	return &core.Engine{
@@ -39,6 +40,12 @@ func testEngineWithAuth(keys ...string) *core.Engine {
 // wrapped in the middleware chain, ready for httptest.
 func newTestServer(engine *core.Engine) *Server {
 	return NewServer(engine)
+}
+
+// authedReq adds the default test API key to a request.
+func authedReq(req *http.Request) *http.Request {
+	req.Header.Set("Authorization", "Bearer test-key")
+	return req
 }
 
 // ─── writeJSON ────────────────────────────────────────────────────────────────
@@ -107,13 +114,24 @@ func TestHandleHealth_BypassesAuth(t *testing.T) {
 // ─── Auth middleware ──────────────────────────────────────────────────────────
 
 func TestAuthMiddleware_NoKeysConfigured(t *testing.T) {
-	s := newTestServer(testEngine()) // no API keys = open mode
+	// Build an engine with no API keys to test open mode
+	cfg := core.DefaultConfig()
+	cfg.RustEngine.Enabled = false
+	cfg.Server.APIKeys = nil // explicitly no keys = open mode
+	logger := zerolog.Nop()
+	openEngine := &core.Engine{
+		Config:   cfg,
+		Registry: core.NewModuleRegistry(logger),
+		Pipeline: core.NewAlertPipeline(logger, 1000),
+		Logger:   logger,
+	}
+	s := newTestServer(openEngine)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("open mode should allow all, got status %d", w.Code)
+		t.Errorf("open mode should allow read-only, got status %d", w.Code)
 	}
 }
 
@@ -180,7 +198,7 @@ func TestAuthMiddleware_InvalidXAPIKey(t *testing.T) {
 
 func TestHandleConfig_GET(t *testing.T) {
 	s := newTestServer(testEngine())
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
+	req := authedReq(httptest.NewRequest(http.MethodGet, "/api/v1/config", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -199,7 +217,7 @@ func TestHandleConfig_GET(t *testing.T) {
 
 func TestHandleConfig_MethodNotAllowed(t *testing.T) {
 	s := newTestServer(testEngine())
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/config", nil)
+	req := authedReq(httptest.NewRequest(http.MethodPost, "/api/v1/config", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -212,7 +230,7 @@ func TestHandleConfig_MethodNotAllowed(t *testing.T) {
 
 func TestHandleModules_GET(t *testing.T) {
 	s := newTestServer(testEngine())
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/modules", nil)
+	req := authedReq(httptest.NewRequest(http.MethodGet, "/api/v1/modules", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -230,7 +248,7 @@ func TestHandleModules_GET(t *testing.T) {
 
 func TestHandleAlerts_GET_Empty(t *testing.T) {
 	s := newTestServer(testEngine())
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/alerts", nil)
+	req := authedReq(httptest.NewRequest(http.MethodGet, "/api/v1/alerts", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -252,7 +270,7 @@ func TestHandleAlerts_GET_WithAlerts(t *testing.T) {
 	engine.Pipeline.Process(alert)
 
 	s := newTestServer(engine)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/alerts", nil)
+	req := authedReq(httptest.NewRequest(http.MethodGet, "/api/v1/alerts", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -273,7 +291,7 @@ func TestHandleAlerts_GET_WithLimit(t *testing.T) {
 	}
 
 	s := newTestServer(engine)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/alerts?limit=2", nil)
+	req := authedReq(httptest.NewRequest(http.MethodGet, "/api/v1/alerts?limit=2", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -293,7 +311,7 @@ func TestHandleAlerts_GET_WithSeverityFilter(t *testing.T) {
 	engine.Pipeline.Process(core.NewAlert(evHigh, "High Alert", "high"))
 
 	s := newTestServer(engine)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/alerts?min_severity=HIGH", nil)
+	req := authedReq(httptest.NewRequest(http.MethodGet, "/api/v1/alerts?min_severity=HIGH", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -307,7 +325,7 @@ func TestHandleAlerts_GET_WithSeverityFilter(t *testing.T) {
 
 func TestHandleAlerts_MethodNotAllowed(t *testing.T) {
 	s := newTestServer(testEngine())
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/alerts", nil)
+	req := authedReq(httptest.NewRequest(http.MethodPut, "/api/v1/alerts", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -325,7 +343,7 @@ func TestHandleAlertByID_GET(t *testing.T) {
 	engine.Pipeline.Process(alert)
 
 	s := newTestServer(engine)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/alerts/"+alert.ID, nil)
+	req := authedReq(httptest.NewRequest(http.MethodGet, "/api/v1/alerts/"+alert.ID, nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -336,7 +354,7 @@ func TestHandleAlertByID_GET(t *testing.T) {
 
 func TestHandleAlertByID_GET_NotFound(t *testing.T) {
 	s := newTestServer(testEngine())
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/alerts/nonexistent-id", nil)
+	req := authedReq(httptest.NewRequest(http.MethodGet, "/api/v1/alerts/nonexistent-id", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -354,6 +372,7 @@ func TestHandleAlertByID_PATCH(t *testing.T) {
 	s := newTestServer(engine)
 	body := `{"status":"ACKNOWLEDGED"}`
 	req := httptest.NewRequest(http.MethodPatch, "/api/v1/alerts/"+alert.ID, bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer test-key")
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -371,6 +390,7 @@ func TestHandleAlertByID_PATCH_InvalidStatus(t *testing.T) {
 	s := newTestServer(engine)
 	body := `{"status":"INVALID"}`
 	req := httptest.NewRequest(http.MethodPatch, "/api/v1/alerts/"+alert.ID, bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer test-key")
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -387,6 +407,7 @@ func TestHandleAlertByID_DELETE(t *testing.T) {
 
 	s := newTestServer(engine)
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/alerts/"+alert.ID, nil)
+	req.Header.Set("Authorization", "Bearer test-key")
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -402,6 +423,7 @@ func TestHandleAlertByID_DELETE(t *testing.T) {
 func TestHandleAlertByID_DELETE_NotFound(t *testing.T) {
 	s := newTestServer(testEngine())
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/alerts/nonexistent", nil)
+	req.Header.Set("Authorization", "Bearer test-key")
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -421,6 +443,7 @@ func TestHandleAlertsClear(t *testing.T) {
 
 	s := newTestServer(engine)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/alerts/clear", nil)
+	req.Header.Set("Authorization", "Bearer test-key")
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -438,7 +461,7 @@ func TestHandleAlertsClear(t *testing.T) {
 
 func TestHandleLogs_GET(t *testing.T) {
 	s := newTestServer(testEngine())
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/logs", nil)
+	req := authedReq(httptest.NewRequest(http.MethodGet, "/api/v1/logs", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -540,7 +563,7 @@ func TestTokenBucket_Exhausted(t *testing.T) {
 
 func TestHandleIngestEvent_MethodNotAllowed(t *testing.T) {
 	s := newTestServer(testEngine())
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil)
+	req := authedReq(httptest.NewRequest(http.MethodGet, "/api/v1/events", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -552,6 +575,7 @@ func TestHandleIngestEvent_MethodNotAllowed(t *testing.T) {
 func TestHandleIngestEvent_BadJSON(t *testing.T) {
 	s := newTestServer(testEngine())
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/events", bytes.NewBufferString("not json"))
+	req.Header.Set("Authorization", "Bearer test-key")
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -564,7 +588,7 @@ func TestHandleIngestEvent_BadJSON(t *testing.T) {
 
 func TestHandleShutdown_MethodNotAllowed(t *testing.T) {
 	s := newTestServer(testEngine())
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/shutdown", nil)
+	req := authedReq(httptest.NewRequest(http.MethodGet, "/api/v1/shutdown", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 

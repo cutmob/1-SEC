@@ -43,7 +43,7 @@ func NewEventBus(cfg *BusConfig, logger zerolog.Logger) (*EventBus, error) {
 	}
 
 	if cfg.Embedded {
-		if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
+		if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
 			return nil, fmt.Errorf("creating NATS data dir: %w", err)
 		}
 

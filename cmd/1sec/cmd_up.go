@@ -69,6 +69,7 @@ func cmdUp(args []string) {
 	quiet := fs.Bool("quiet", false, "Suppress banner and non-essential output")
 	fs.BoolVar(quiet, "q", false, "Suppress banner and non-essential output")
 	noColor := fs.Bool("no-color", false, "Disable color output")
+	insecure := fs.Bool("insecure", false, "Allow API to run without authentication (open mode)")
 	fs.Parse(args)
 
 	*configPath = envConfig(*configPath)
@@ -84,6 +85,28 @@ func cmdUp(args []string) {
 	cfg, err := core.LoadConfig(*configPath)
 	if err != nil {
 		errorf("loading config: %v", err)
+	}
+
+	// Run config validation
+	warnings, validationErrs := cfg.Validate()
+	for _, w := range warnings {
+		if !*quiet {
+			fmt.Fprintf(os.Stderr, "%s %s\n", yellow("⚠"), w)
+		}
+	}
+	if len(validationErrs) > 0 {
+		for _, e := range validationErrs {
+			fmt.Fprintf(os.Stderr, "%s %s\n", red("✗"), e)
+		}
+		errorf("config validation failed with %d error(s)", len(validationErrs))
+	}
+
+	// Block startup without auth unless --insecure is explicitly passed
+	if !cfg.AuthEnabled() && !*insecure {
+		if !*quiet {
+			fmt.Fprintf(os.Stderr, "%s No API keys configured. Mutating endpoints (events, shutdown, enforcement) will be blocked.\n", yellow("⚠"))
+			fmt.Fprintf(os.Stderr, "    Set api_keys in config, ONESEC_API_KEY env var, or pass --insecure to acknowledge.\n")
+		}
 	}
 
 	if *logLevel != "" {

@@ -83,12 +83,14 @@ func (s *Server) handleEnforcePolicyAction(w http.ResponseWriter, r *http.Reques
 	switch action {
 	case "enable":
 		if re.SetPolicyEnabled(module, true) {
+			s.logger.Warn().Str("module", module).Bool("enabled", true).Str("ip", r.RemoteAddr).Msg("enforcement policy toggled via API")
 			writeJSON(w, http.StatusOK, map[string]interface{}{"module": module, "enabled": true})
 		} else {
 			writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": "no policy found for module: " + module})
 		}
 	case "disable":
 		if re.SetPolicyEnabled(module, false) {
+			s.logger.Warn().Str("module", module).Bool("enabled", false).Str("ip", r.RemoteAddr).Msg("enforcement policy toggled via API")
 			writeJSON(w, http.StatusOK, map[string]interface{}{"module": module, "enabled": false})
 		} else {
 			writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": "no policy found for module: " + module})
@@ -144,11 +146,23 @@ func (s *Server) handleEnforceDryRun(w http.ResponseWriter, r *http.Request) {
 
 	switch mode {
 	case "on":
+		previous := cfg.DryRun
 		cfg.DryRun = true
-		writeJSON(w, http.StatusOK, map[string]interface{}{"dry_run": true, "message": "global dry-run enabled"})
+		s.logger.Warn().
+			Bool("previous", previous).
+			Bool("new", true).
+			Str("ip", r.RemoteAddr).
+			Msg("enforcement dry-run toggled via API")
+		writeJSON(w, http.StatusOK, map[string]interface{}{"dry_run": true, "previous": previous, "message": "global dry-run enabled"})
 	case "off":
+		previous := cfg.DryRun
 		cfg.DryRun = false
-		writeJSON(w, http.StatusOK, map[string]interface{}{"dry_run": false, "message": "global dry-run disabled — enforcement is LIVE"})
+		s.logger.Warn().
+			Bool("previous", previous).
+			Bool("new", false).
+			Str("ip", r.RemoteAddr).
+			Msg("enforcement dry-run toggled via API — enforcement is LIVE")
+		writeJSON(w, http.StatusOK, map[string]interface{}{"dry_run": false, "previous": previous, "message": "global dry-run disabled — enforcement is LIVE"})
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "use /dry-run/on or /dry-run/off"})
 	}

@@ -46,6 +46,18 @@ func cmdCheck(args []string) {
 		fail("config", fmt.Sprintf("failed to load %s: %v", *configPath, err))
 	} else {
 		pass("config", fmt.Sprintf("loaded %s", *configPath))
+
+		// Run structural validation
+		warnings, validationErrs := cfg.Validate()
+		for _, w := range warnings {
+			warn("config_validate", w)
+		}
+		for _, e := range validationErrs {
+			fail("config_validate", e)
+		}
+		if len(validationErrs) == 0 && len(warnings) == 0 {
+			pass("config_validate", "all config values are valid")
+		}
 	}
 
 	if cfg != nil {

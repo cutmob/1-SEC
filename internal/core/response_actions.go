@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -26,9 +27,16 @@ var shellUnsafe = regexp.MustCompile(`[;&|$` + "`" + `\\'"(){}<>\n\r!#~]`)
 // sanitizeShellArg strips shell metacharacters from a string before it is
 // interpolated into a command template. This prevents attacker-controlled
 // alert fields (e.g., title, source_ip) from injecting arbitrary commands.
+// Also strips null bytes and limits length to prevent abuse.
 func sanitizeShellArg(s string) string {
-	return shellUnsafe.ReplaceAllString(s, "_")
+	s = strings.ReplaceAll(s, "\x00", "")
+	s = shellUnsafe.ReplaceAllString(s, "_")
+	if len(s) > 256 {
+		s = s[:256]
+	}
+	return s
 }
+
 
 // validateWebhookURL checks that a webhook URL is a valid HTTPS (or HTTP for
 // local dev) endpoint. Returns an error if the URL is empty, unparseable,
@@ -68,10 +76,25 @@ func isPrivateHost(host string) bool {
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
 }
 
-// validateIPAddress checks that a string is a valid IPv4 or IPv6 address.
+// validateIPAddress checks that a string is a valid IPv4 or IPv6 address
+// and is not a reserved/broadcast/multicast address that should never be blocked.
 func validateIPAddress(ip string) error {
-	if net.ParseIP(ip) == nil {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
 		return fmt.Errorf("invalid IP address: %q", ip)
+	}
+	if parsed.IsUnspecified() {
+		return fmt.Errorf("cannot target unspecified address: %q", ip)
+	}
+	if parsed.IsMulticast() {
+		return fmt.Errorf("cannot target multicast address: %q", ip)
+	}
+	if parsed.IsLoopback() {
+		return fmt.Errorf("cannot target loopback address: %q", ip)
+	}
+	// Block broadcast 255.255.255.255
+	if parsed.Equal(net.IPv4bcast) {
+		return fmt.Errorf("cannot target broadcast address: %q", ip)
 	}
 	return nil
 }
@@ -430,12 +453,44 @@ func (e *WebhookExecutor) Execute(ctx context.Context, alert *Alert, rule Respon
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	// Use a custom dialer that re-validates resolved IPs at connect time
+	// to prevent DNS rebinding attacks (hostname resolves to private IP
+	// after the initial validateWebhookURL check).
+	safeDialer := &net.Dialer{Timeout: 5 * time.Second}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, fmt.Errorf("DNS resolution failed for %s: %w", host, err)
+			}
+			for _, ip := range ips {
+				if ip.IP.IsLoopback() || ip.IP.IsPrivate() || ip.IP.IsLinkLocalUnicast() || ip.IP.IsLinkLocalMulticast() {
+					return nil, fmt.Errorf("webhook resolved to private/loopback IP %s (DNS rebinding blocked)", ip.IP)
+				}
+			}
+			return safeDialer.DialContext(ctx, network, addr)
+		},
+	}
+	client := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: transport,
+		// Disable redirects to prevent SSRF via redirect chains
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return fmt.Errorf("webhook redirects are disabled for security")
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return webhookURL, "", fmt.Errorf("webhook request failed: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// Limit response body read to prevent memory exhaustion
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20)) // drain up to 1MB
 
 	details := fmt.Sprintf("webhook sent to %s (status=%d)", webhookURL, resp.StatusCode)
 	if resp.StatusCode >= 400 {
@@ -464,7 +519,7 @@ func (e *CommandExecutor) Execute(ctx context.Context, alert *Alert, rule Respon
 	}
 
 	// Template substitution for common alert fields.
-	// Sanitize values to prevent shell injection via attacker-controlled metadata.
+	// Sanitize values to prevent injection via attacker-controlled metadata.
 	replacer := strings.NewReplacer(
 		"{{alert_id}}", sanitizeShellArg(alert.ID),
 		"{{module}}", sanitizeShellArg(alert.Module),
@@ -484,13 +539,14 @@ func (e *CommandExecutor) Execute(ctx context.Context, alert *Alert, rule Respon
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "windows":
-		cmd = exec.CommandContext(cmdCtx, "cmd", "/C", cmdStr)
-	default:
-		cmd = exec.CommandContext(cmdCtx, "sh", "-c", cmdStr)
+	// Use explicit argument array to avoid shell injection.
+	// The command string is split on whitespace; for complex commands,
+	// operators should use a wrapper script instead of inline shell.
+	parts := strings.Fields(cmdStr)
+	if len(parts) == 0 {
+		return "", "", fmt.Errorf("command is empty after parsing")
 	}
+	cmd := exec.CommandContext(cmdCtx, parts[0], parts[1:]...)
 
 	output, err := cmd.CombinedOutput()
 	target := cmdStr

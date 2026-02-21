@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -140,6 +141,9 @@ func (rs *RustSidecar) supervise(ctx context.Context, binary, configPath string)
 			if backoff > 60*time.Second {
 				backoff = 60 * time.Second
 			}
+			// Add jitter (±25%) to prevent thundering herd on multi-instance deployments
+			jitter := time.Duration(rand.Int63n(int64(backoff/4)+1)) - backoff/8
+			backoff += jitter
 			rs.logger.Warn().
 				Err(err).
 				Int("restart", rs.restartCount).

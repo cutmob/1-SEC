@@ -12,9 +12,16 @@ import (
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+// authReq adds the test API key header to a request.
+func authReq(req *http.Request) *http.Request {
+	req.Header.Set("Authorization", "Bearer test-key")
+	return req
+}
+
 func testEngineWithEnforcement(preset string, dryRun bool) *core.Engine {
 	cfg := core.DefaultConfig()
 	cfg.RustEngine.Enabled = false
+	cfg.Server.APIKeys = []string{"test-key"} // enable auth so mutating endpoints work
 	cfg.Enforcement = &core.EnforcementConfig{
 		Enabled: true,
 		DryRun:  dryRun,
@@ -36,6 +43,7 @@ func testEngineWithEnforcement(preset string, dryRun bool) *core.Engine {
 func testEngineNoEnforcement() *core.Engine {
 	cfg := core.DefaultConfig()
 	cfg.RustEngine.Enabled = false
+	cfg.Server.APIKeys = []string{"test-key"} // enable auth so mutating endpoints work
 	logger := zerolog.Nop()
 	return &core.Engine{
 		Config:   cfg,
@@ -49,7 +57,7 @@ func testEngineNoEnforcement() *core.Engine {
 
 func TestHandleEnforceStatus_WithEnforcement(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/enforce/status", nil)
+	req := authReq(httptest.NewRequest(http.MethodGet, "/api/v1/enforce/status", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -73,7 +81,7 @@ func TestHandleEnforceStatus_WithEnforcement(t *testing.T) {
 
 func TestHandleEnforceStatus_NoEnforcement(t *testing.T) {
 	s := newTestServer(testEngineNoEnforcement())
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/enforce/status", nil)
+	req := authReq(httptest.NewRequest(http.MethodGet, "/api/v1/enforce/status", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -90,7 +98,7 @@ func TestHandleEnforceStatus_NoEnforcement(t *testing.T) {
 
 func TestHandleEnforceStatus_MethodNotAllowed(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/enforce/status", nil)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/status", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -103,7 +111,7 @@ func TestHandleEnforceStatus_MethodNotAllowed(t *testing.T) {
 
 func TestHandleEnforcePolicies_WithEnforcement(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/enforce/policies", nil)
+	req := authReq(httptest.NewRequest(http.MethodGet, "/api/v1/enforce/policies", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -124,7 +132,7 @@ func TestHandleEnforcePolicies_WithEnforcement(t *testing.T) {
 
 func TestHandleEnforcePolicies_NoEnforcement(t *testing.T) {
 	s := newTestServer(testEngineNoEnforcement())
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/enforce/policies", nil)
+	req := authReq(httptest.NewRequest(http.MethodGet, "/api/v1/enforce/policies", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -144,7 +152,7 @@ func TestHandleEnforcePolicies_NoEnforcement(t *testing.T) {
 
 func TestHandleEnforceHistory_Empty(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/enforce/history", nil)
+	req := authReq(httptest.NewRequest(http.MethodGet, "/api/v1/enforce/history", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -162,7 +170,7 @@ func TestHandleEnforceHistory_Empty(t *testing.T) {
 
 func TestHandleEnforceHistory_NoEnforcement(t *testing.T) {
 	s := newTestServer(testEngineNoEnforcement())
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/enforce/history", nil)
+	req := authReq(httptest.NewRequest(http.MethodGet, "/api/v1/enforce/history", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -173,7 +181,7 @@ func TestHandleEnforceHistory_NoEnforcement(t *testing.T) {
 
 func TestHandleEnforceHistory_WithLimitParam(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/enforce/history?limit=5", nil)
+	req := authReq(httptest.NewRequest(http.MethodGet, "/api/v1/enforce/history?limit=5", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -184,7 +192,7 @@ func TestHandleEnforceHistory_WithLimitParam(t *testing.T) {
 
 func TestHandleEnforceHistory_WithModuleFilter(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/enforce/history?module=injection_shield", nil)
+	req := authReq(httptest.NewRequest(http.MethodGet, "/api/v1/enforce/history?module=injection_shield", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -197,7 +205,7 @@ func TestHandleEnforceHistory_WithModuleFilter(t *testing.T) {
 
 func TestHandleEnforceDryRun_On(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", false))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/enforce/dry-run/on", nil)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/dry-run/on", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -214,7 +222,7 @@ func TestHandleEnforceDryRun_On(t *testing.T) {
 
 func TestHandleEnforceDryRun_Off(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/enforce/dry-run/off", nil)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/dry-run/off", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -231,7 +239,7 @@ func TestHandleEnforceDryRun_Off(t *testing.T) {
 
 func TestHandleEnforceDryRun_InvalidMode(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/enforce/dry-run/maybe", nil)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/dry-run/maybe", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -242,7 +250,7 @@ func TestHandleEnforceDryRun_InvalidMode(t *testing.T) {
 
 func TestHandleEnforceDryRun_NoEnforcement(t *testing.T) {
 	s := newTestServer(testEngineNoEnforcement())
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/enforce/dry-run/on", nil)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/dry-run/on", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -253,7 +261,7 @@ func TestHandleEnforceDryRun_NoEnforcement(t *testing.T) {
 
 func TestHandleEnforceDryRun_MethodNotAllowed(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/enforce/dry-run/on", nil)
+	req := authReq(httptest.NewRequest(http.MethodGet, "/api/v1/enforce/dry-run/on", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -266,7 +274,7 @@ func TestHandleEnforceDryRun_MethodNotAllowed(t *testing.T) {
 
 func TestHandleEnforcePolicyAction_Enable(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/enforce/policies/injection_shield/enable", nil)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/policies/injection_shield/enable", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -283,7 +291,7 @@ func TestHandleEnforcePolicyAction_Enable(t *testing.T) {
 
 func TestHandleEnforcePolicyAction_Disable(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/enforce/policies/injection_shield/disable", nil)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/policies/injection_shield/disable", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -300,7 +308,7 @@ func TestHandleEnforcePolicyAction_Disable(t *testing.T) {
 
 func TestHandleEnforcePolicyAction_NotFound(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/enforce/policies/nonexistent_module/enable", nil)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/policies/nonexistent_module/enable", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -311,7 +319,7 @@ func TestHandleEnforcePolicyAction_NotFound(t *testing.T) {
 
 func TestHandleEnforcePolicyAction_InvalidAction(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/enforce/policies/injection_shield/restart", nil)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/policies/injection_shield/restart", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -322,7 +330,7 @@ func TestHandleEnforcePolicyAction_InvalidAction(t *testing.T) {
 
 func TestHandleEnforcePolicyAction_NoEnforcement(t *testing.T) {
 	s := newTestServer(testEngineNoEnforcement())
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/enforce/policies/injection_shield/enable", nil)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/policies/injection_shield/enable", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -333,7 +341,7 @@ func TestHandleEnforcePolicyAction_NoEnforcement(t *testing.T) {
 
 func TestHandleEnforcePolicyAction_MethodNotAllowed(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/enforce/policies/injection_shield/enable", nil)
+	req := authReq(httptest.NewRequest(http.MethodGet, "/api/v1/enforce/policies/injection_shield/enable", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -346,7 +354,7 @@ func TestHandleEnforcePolicyAction_MethodNotAllowed(t *testing.T) {
 
 func TestHandleEnforceTest_KnownModule(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/enforce/test/injection_shield?severity=HIGH", nil)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/test/injection_shield?severity=HIGH", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -368,7 +376,7 @@ func TestHandleEnforceTest_KnownModule(t *testing.T) {
 
 func TestHandleEnforceTest_CriticalSeverity(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/enforce/test/ransomware?severity=CRITICAL", nil)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/test/ransomware?severity=CRITICAL", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -387,7 +395,7 @@ func TestHandleEnforceTest_CriticalSeverity(t *testing.T) {
 
 func TestHandleEnforceTest_LowSeverity_NoMatch(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/enforce/test/injection_shield?severity=LOW", nil)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/test/injection_shield?severity=LOW", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -406,7 +414,7 @@ func TestHandleEnforceTest_LowSeverity_NoMatch(t *testing.T) {
 
 func TestHandleEnforceTest_UnknownModule_FallsBackToWildcard(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/enforce/test/unknown_module?severity=CRITICAL", nil)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/test/unknown_module?severity=CRITICAL", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -425,7 +433,7 @@ func TestHandleEnforceTest_UnknownModule_FallsBackToWildcard(t *testing.T) {
 
 func TestHandleEnforceTest_NoEnforcement(t *testing.T) {
 	s := newTestServer(testEngineNoEnforcement())
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/enforce/test/injection_shield?severity=HIGH", nil)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/test/injection_shield?severity=HIGH", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 
@@ -436,7 +444,7 @@ func TestHandleEnforceTest_NoEnforcement(t *testing.T) {
 
 func TestHandleEnforceTest_MethodNotAllowed(t *testing.T) {
 	s := newTestServer(testEngineWithEnforcement("balanced", true))
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/enforce/test/injection_shield", nil)
+	req := authReq(httptest.NewRequest(http.MethodGet, "/api/v1/enforce/test/injection_shield", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
 

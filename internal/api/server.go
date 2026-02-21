@@ -94,6 +94,13 @@ func (s *Server) Start() error {
 	}
 
 	if s.engine.Config.TLSEnabled() {
+		// Validate TLS files exist and are readable before starting
+		if _, err := os.Stat(s.engine.Config.Server.TLSCert); err != nil {
+			return fmt.Errorf("TLS certificate file not found: %w", err)
+		}
+		if _, err := os.Stat(s.engine.Config.Server.TLSKey); err != nil {
+			return fmt.Errorf("TLS key file not found: %w", err)
+		}
 		s.logger.Info().
 			Str("cert", s.engine.Config.Server.TLSCert).
 			Msg("API server starting with TLS")
@@ -319,6 +326,12 @@ func (s *Server) handleIngestEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	if event.Source == "" {
 		event.Source = "external"
+	}
+
+	// Reject events with no type — they can't be routed to any module
+	if event.Type == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "event 'type' is required"})
+		return
 	}
 
 	// Validate event against canonical schema — warn on missing required keys
@@ -675,7 +688,7 @@ func isMutatingPath(path, method string) bool {
 
 // authMiddleware enforces API key authentication on all endpoints except /health.
 // Keys are read from config (server.api_keys / server.read_only_keys) or env (ONESEC_API_KEY).
-// If no keys are configured, all requests are allowed (open mode with warning logged on startup).
+// If no keys are configured, mutating endpoints are blocked (safe open mode).
 // Write-scope keys (api_keys) can access everything. Read-only keys are blocked from mutating endpoints.
 func authMiddleware(next http.Handler, cfg *core.Config, logger zerolog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -685,8 +698,15 @@ func authMiddleware(next http.Handler, cfg *core.Config, logger zerolog.Logger) 
 			return
 		}
 
-		// If no API keys configured, allow all (open mode)
+		// If no API keys configured, allow read-only access but block mutating endpoints
 		if !cfg.AuthEnabled() {
+			if isMutatingPath(r.URL.Path, r.Method) {
+				logger.Warn().Str("path", r.URL.Path).Str("ip", r.RemoteAddr).Msg("blocked mutating request in open mode — configure api_keys to enable")
+				writeJSON(w, http.StatusForbidden, map[string]string{
+					"error": "mutating endpoints are disabled in open mode — configure api_keys in config or set ONESEC_API_KEY env var",
+				})
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -731,9 +751,10 @@ func authMiddleware(next http.Handler, cfg *core.Config, logger zerolog.Logger) 
 
 // rateLimitMiddleware implements a simple per-IP token bucket rate limiter.
 type ipLimiter struct {
-	mu      sync.Mutex
-	buckets map[string]*tokenBucket
-	rate    int
+	mu         sync.Mutex
+	buckets    map[string]*tokenBucket
+	rate       int
+	maxBuckets int // cap to prevent memory exhaustion under DDoS
 }
 
 type tokenBucket struct {
@@ -759,13 +780,12 @@ func (b *tokenBucket) allow(rate float64) bool {
 
 func rateLimitMiddleware(next http.Handler, requestsPerSecond int) http.Handler {
 	limiter := &ipLimiter{
-		buckets: make(map[string]*tokenBucket),
-		rate:    requestsPerSecond,
+		buckets:    make(map[string]*tokenBucket),
+		rate:       requestsPerSecond,
+		maxBuckets: 100000, // cap at 100K IPs to prevent memory exhaustion
 	}
 
 	// Cleanup stale buckets every 5 minutes.
-	// This goroutine lives for the lifetime of the server — acceptable since
-	// the server process owns the middleware and both share the same lifecycle.
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
@@ -796,6 +816,20 @@ func rateLimitMiddleware(next http.Handler, requestsPerSecond int) http.Handler 
 		limiter.mu.Lock()
 		bucket, exists := limiter.buckets[ip]
 		if !exists {
+			// Evict oldest entries if at capacity
+			if len(limiter.buckets) >= limiter.maxBuckets {
+				oldest := ""
+				oldestTime := time.Now()
+				for k, b := range limiter.buckets {
+					if b.lastTime.Before(oldestTime) {
+						oldest = k
+						oldestTime = b.lastTime
+					}
+				}
+				if oldest != "" {
+					delete(limiter.buckets, oldest)
+				}
+			}
 			bucket = &tokenBucket{
 				tokens:    float64(requestsPerSecond),
 				maxTokens: float64(requestsPerSecond * 2), // burst = 2x rate
@@ -819,6 +853,15 @@ func rateLimitMiddleware(next http.Handler, requestsPerSecond int) http.Handler 
 }
 
 func corsMiddleware(next http.Handler, allowedOrigins []string) http.Handler {
+	// Warn at middleware creation time if wildcard is configured
+	for _, o := range allowedOrigins {
+		if o == "*" {
+			// Log will be visible in server startup output
+			fmt.Fprintf(os.Stderr, "⚠ WARNING: CORS wildcard '*' configured — any origin can make cross-origin requests. Use specific domains in production.\n")
+			break
+		}
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 

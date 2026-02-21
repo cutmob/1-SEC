@@ -173,6 +173,12 @@ func (p *AlertPipeline) Count() int {
 	return len(p.alerts)
 }
 
+// Logger returns the pipeline's logger for use by modules that need a
+// properly configured logger (inheriting level, format, and ring buffer).
+func (p *AlertPipeline) Logger() zerolog.Logger {
+	return p.logger
+}
+
 // UpdateAlertStatus changes the status of an alert by ID.
 func (p *AlertPipeline) UpdateAlertStatus(id string, status AlertStatus) (*Alert, bool) {
 	p.mu.Lock()

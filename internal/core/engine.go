@@ -108,16 +108,18 @@ func (e *Engine) Start() error {
 
 	// Wire alert pipeline to publish alerts to the bus
 	e.Pipeline.AddHandler(func(alert *Alert) {
-		if err := e.Bus.PublishAlert(alert); err != nil {
-			e.Logger.Error().Err(err).Str("alert_id", alert.ID).Msg("failed to publish alert to bus")
-		}
+		go func() {
+			if err := e.Bus.PublishAlert(alert); err != nil {
+				e.Logger.Error().Err(err).Str("alert_id", alert.ID).Msg("failed to publish alert to bus")
+			}
+		}()
 	})
 
 	// Start cross-module threat correlator — watches alerts from all modules
 	// and detects multi-stage attack chains (e.g., recon → exploit → exfil)
 	e.Correlator = NewThreatCorrelator(e.Logger, e.Pipeline, e.Bus)
 	e.Pipeline.AddHandler(func(alert *Alert) {
-		e.Correlator.Ingest(alert)
+		go e.Correlator.Ingest(alert)
 	})
 	e.Correlator.Start(e.ctx)
 
@@ -163,6 +165,8 @@ func (e *Engine) Start() error {
 
 	// Subscribe to all events and route to interested modules only.
 	// Dedup check happens here so duplicates never reach modules.
+	// Also mark events as seen by Go-side detection so the Rust match bridge
+	// can skip them if Rust also detects the same event (bidirectional dedup).
 	if err := e.Bus.SubscribeToAllEvents(func(event *SecurityEvent) {
 		if e.Dedup.IsDuplicate(event) {
 			e.Logger.Debug().
@@ -170,6 +174,10 @@ func (e *Engine) Start() error {
 				Str("event_type", event.Type).
 				Msg("duplicate event suppressed")
 			return
+		}
+		// Mark event as seen for Rust match bridge dedup
+		if e.RustMatchBridge != nil {
+			e.RustMatchBridge.MarkEventSeen(event.ID)
 		}
 		e.Registry.RouteEvent(event, e.Logger)
 	}); err != nil {

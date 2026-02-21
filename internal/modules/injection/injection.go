@@ -68,7 +68,13 @@ func (s *Shield) Start(ctx context.Context, bus *core.EventBus, pipeline *core.A
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	s.bus = bus
 	s.pipeline = pipeline
-	s.logger = zerolog.New(zerolog.NewConsoleWriter()).With().Timestamp().Str("module", ModuleName).Logger()
+	// Use a child logger from the pipeline's logger context so we inherit
+	// the engine's configured log level, format, and ring buffer writer.
+	if pipeline != nil {
+		s.logger = pipeline.Logger().With().Str("module", ModuleName).Logger()
+	} else {
+		s.logger = zerolog.Nop().With().Str("module", ModuleName).Logger()
+	}
 	s.patterns = compilePatterns()
 	s.fileSentinel = &FileSentinel{}
 	return nil

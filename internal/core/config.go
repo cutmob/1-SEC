@@ -305,3 +305,83 @@ func (c *Config) ValidateAPIKey(key string) string {
 	}
 	return ""
 }
+
+// Validate checks the configuration for common errors and returns a list of
+// warnings and a list of errors. Errors are fatal; warnings are informational.
+func (c *Config) Validate() (warnings []string, errs []string) {
+	// Server port
+	if c.Server.Port <= 0 || c.Server.Port > 65535 {
+		errs = append(errs, fmt.Sprintf("server.port %d is out of range (1-65535)", c.Server.Port))
+	}
+
+	// TLS files
+	if c.TLSEnabled() {
+		if _, err := os.Stat(c.Server.TLSCert); err != nil {
+			errs = append(errs, fmt.Sprintf("tls_cert file not found: %s", c.Server.TLSCert))
+		}
+		if _, err := os.Stat(c.Server.TLSKey); err != nil {
+			errs = append(errs, fmt.Sprintf("tls_key file not found: %s", c.Server.TLSKey))
+		}
+	}
+
+	// Syslog
+	if c.Syslog.Enabled {
+		if c.Syslog.Port <= 0 || c.Syslog.Port > 65535 {
+			errs = append(errs, fmt.Sprintf("syslog.port %d is out of range (1-65535)", c.Syslog.Port))
+		}
+		switch c.Syslog.Protocol {
+		case "udp", "tcp", "both":
+			// valid
+		default:
+			errs = append(errs, fmt.Sprintf("syslog.protocol %q is invalid (use udp, tcp, or both)", c.Syslog.Protocol))
+		}
+	}
+
+	// Bus port
+	if c.Bus.Embedded && (c.Bus.Port <= 0 || c.Bus.Port > 65535) {
+		errs = append(errs, fmt.Sprintf("bus.port %d is out of range (1-65535)", c.Bus.Port))
+	}
+
+	// CORS wildcard warning
+	for _, o := range c.Server.CORSOrigins {
+		if o == "*" {
+			warnings = append(warnings, "cors_origins contains wildcard '*' — any origin can make cross-origin requests")
+			break
+		}
+	}
+
+	// Auth warning
+	if !c.AuthEnabled() {
+		warnings = append(warnings, "no api_keys configured — API runs in open mode (mutating endpoints blocked)")
+	}
+
+	// Enforcement policy validation
+	if c.Enforcement != nil && c.Enforcement.Enabled {
+		validActions := map[string]bool{
+			"block_ip": true, "kill_process": true, "quarantine_file": true,
+			"drop_connection": true, "disable_user": true, "webhook": true,
+			"command": true, "log_only": true,
+		}
+		for module, policy := range c.Enforcement.Policies {
+			if policy.CooldownSeconds < 0 {
+				errs = append(errs, fmt.Sprintf("enforcement.policies.%s.cooldown_seconds cannot be negative", module))
+			}
+			if policy.MaxActionsPerMin < 0 {
+				errs = append(errs, fmt.Sprintf("enforcement.policies.%s.max_actions_per_min cannot be negative", module))
+			}
+			for i, action := range policy.Actions {
+				if !validActions[action.Action] {
+					errs = append(errs, fmt.Sprintf("enforcement.policies.%s.actions[%d].action %q is unknown", module, i, action.Action))
+				}
+			}
+		}
+		if c.Enforcement.Preset != "" {
+			validPresets := map[string]bool{"safe": true, "lax": true, "balanced": true, "strict": true}
+			if !validPresets[c.Enforcement.Preset] {
+				warnings = append(warnings, fmt.Sprintf("enforcement.preset %q is unknown (valid: safe, lax, balanced, strict)", c.Enforcement.Preset))
+			}
+		}
+	}
+
+	return warnings, errs
+}
