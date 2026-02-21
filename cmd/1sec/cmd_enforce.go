@@ -507,15 +507,17 @@ func cmdEnforcePreset(args []string) {
 		fmt.Fprintf(os.Stderr, "  %-12s  %s\n", cyan("safe"), "Log + webhook for most modules. Blocks only brute force + port scans. (DEFAULT)")
 		fmt.Fprintf(os.Stderr, "  %-12s  %s\n", yellow("balanced"), "Block on HIGH, kill on CRITICAL. Good production default.")
 		fmt.Fprintf(os.Stderr, "  %-12s  %s\n", red("strict"), "Aggressive enforcement on MEDIUM+. High-security environments.")
+		fmt.Fprintf(os.Stderr, "  %-12s  %s\n", cyan("vps-agent"), "Purpose-built for VPS-hosted AI agents (OpenClaw, Moltbot, Manus).")
 		fmt.Fprintf(os.Stderr, "\n%s lax → safe → balanced → strict\n", dim("  Recommended progression:"))
-		fmt.Fprintf(os.Stderr, "\nUsage: 1sec enforce preset <lax|safe|balanced|strict> [--dry-run] [--show]\n\n")
+		fmt.Fprintf(os.Stderr, "%s vps-agent is a standalone profile, not part of the escalation ladder.\n", dim("  Note:"))
+		fmt.Fprintf(os.Stderr, "\nUsage: 1sec enforce preset <lax|safe|balanced|strict|vps-agent> [--dry-run] [--show]\n\n")
 		os.Exit(0)
 	}
 
 	presetName := strings.ToLower(fs.Args()[0])
 	policies := core.GetPresetPolicies(presetName)
 	if policies == nil {
-		errorf("unknown preset %q — valid presets: lax, safe, balanced, strict", presetName)
+		errorf("unknown preset %q — valid presets: lax, safe, balanced, strict, vps-agent", presetName)
 	}
 
 	if *showOnly {

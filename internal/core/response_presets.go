@@ -19,6 +19,7 @@ const (
 	PresetSafe     = "safe"
 	PresetBalanced = "balanced"
 	PresetStrict   = "strict"
+	PresetVPSAgent = "vps-agent"
 )
 
 // GetPresetPolicies returns the full set of enforcement policies for a preset.
@@ -33,6 +34,8 @@ func GetPresetPolicies(preset string) map[string]ResponsePolicyYAML {
 		return balancedPreset()
 	case PresetStrict:
 		return strictPreset()
+	case PresetVPSAgent:
+		return vpsAgentPreset()
 	default:
 		return nil
 	}
@@ -40,7 +43,7 @@ func GetPresetPolicies(preset string) map[string]ResponsePolicyYAML {
 
 // ValidPresets returns the list of valid preset names.
 func ValidPresets() []string {
-	return []string{PresetLax, PresetSafe, PresetBalanced, PresetStrict}
+	return []string{PresetLax, PresetSafe, PresetBalanced, PresetStrict, PresetVPSAgent}
 }
 
 // ---------------------------------------------------------------------------
@@ -508,6 +511,201 @@ func strictPreset() map[string]ResponsePolicyYAML {
 			Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 120, MaxActionsPerMin: 20,
 			Actions: []ResponseRuleYAML{
 				{Action: "block_ip", MinSeverity: "HIGH", Description: "Block source of any high-severity alert", Params: map[string]string{"duration": "2h"}},
+				{Action: "webhook", MinSeverity: "HIGH", Description: "Notify on any high-severity alert", Params: map[string]string{"url": ""}},
+			},
+		},
+	}
+}
+
+// ---------------------------------------------------------------------------
+// VPS-AGENT preset — purpose-built for single-service VPS deployments running
+// autonomous AI agents (OpenClaw, Moltbot, Manus, etc.).
+//
+// Threat model: exposed gateway port, prompt injection via chat channels,
+// malicious skill/plugin installations, credential exfiltration, agent scope
+// escalation, and runtime file tampering (SOUL.md, MEMORY.md, .env).
+//
+// Philosophy: aggressive on the modules that matter most for AI agent hosts
+// (auth, LLM firewall, containment, runtime, supply chain, network), relaxed
+// on modules less relevant to a single-VPS agent (IoT, deepfake, quantum).
+// ---------------------------------------------------------------------------
+
+func vpsAgentPreset() map[string]ResponsePolicyYAML {
+	return map[string]ResponsePolicyYAML{
+		// ── Critical: Auth & Gateway Protection ─────────────────────────────
+		// CVE-2026-25253 token exfiltration, brute force on gateway port,
+		// stolen session tokens from compromised agents.
+		"auth_fortress": {
+			Enabled: true, MinSeverity: "MEDIUM", CooldownSeconds: 30, MaxActionsPerMin: 60,
+			Actions: []ResponseRuleYAML{
+				{Action: "block_ip", MinSeverity: "MEDIUM", Description: "Block gateway auth attack source", Params: map[string]string{"duration": "4h"}},
+				{Action: "disable_user", MinSeverity: "HIGH", Description: "Disable compromised agent account"},
+				{Action: "drop_connection", MinSeverity: "HIGH", Description: "Drop stolen-token sessions"},
+				{Action: "webhook", MinSeverity: "MEDIUM", Description: "Notify on auth attacks against agent gateway", Params: map[string]string{"url": ""}},
+			},
+		},
+
+		// ── Critical: Prompt Injection Defense ──────────────────────────────
+		// #1 attack vector for AI agents. Injection via WhatsApp, Telegram,
+		// Discord, web chat, forwarded emails, PDFs, and browsed pages.
+		"llm_firewall": {
+			Enabled: true, MinSeverity: "MEDIUM", CooldownSeconds: 10, MaxActionsPerMin: 100,
+			Actions: []ResponseRuleYAML{
+				{Action: "drop_connection", MinSeverity: "MEDIUM", Description: "Drop prompt injection source connection"},
+				{Action: "block_ip", MinSeverity: "HIGH", Description: "Block persistent prompt injection attacker", Params: map[string]string{"duration": "8h"}},
+				{Action: "webhook", MinSeverity: "MEDIUM", Description: "Notify on prompt injection attempt", Params: map[string]string{"url": ""}},
+			},
+		},
+
+		// ── Critical: AI Agent Containment ──────────────────────────────────
+		// Scope escalation, rogue tool usage, shadow AI calls, agent spawning
+		// sub-agents with inherited permissions.
+		"ai_containment": {
+			Enabled: true, MinSeverity: "MEDIUM", CooldownSeconds: 15, MaxActionsPerMin: 40,
+			Actions: []ResponseRuleYAML{
+				{Action: "kill_process", MinSeverity: "MEDIUM", Description: "Kill agent process violating containment policy"},
+				{Action: "block_ip", MinSeverity: "HIGH", Description: "Block shadow AI service or unauthorized endpoint", Params: map[string]string{"duration": "8h"}},
+				{Action: "webhook", MinSeverity: "MEDIUM", Description: "Notify on agent containment breach", Params: map[string]string{"url": ""}},
+			},
+		},
+
+		// ── Critical: Runtime & File Integrity ──────────────────────────────
+		// SOUL.md, MEMORY.md, .env tampering; LOLBin usage; persistence
+		// mechanisms from Atomic Stealer and similar payloads.
+		"runtime_watcher": {
+			Enabled: true, MinSeverity: "MEDIUM", CooldownSeconds: 15, MaxActionsPerMin: 60,
+			Actions: []ResponseRuleYAML{
+				{Action: "kill_process", MinSeverity: "MEDIUM", Description: "Kill process tampering with agent memory or config"},
+				{Action: "quarantine_file", MinSeverity: "MEDIUM", Description: "Quarantine modified agent files (SOUL.md, MEMORY.md, .env)"},
+				{Action: "block_ip", MinSeverity: "HIGH", Description: "Block source of file tampering attack", Params: map[string]string{"duration": "4h"}},
+				{Action: "webhook", MinSeverity: "MEDIUM", Description: "Notify on runtime file integrity violation", Params: map[string]string{"url": ""}},
+			},
+		},
+
+		// ── Critical: Supply Chain (Malicious Skills) ───────────────────────
+		// ClawHavoc campaign: 335 malicious SKILL.md files, Atomic Stealer,
+		// typosquatting, dependency confusion, backdoored plugins.
+		"supply_chain": {
+			Enabled: true, MinSeverity: "MEDIUM", CooldownSeconds: 30, MaxActionsPerMin: 30,
+			Actions: []ResponseRuleYAML{
+				{Action: "quarantine_file", MinSeverity: "MEDIUM", Description: "Quarantine suspicious skill or plugin files"},
+				{Action: "kill_process", MinSeverity: "HIGH", Description: "Kill process spawned by malicious skill"},
+				{Action: "block_ip", MinSeverity: "HIGH", Description: "Block C2 IP from malicious skill payload", Params: map[string]string{"duration": "24h"}},
+				{Action: "webhook", MinSeverity: "MEDIUM", Description: "Notify on supply chain threat", Params: map[string]string{"url": ""}},
+			},
+		},
+
+		// ── High: Network & Perimeter ───────────────────────────────────────
+		// Port scanning of gateway (18789), C2 beaconing from compromised
+		// agent, data exfiltration, DNS tunneling.
+		"network_guardian": {
+			Enabled: true, MinSeverity: "MEDIUM", CooldownSeconds: 30, MaxActionsPerMin: 40,
+			Actions: []ResponseRuleYAML{
+				{Action: "block_ip", MinSeverity: "MEDIUM", Description: "Block network scan or C2 beaconing source", Params: map[string]string{"duration": "4h"}},
+				{Action: "drop_connection", MinSeverity: "HIGH", Description: "Drop exfiltration or tunneling connections"},
+				{Action: "webhook", MinSeverity: "HIGH", Description: "Notify on network threats against agent host", Params: map[string]string{"url": ""}},
+			},
+		},
+
+		// ── High: API Fortress ──────────────────────────────────────────────
+		// Gateway API abuse, unauthenticated access attempts, rate limit
+		// violations on the agent control plane.
+		"api_fortress": {
+			Enabled: true, MinSeverity: "MEDIUM", CooldownSeconds: 30, MaxActionsPerMin: 40,
+			Actions: []ResponseRuleYAML{
+				{Action: "block_ip", MinSeverity: "MEDIUM", Description: "Block API abuse on agent gateway", Params: map[string]string{"duration": "2h"}},
+				{Action: "drop_connection", MinSeverity: "HIGH", Description: "Drop abusive gateway connections"},
+				{Action: "webhook", MinSeverity: "HIGH", Description: "Notify on gateway API attacks", Params: map[string]string{"url": ""}},
+			},
+		},
+
+		// ── High: Injection Shield ──────────────────────────────────────────
+		// Command injection via agent tool execution (shell_exec, file ops).
+		"injection_shield": {
+			Enabled: true, MinSeverity: "MEDIUM", CooldownSeconds: 30, MaxActionsPerMin: 60,
+			Actions: []ResponseRuleYAML{
+				{Action: "drop_connection", MinSeverity: "MEDIUM", Description: "Drop command injection attempts"},
+				{Action: "block_ip", MinSeverity: "HIGH", Description: "Block injection source", Params: map[string]string{"duration": "4h"}},
+				{Action: "webhook", MinSeverity: "HIGH", Description: "Notify on injection attacks", Params: map[string]string{"url": ""}},
+			},
+		},
+
+		// ── High: Identity Monitor ──────────────────────────────────────────
+		// Synthetic identity creation, privilege escalation within agent.
+		"identity_monitor": {
+			Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 60, MaxActionsPerMin: 20,
+			Actions: []ResponseRuleYAML{
+				{Action: "disable_user", MinSeverity: "HIGH", Description: "Disable escalated or synthetic identity"},
+				{Action: "block_ip", MinSeverity: "HIGH", Description: "Block identity attack source", Params: map[string]string{"duration": "4h"}},
+				{Action: "webhook", MinSeverity: "HIGH", Description: "Notify on identity anomaly", Params: map[string]string{"url": ""}},
+			},
+		},
+
+		// ── Medium: Ransomware ──────────────────────────────────────────────
+		// Less common on agent VPS but still possible via compromised agent.
+		"ransomware": {
+			Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 30, MaxActionsPerMin: 20,
+			Actions: []ResponseRuleYAML{
+				{Action: "kill_process", MinSeverity: "HIGH", Description: "Kill ransomware process"},
+				{Action: "quarantine_file", MinSeverity: "HIGH", Description: "Quarantine files being encrypted"},
+				{Action: "webhook", MinSeverity: "HIGH", Description: "Notify on ransomware activity", Params: map[string]string{"url": ""}},
+			},
+		},
+
+		// ── Medium: Data Poisoning ──────────────────────────────────────────
+		// Memory poisoning via MEMORY.md / SOUL.md is the agent-specific
+		// variant; also covers training data tampering.
+		"data_poisoning": {
+			Enabled: true, MinSeverity: "MEDIUM", CooldownSeconds: 60, MaxActionsPerMin: 20,
+			Actions: []ResponseRuleYAML{
+				{Action: "quarantine_file", MinSeverity: "MEDIUM", Description: "Quarantine poisoned agent memory files"},
+				{Action: "kill_process", MinSeverity: "HIGH", Description: "Kill process injecting poisoned data"},
+				{Action: "webhook", MinSeverity: "MEDIUM", Description: "Notify on data/memory poisoning", Params: map[string]string{"url": ""}},
+			},
+		},
+
+		// ── Lower priority: still enabled but higher thresholds ─────────────
+		"iot_shield": {
+			Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 300, MaxActionsPerMin: 10,
+			Actions: []ResponseRuleYAML{
+				{Action: "log_only", MinSeverity: "HIGH", Description: "Log IoT anomalies on agent host"},
+				{Action: "webhook", MinSeverity: "CRITICAL", Description: "Notify on IoT compromise", Params: map[string]string{"url": ""}},
+			},
+		},
+		"deepfake_shield": {
+			Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 300, MaxActionsPerMin: 10,
+			Actions: []ResponseRuleYAML{
+				{Action: "log_only", MinSeverity: "HIGH", Description: "Log deepfake detections"},
+				{Action: "webhook", MinSeverity: "CRITICAL", Description: "Notify on deepfake threats", Params: map[string]string{"url": ""}},
+			},
+		},
+		"quantum_crypto": {
+			Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 600, MaxActionsPerMin: 5,
+			Actions: []ResponseRuleYAML{
+				{Action: "log_only", MinSeverity: "HIGH", Description: "Log quantum-vulnerable crypto usage"},
+				{Action: "webhook", MinSeverity: "CRITICAL", Description: "Notify on crypto vulnerability", Params: map[string]string{"url": ""}},
+			},
+		},
+		"cloud_posture": {
+			Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 300, MaxActionsPerMin: 10,
+			Actions: []ResponseRuleYAML{
+				{Action: "webhook", MinSeverity: "HIGH", Description: "Notify on VPS misconfiguration", Params: map[string]string{"url": ""}},
+				{Action: "log_only", MinSeverity: "HIGH", Description: "Log cloud posture drift"},
+			},
+		},
+
+		// ── Cross-Cutting ───────────────────────────────────────────────────
+		"ai_analysis_engine": {
+			Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 60, MaxActionsPerMin: 20,
+			Actions: []ResponseRuleYAML{
+				{Action: "webhook", MinSeverity: "HIGH", Description: "Notify on AI-correlated threat against agent", Params: map[string]string{"url": ""}},
+				{Action: "block_ip", MinSeverity: "CRITICAL", Description: "Block correlated attack source", Params: map[string]string{"duration": "8h"}},
+			},
+		},
+		"*": {
+			Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 120, MaxActionsPerMin: 20,
+			Actions: []ResponseRuleYAML{
+				{Action: "block_ip", MinSeverity: "HIGH", Description: "Block source of high-severity alert on agent host", Params: map[string]string{"duration": "2h"}},
 				{Action: "webhook", MinSeverity: "HIGH", Description: "Notify on any high-severity alert", Params: map[string]string{"url": ""}},
 			},
 		},

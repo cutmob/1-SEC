@@ -305,6 +305,7 @@ type RAGResult struct {
 func NewRAGVerifier() *RAGVerifier {
 	return &RAGVerifier{
 		injectionPatterns: []string{
+			// Direct prompt injection
 			"ignore previous instructions",
 			"disregard all prior",
 			"new system prompt",
@@ -312,6 +313,29 @@ func NewRAGVerifier() *RAGVerifier {
 			"ADMIN: execute",
 			"[SYSTEM]",
 			"<|im_start|>system",
+			// Indirect prompt injection via retrieved documents
+			"ignore the above",
+			"forget everything",
+			"you are now",
+			"act as if",
+			"pretend you are",
+			"switch to",
+			"new instructions:",
+			"override instructions",
+			"do not follow previous",
+			"discard prior context",
+			// Delimiter injection
+			"<|endoftext|>",
+			"<|im_end|>",
+			"### instruction",
+			"[/INST]",
+			"<<SYS>>",
+			"</s>",
+			// Data exfiltration via RAG
+			"output all previous",
+			"repeat the system prompt",
+			"show me your instructions",
+			"what are your rules",
 		},
 		trustedSources: make(map[string]bool),
 	}
@@ -353,13 +377,17 @@ type modelStats struct {
 	currentSum    float64
 	currentCount  int
 	windowStart   time.Time
+	// Output distribution tracking (histogram buckets)
+	baselineBuckets [10]int // confidence in [0,0.1), [0.1,0.2), ..., [0.9,1.0]
+	currentBuckets  [10]int
 }
 
 type DriftResult struct {
-	Significant  bool
-	BaselineMean float64
-	CurrentMean  float64
-	Delta        float64
+	Significant       bool
+	BaselineMean      float64
+	CurrentMean       float64
+	Delta             float64
+	DistributionShift float64 // Jensen-Shannon divergence approximation
 }
 
 func NewModelDriftMonitor() *ModelDriftMonitor {
@@ -382,14 +410,26 @@ func (dm *ModelDriftMonitor) RecordPrediction(modelID string, confidence float64
 		if stats.currentCount > 0 {
 			stats.baselineSum = stats.currentSum
 			stats.baselineCount = stats.currentCount
+			stats.baselineBuckets = stats.currentBuckets
 		}
 		stats.currentSum = 0
 		stats.currentCount = 0
+		stats.currentBuckets = [10]int{}
 		stats.windowStart = now
 	}
 
 	stats.currentSum += confidence
 	stats.currentCount++
+
+	// Track distribution bucket
+	bucket := int(confidence * 10)
+	if bucket >= 10 {
+		bucket = 9
+	}
+	if bucket < 0 {
+		bucket = 0
+	}
+	stats.currentBuckets[bucket]++
 }
 
 func (dm *ModelDriftMonitor) CheckDrift(modelID string) DriftResult {
@@ -406,11 +446,34 @@ func (dm *ModelDriftMonitor) CheckDrift(modelID string) DriftResult {
 	result.CurrentMean = stats.currentSum / float64(stats.currentCount)
 	result.Delta = math.Abs(result.CurrentMean - result.BaselineMean)
 
-	if result.Delta > 0.15 {
+	// Distribution shift: simplified Jensen-Shannon divergence
+	result.DistributionShift = jsDiv(stats.baselineBuckets[:], stats.baselineCount, stats.currentBuckets[:], stats.currentCount)
+
+	if result.Delta > 0.15 || result.DistributionShift > 0.3 {
 		result.Significant = true
 	}
 
 	return result
+}
+
+// jsDiv computes a simplified Jensen-Shannon divergence between two histograms.
+func jsDiv(bBase []int, nBase int, bCurr []int, nCurr int) float64 {
+	if nBase == 0 || nCurr == 0 {
+		return 0
+	}
+	divergence := 0.0
+	for i := 0; i < len(bBase); i++ {
+		p := (float64(bBase[i]) + 1e-10) / float64(nBase)
+		q := (float64(bCurr[i]) + 1e-10) / float64(nCurr)
+		m := (p + q) / 2
+		if p > 0 && m > 0 {
+			divergence += p * math.Log2(p/m)
+		}
+		if q > 0 && m > 0 {
+			divergence += q * math.Log2(q/m)
+		}
+	}
+	return divergence / 2
 }
 
 // HashData returns SHA-256 hex digest.

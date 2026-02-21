@@ -80,11 +80,11 @@ helm install 1sec ./deploy/helm \
 | 5 | **Supply Chain Sentinel** | SBOM generation, package integrity, typosquatting (Levenshtein), dependency confusion, CI/CD hardening | 2 |
 | 6 | **Ransomware Interceptor** | Encryption detection (threshold: 5 files), canary files, exfiltration monitoring, wiper detection (MBR/GPT), shadow copy deletion, compound attack correlation | 2 |
 | 7 | **Auth Fortress** | Brute force, credential stuffing, session hijack, impossible travel, MFA fatigue, OAuth consent phishing, password spray, stolen token detection | 3 |
-| 8 | **Deepfake Shield** | Synthetic voice/video detection (DFT-based), AI phishing, domain homoglyph spoofing, BEC detection | 3 |
+| 8 | **Deepfake Shield** | Prosodic audio analysis (pitch/jitter/shimmer/HNR), MFCC trajectory smoothness, phase coherence, spectral flatness, ELA video forensics, AI phishing with writing style analysis, expanded Unicode homoglyph + Punycode domain spoofing, reply-chain verification, BEC detection | 3 |
 | 9 | **Identity Fabric Monitor** | Synthetic identity detection, privilege escalation, service account anomaly, bulk creation detection | 3 |
 | 10 | **LLM Firewall** | 55+ prompt injection patterns, jailbreak detection (DAN, FlipAttack, many-shot, time bandit, etc.), output filtering, multi-turn tracking, tool-chain abuse. Zero LLM calls. | 4 |
 | 11 | **AI Agent Containment** | Action sandboxing, tool-use monitoring, shadow AI detection, scope escalation, policy enforcement | 4 |
-| 12 | **Data Poisoning Guard** | Training data integrity, RAG pipeline validation, adversarial input detection, model drift monitoring | 4 |
+| 12 | **Data Poisoning Guard** | Training data integrity, RAG pipeline validation (30+ injection patterns incl. delimiter/exfiltration attacks), adversarial input detection, model drift monitoring with output distribution tracking (Jensen-Shannon divergence) | 4 |
 | 13 | **Quantum-Ready Crypto** | Crypto inventory, PQC migration readiness, TLS auditing, cert expiry, HNDL attack detection | 5 |
 | 14 | **Runtime Watcher** | FIM, container escape, LOLBin detection (40+), memory injection (process hollowing, DLL injection), persistence mechanisms, UEFI/bootkit, fileless malware, symlink privilege escalation, ETW/logging evasion, Lua shellcode loader detection | 6 |
 | 15 | **Cloud Posture Manager** | Config drift, misconfiguration (public buckets, open SGs, wildcard IAM), secrets sprawl | 6 |
@@ -189,6 +189,13 @@ modules:
     settings:
       max_failures_per_minute: 10
       lockout_duration_seconds: 300
+  deepfake_shield:
+    enabled: true
+    settings:
+      trusted_domains:            # Add your org's domains for spoof detection
+        - "yourcompany.com"
+        - "partner.org"
+      max_levenshtein: 2          # Typosquatting detection distance (default: 2)
   ai_analysis_engine:
     enabled: true
     settings:

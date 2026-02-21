@@ -5,7 +5,7 @@ import (
 )
 
 // allPresetNames is the single source of truth for test iteration.
-var allPresetNames = []string{"lax", "safe", "balanced", "strict"}
+var allPresetNames = []string{"lax", "safe", "balanced", "strict", "vps-agent"}
 
 // ─── GetPresetPolicies ──────────────────────────────────────────────────────
 
@@ -36,10 +36,10 @@ func TestGetPresetPolicies_EmptyString(t *testing.T) {
 
 func TestValidPresets(t *testing.T) {
 	presets := ValidPresets()
-	if len(presets) != 4 {
-		t.Errorf("expected 4 valid presets, got %d", len(presets))
+	if len(presets) != 5 {
+		t.Errorf("expected 5 valid presets, got %d", len(presets))
 	}
-	expected := map[string]bool{"lax": true, "safe": true, "balanced": true, "strict": true}
+	expected := map[string]bool{"lax": true, "safe": true, "balanced": true, "strict": true, "vps-agent": true}
 	for _, p := range presets {
 		if !expected[p] {
 			t.Errorf("unexpected preset: %q", p)
@@ -251,6 +251,9 @@ func TestPresetConstants(t *testing.T) {
 	if PresetStrict != "strict" {
 		t.Errorf("PresetStrict = %q, want strict", PresetStrict)
 	}
+	if PresetVPSAgent != "vps-agent" {
+		t.Errorf("PresetVPSAgent = %q, want vps-agent", PresetVPSAgent)
+	}
 }
 
 // ─── Preset escalation: each level should be >= the previous ────────────────
@@ -284,6 +287,62 @@ func TestPresets_EscalationOrder(t *testing.T) {
 		if curr < prev {
 			t.Errorf("preset %q has fewer blocking actions (%d) than %q (%d) — escalation order violated",
 				ordered[i], curr, ordered[i-1], prev)
+		}
+	}
+}
+
+// ─── VPS-Agent preset: agent-critical modules are aggressive ────────────────
+
+func TestVPSAgentPreset_CriticalModulesHaveBlockingActions(t *testing.T) {
+	policies := GetPresetPolicies("vps-agent")
+
+	// These modules are critical for AI agent VPS defense and must have
+	// blocking/enforcement actions, not just log+webhook.
+	criticalModules := []string{
+		"auth_fortress", "llm_firewall", "ai_containment",
+		"runtime_watcher", "supply_chain", "network_guardian",
+	}
+
+	blockingActions := map[string]bool{
+		"block_ip": true, "kill_process": true, "quarantine_file": true,
+		"drop_connection": true, "disable_user": true,
+	}
+
+	for _, mod := range criticalModules {
+		policy, ok := policies[mod]
+		if !ok {
+			t.Errorf("vps-agent preset missing critical module %q", mod)
+			continue
+		}
+		hasBlocking := false
+		for _, action := range policy.Actions {
+			if blockingActions[action.Action] {
+				hasBlocking = true
+				break
+			}
+		}
+		if !hasBlocking {
+			t.Errorf("vps-agent preset critical module %q has no blocking actions", mod)
+		}
+	}
+}
+
+func TestVPSAgentPreset_LowPriorityModulesAreRelaxed(t *testing.T) {
+	policies := GetPresetPolicies("vps-agent")
+
+	// These modules are less relevant for a single-VPS AI agent and should
+	// have higher severity thresholds (HIGH or above).
+	relaxedModules := []string{"iot_shield", "deepfake_shield", "quantum_crypto"}
+
+	for _, mod := range relaxedModules {
+		policy, ok := policies[mod]
+		if !ok {
+			t.Errorf("vps-agent preset missing module %q", mod)
+			continue
+		}
+		sev := ParseSeverity(policy.MinSeverity)
+		if sev < ParseSeverity("HIGH") {
+			t.Errorf("vps-agent preset module %q should have min_severity >= HIGH, got %s", mod, policy.MinSeverity)
 		}
 	}
 }
