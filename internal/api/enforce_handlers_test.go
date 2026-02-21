@@ -452,3 +452,409 @@ func TestHandleEnforceTest_MethodNotAllowed(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
 	}
 }
+
+// ─── Helpers for approval gate tests ─────────────────────────────────────────
+
+func testEngineWithApprovalGate() *core.Engine {
+	cfg := core.DefaultConfig()
+	cfg.RustEngine.Enabled = false
+	cfg.Server.APIKeys = []string{"test-key"}
+	cfg.Enforcement = &core.EnforcementConfig{
+		Enabled: true,
+		DryRun:  false,
+		Preset:  "balanced",
+		ApprovalGate: core.ApprovalGateConfig{
+			Enabled:         true,
+			RequireApproval: []string{"kill_process", "quarantine_file", "disable_user"},
+			TTL:             30 * 60 * 1000000000, // 30 min in nanoseconds (time.Duration)
+			MaxPending:      100,
+		},
+	}
+	logger := zerolog.Nop()
+	pipeline := core.NewAlertPipeline(logger, 1000)
+
+	engine := &core.Engine{
+		Config:         cfg,
+		Registry:       core.NewModuleRegistry(logger),
+		Pipeline:       pipeline,
+		Logger:         logger,
+		ResponseEngine: core.NewResponseEngine(logger, nil, pipeline, cfg),
+	}
+	return engine
+}
+
+// ─── Enforce Approve ─────────────────────────────────────────────────────────
+
+func TestHandleEnforceApprove_Success(t *testing.T) {
+	engine := testEngineWithApprovalGate()
+	defer engine.ResponseEngine.ApprovalGate.Stop()
+
+	// Submit a pending approval
+	ev := core.NewSecurityEvent("test_module", "test_type", core.SeverityCritical, "test")
+	alert := core.NewAlert(ev, "Test Alert", "desc")
+	rule := core.ResponseRule{Action: core.ActionKillProcess}
+	id := engine.ResponseEngine.ApprovalGate.Submit(alert, rule, "pid:1234")
+
+	s := newTestServer(engine)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/approve/"+id, nil))
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	if body["status"] != "approved" {
+		t.Errorf("expected status=approved, got %v", body["status"])
+	}
+	if body["action"] != "kill_process" {
+		t.Errorf("expected action=kill_process, got %v", body["action"])
+	}
+}
+
+func TestHandleEnforceApprove_NotFound(t *testing.T) {
+	engine := testEngineWithApprovalGate()
+	defer engine.ResponseEngine.ApprovalGate.Stop()
+
+	s := newTestServer(engine)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/approve/nonexistent-id", nil))
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandleEnforceApprove_NoApprovalGate(t *testing.T) {
+	s := newTestServer(testEngineWithEnforcement("balanced", true))
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/approve/some-id", nil))
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleEnforceApprove_NoEnforcement(t *testing.T) {
+	s := newTestServer(testEngineNoEnforcement())
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/approve/some-id", nil))
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleEnforceApprove_MethodNotAllowed(t *testing.T) {
+	engine := testEngineWithApprovalGate()
+	defer engine.ResponseEngine.ApprovalGate.Stop()
+
+	s := newTestServer(engine)
+	req := authReq(httptest.NewRequest(http.MethodGet, "/api/v1/enforce/approve/some-id", nil))
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestHandleEnforceApprove_EmptyID(t *testing.T) {
+	engine := testEngineWithApprovalGate()
+	defer engine.ResponseEngine.ApprovalGate.Stop()
+
+	s := newTestServer(engine)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/approve/", nil))
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+// ─── Enforce Reject ──────────────────────────────────────────────────────────
+
+func TestHandleEnforceReject_Success(t *testing.T) {
+	engine := testEngineWithApprovalGate()
+	defer engine.ResponseEngine.ApprovalGate.Stop()
+
+	ev := core.NewSecurityEvent("test_module", "test_type", core.SeverityCritical, "test")
+	alert := core.NewAlert(ev, "Test Alert", "desc")
+	rule := core.ResponseRule{Action: core.ActionDisableUser}
+	id := engine.ResponseEngine.ApprovalGate.Submit(alert, rule, "user:jdoe")
+
+	s := newTestServer(engine)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/reject/"+id, nil))
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	if body["status"] != "rejected" {
+		t.Errorf("expected status=rejected, got %v", body["status"])
+	}
+}
+
+func TestHandleEnforceReject_NotFound(t *testing.T) {
+	engine := testEngineWithApprovalGate()
+	defer engine.ResponseEngine.ApprovalGate.Stop()
+
+	s := newTestServer(engine)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/reject/nonexistent-id", nil))
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandleEnforceReject_NoApprovalGate(t *testing.T) {
+	s := newTestServer(testEngineWithEnforcement("balanced", true))
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/reject/some-id", nil))
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleEnforceReject_MethodNotAllowed(t *testing.T) {
+	engine := testEngineWithApprovalGate()
+	defer engine.ResponseEngine.ApprovalGate.Stop()
+
+	s := newTestServer(engine)
+	req := authReq(httptest.NewRequest(http.MethodGet, "/api/v1/enforce/reject/some-id", nil))
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestHandleEnforceReject_EmptyID(t *testing.T) {
+	engine := testEngineWithApprovalGate()
+	defer engine.ResponseEngine.ApprovalGate.Stop()
+
+	s := newTestServer(engine)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/reject/", nil))
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+// ─── Enforce Rollback ────────────────────────────────────────────────────────
+
+func TestHandleEnforceRollback_NoEnforcement(t *testing.T) {
+	s := newTestServer(testEngineNoEnforcement())
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/rollback/some-id", nil))
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleEnforceRollback_RecordNotFound(t *testing.T) {
+	s := newTestServer(testEngineWithEnforcement("balanced", true))
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/rollback/nonexistent-id", nil))
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandleEnforceRollback_NotSuccessStatus(t *testing.T) {
+	engine := testEngineWithEnforcement("balanced", true) // dry-run mode
+	s := newTestServer(engine)
+
+	// Generate a dry-run record
+	ev := core.NewSecurityEvent("injection_shield", "test_type", core.SeverityHigh, "test")
+	ev.SourceIP = "10.0.0.1"
+	alert := core.NewAlert(ev, "Test Alert", "desc")
+	engine.ResponseEngine.HandleAlertForTest(alert)
+
+	records := engine.ResponseEngine.GetRecords(1, "")
+	if len(records) == 0 {
+		t.Fatal("expected at least one record")
+	}
+
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/rollback/"+records[0].ID, nil))
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d, body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+}
+
+func TestHandleEnforceRollback_UnsupportedAction(t *testing.T) {
+	// Create engine with log_only action in live mode
+	cfg := core.DefaultConfig()
+	cfg.RustEngine.Enabled = false
+	cfg.Server.APIKeys = []string{"test-key"}
+	cfg.Enforcement = &core.EnforcementConfig{
+		Enabled: true,
+		DryRun:  false,
+		Policies: map[string]core.ResponsePolicyYAML{
+			"test_module": {
+				Enabled:          true,
+				MinSeverity:      "LOW",
+				CooldownSeconds:  0,
+				MaxActionsPerMin: 100,
+				Actions: []core.ResponseRuleYAML{
+					{Action: "log_only", MinSeverity: "LOW"},
+				},
+			},
+		},
+	}
+	logger := zerolog.Nop()
+	pipeline := core.NewAlertPipeline(logger, 1000)
+	engine := &core.Engine{
+		Config:         cfg,
+		Registry:       core.NewModuleRegistry(logger),
+		Pipeline:       pipeline,
+		Logger:         logger,
+		ResponseEngine: core.NewResponseEngine(logger, nil, pipeline, cfg),
+	}
+
+	// Generate a SUCCESS log_only record
+	ev := core.NewSecurityEvent("test_module", "test_type", core.SeverityHigh, "test")
+	alert := core.NewAlert(ev, "Test Alert", "desc")
+	engine.ResponseEngine.HandleAlertForTest(alert)
+
+	records := engine.ResponseEngine.GetRecords(1, "")
+	if len(records) == 0 {
+		t.Fatal("expected at least one record")
+	}
+	if records[0].Status != core.ActionStatusSuccess {
+		t.Fatalf("expected SUCCESS, got %s", records[0].Status)
+	}
+
+	s := newTestServer(engine)
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/rollback/"+records[0].ID, nil))
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	if body["error"] == nil {
+		t.Error("expected error in response body")
+	}
+}
+
+func TestHandleEnforceRollback_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(testEngineWithEnforcement("balanced", true))
+	req := authReq(httptest.NewRequest(http.MethodGet, "/api/v1/enforce/rollback/some-id", nil))
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestHandleEnforceRollback_EmptyID(t *testing.T) {
+	s := newTestServer(testEngineWithEnforcement("balanced", true))
+	req := authReq(httptest.NewRequest(http.MethodPost, "/api/v1/enforce/rollback/", nil))
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+// ─── Auth enforcement on new routes ──────────────────────────────────────────
+
+func TestEnforceRoutes_RequireAuth(t *testing.T) {
+	engine := testEngineWithApprovalGate()
+	defer engine.ResponseEngine.ApprovalGate.Stop()
+	s := newTestServer(engine)
+
+	routes := []string{
+		"/api/v1/enforce/approve/test-id",
+		"/api/v1/enforce/reject/test-id",
+		"/api/v1/enforce/rollback/test-id",
+	}
+
+	for _, route := range routes {
+		// No auth header — should be rejected
+		req := httptest.NewRequest(http.MethodPost, route, nil)
+		w := httptest.NewRecorder()
+		s.server.Handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("%s: status = %d, want %d (missing auth)", route, w.Code, http.StatusUnauthorized)
+		}
+	}
+}
+
+func TestEnforceRoutes_ReadOnlyKeyBlocked(t *testing.T) {
+	cfg := core.DefaultConfig()
+	cfg.RustEngine.Enabled = false
+	cfg.Server.APIKeys = []string{"write-key"}
+	cfg.Server.ReadOnlyKeys = []string{"read-key"}
+	cfg.Enforcement = &core.EnforcementConfig{
+		Enabled: true,
+		DryRun:  true,
+		Preset:  "balanced",
+		ApprovalGate: core.ApprovalGateConfig{
+			Enabled:         true,
+			RequireApproval: []string{"kill_process"},
+			TTL:             30 * 60 * 1000000000,
+			MaxPending:      100,
+		},
+	}
+	logger := zerolog.Nop()
+	pipeline := core.NewAlertPipeline(logger, 1000)
+	engine := &core.Engine{
+		Config:         cfg,
+		Registry:       core.NewModuleRegistry(logger),
+		Pipeline:       pipeline,
+		Logger:         logger,
+		ResponseEngine: core.NewResponseEngine(logger, nil, pipeline, cfg),
+	}
+	defer engine.ResponseEngine.ApprovalGate.Stop()
+
+	s := newTestServer(engine)
+
+	routes := []string{
+		"/api/v1/enforce/approve/test-id",
+		"/api/v1/enforce/reject/test-id",
+		"/api/v1/enforce/rollback/test-id",
+	}
+
+	for _, route := range routes {
+		req := httptest.NewRequest(http.MethodPost, route, nil)
+		req.Header.Set("Authorization", "Bearer read-key")
+		w := httptest.NewRecorder()
+		s.server.Handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusForbidden {
+			t.Errorf("%s: status = %d, want %d (read-only key should be blocked)", route, w.Code, http.StatusForbidden)
+		}
+	}
+}

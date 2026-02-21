@@ -511,6 +511,11 @@ func (re *ResponseEngine) FindRecord(id string) *ResponseRecord {
 	}
 	return nil
 }
+// HandleAlertForTest is an exported wrapper around handleAlert for use in tests
+// from other packages (e.g., api tests). Not intended for production use.
+func (re *ResponseEngine) HandleAlertForTest(alert *Alert) {
+	re.handleAlert(alert)
+}
 
 // GetPolicies returns all loaded response policies.
 func (re *ResponseEngine) GetPolicies() map[string]*ResponsePolicy {

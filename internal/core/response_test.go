@@ -664,3 +664,89 @@ func TestResponseEngine_RateLimitInternals(t *testing.T) {
 		t.Error("third call should be denied (limit=2)")
 	}
 }
+
+// ─── FindRecord ─────────────────────────────────────────────────────────────
+
+func TestResponseEngine_FindRecord_Found(t *testing.T) {
+	re := testResponseEngine(t, enforcementConfig("balanced", true))
+
+	alert := testAlertWithIP("injection_shield", "10.0.0.1", SeverityHigh)
+	re.handleAlert(alert)
+
+	records := re.GetRecords(1, "")
+	if len(records) == 0 {
+		t.Fatal("expected at least one record")
+	}
+
+	found := re.FindRecord(records[0].ID)
+	if found == nil {
+		t.Fatal("expected FindRecord to return a record")
+	}
+	if found.ID != records[0].ID {
+		t.Errorf("expected ID %s, got %s", records[0].ID, found.ID)
+	}
+	if found.Module != "injection_shield" {
+		t.Errorf("expected module injection_shield, got %s", found.Module)
+	}
+}
+
+func TestResponseEngine_FindRecord_NotFound(t *testing.T) {
+	re := testResponseEngine(t, enforcementConfig("balanced", true))
+
+	found := re.FindRecord("nonexistent-id")
+	if found != nil {
+		t.Error("expected nil for nonexistent record ID")
+	}
+}
+
+func TestResponseEngine_FindRecord_EmptyRecords(t *testing.T) {
+	re := testResponseEngine(t, enforcementConfig("balanced", true))
+
+	found := re.FindRecord("any-id")
+	if found != nil {
+		t.Error("expected nil when no records exist")
+	}
+}
+
+func TestResponseEngine_FindRecord_ConcurrentAccess(t *testing.T) {
+	re := testResponseEngine(t, enforcementConfig("balanced", true))
+
+	// Generate some records
+	for i := 0; i < 10; i++ {
+		re.handleAlert(testAlertWithIP("injection_shield", "10.0.0.1", SeverityCritical))
+	}
+
+	records := re.GetRecords(10, "")
+	if len(records) == 0 {
+		t.Fatal("expected records")
+	}
+
+	// Concurrent FindRecord + handleAlert
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			re.FindRecord(records[0].ID)
+		}()
+		go func() {
+			defer wg.Done()
+			re.handleAlert(testAlertWithIP("injection_shield", "10.0.0.1", SeverityHigh))
+		}()
+	}
+	wg.Wait()
+}
+
+// ─── HandleAlertForTest (exported wrapper) ──────────────────────────────────
+
+func TestResponseEngine_HandleAlertForTest(t *testing.T) {
+	re := testResponseEngine(t, enforcementConfig("balanced", true))
+
+	alert := testAlertWithIP("injection_shield", "10.0.0.1", SeverityHigh)
+	re.HandleAlertForTest(alert)
+
+	records := re.GetRecords(100, "")
+	if len(records) == 0 {
+		t.Fatal("expected HandleAlertForTest to generate records")
+	}
+}
