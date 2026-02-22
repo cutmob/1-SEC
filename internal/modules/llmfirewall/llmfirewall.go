@@ -77,6 +77,9 @@ func (f *Firewall) EventTypes() []string {
 		"llm_output", "llm_response", "completion",
 		"llm_token_usage",
 		"agent_action", "tool_call", "function_call",
+		"agent_decision", "agent_plan",
+		"rag_retrieval", "embedding_query",
+		"llm_citation", "llm_factual_claim",
 	}
 }
 
@@ -115,6 +118,12 @@ func (f *Firewall) HandleEvent(event *core.SecurityEvent) error {
 		f.checkTokenBudget(event)
 	case "agent_action", "tool_call", "function_call":
 		f.analyzeToolChain(event)
+	case "agent_decision", "agent_plan":
+		f.analyzeExcessiveAgency(event)
+	case "rag_retrieval", "embedding_query":
+		f.analyzeRAGRetrieval(event)
+	case "llm_citation", "llm_factual_claim":
+		f.analyzeMisinformation(event)
 	}
 	return nil
 }
@@ -245,15 +254,7 @@ func (f *Firewall) analyzeInput(event *core.SecurityEvent) {
 		fmt.Sprintf("LLM Threat: %s", strings.Join(catList, ", ")),
 		fmt.Sprintf("Detected %d threat pattern(s) in LLM input. Categories: %s. Severity: %s.",
 			len(detections), strings.Join(catList, ", "), maxSeverity.String()))
-	alert.Mitigations = []string{
-		"Sanitize user input before passing to LLM",
-		"Implement input/output guardrails",
-		"Use separate system and user message channels",
-		"Apply output filtering to prevent data leakage",
-		"Monitor and limit token usage per user",
-		"Track multi-turn conversations for gradual escalation",
-		"Decode encoded payloads before analysis",
-	}
+	alert.Mitigations = getLLMInputMitigations(catList)
 
 	if f.pipeline != nil {
 		f.pipeline.Process(alert)
@@ -285,6 +286,7 @@ func (f *Firewall) analyzeOutput(event *core.SecurityEvent) {
 				fmt.Sprintf("LLM Output Violation: %s", rule.Name),
 				fmt.Sprintf("LLM output matched rule %q (%s). The output may contain sensitive data or harmful content.",
 					rule.Name, rule.Category))
+			alert.Mitigations = getOutputMitigations(rule.Category)
 
 			if f.pipeline != nil {
 				f.pipeline.Process(alert)
@@ -581,6 +583,25 @@ func compileOutputRules() []OutputRule {
 		// === Harmful Content ===
 		{Name: "code_execution_output", Category: "harmful_output", Severity: core.SeverityHigh,
 			Regex: regexp.MustCompile("(?i)(rm\\s+-rf\\s+/|:(){ :\\|:& };:|format\\s+c:|del\\s+/[sfq]\\s+)")},
+
+		// === System Prompt Leakage (LLM07:2025) ===
+		// Enhanced detection for system prompt leakage in output.
+		// Ref: OWASP LLM07:2025 — System Prompt Leakage is now a dedicated category.
+		{Name: "system_prompt_verbatim", Category: "prompt_leak", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile("(?i)(here\\s+(is|are)\\s+(my|the)\\s+(system\\s+prompt|instructions?|initial\\s+prompt)|my\\s+system\\s+prompt\\s+(is|reads?|says?)|the\\s+system\\s+prompt\\s+(is|reads?|says?)\\s*:)")},
+		{Name: "instruction_boundary_leak", Category: "prompt_leak", Severity: core.SeverityHigh,
+			Regex: regexp.MustCompile("(?i)(\\[SYSTEM\\]|<<SYS>>|<\\|im_start\\|>system|<system>|\\{\\{#system\\}\\})")},
+		{Name: "role_definition_leak", Category: "prompt_leak", Severity: core.SeverityHigh,
+			Regex: regexp.MustCompile("(?i)(you\\s+are\\s+a\\s+helpful\\s+assistant|your\\s+role\\s+is\\s+to|you\\s+must\\s+(always|never)|you\\s+should\\s+(always|never)\\s+(respond|answer|help|refuse))")},
+		{Name: "guardrail_config_leak", Category: "prompt_leak", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile("(?i)(content\\s+policy\\s*:|safety\\s+guidelines?\\s*:|prohibited\\s+topics?\\s*:|allowed\\s+actions?\\s*:|tool\\s+permissions?\\s*:)")},
+
+		// === Misinformation Indicators (LLM09:2025) ===
+		// Detect hallucination markers in output — fabricated citations, false confidence.
+		{Name: "fabricated_doi", Category: "misinformation", Severity: core.SeverityMedium,
+			Regex: regexp.MustCompile("(?i)doi:\\s*10\\.\\d{4,}/[a-z0-9./-]+\\s")},
+		{Name: "fabricated_arxiv", Category: "misinformation", Severity: core.SeverityMedium,
+			Regex: regexp.MustCompile("(?i)arxiv:\\s*\\d{4}\\.\\d{4,5}")},
 	}
 }
 
@@ -1432,6 +1453,618 @@ func (f *Firewall) analyzeToolChain(event *core.SecurityEvent) {
 
 		if f.pipeline != nil {
 			f.pipeline.Process(alert)
+		}
+	}
+}
+
+// ============================================================================
+// Excessive Agency Detection (LLM06:2025)
+// ============================================================================
+
+// analyzeExcessiveAgency detects when an AI agent exceeds its intended scope,
+// takes unauthorized actions, or exhibits privilege escalation behavior.
+// Ref: OWASP LLM06:2025 — "Insecure Plugin Design" merged into Excessive Agency.
+// Ref: OWASP Agentic Top 10 2026 — agent scope creep, goal-lock bypass.
+func (f *Firewall) analyzeExcessiveAgency(event *core.SecurityEvent) {
+	action := getStringDetail(event, "action")
+	if action == "" {
+		action = getStringDetail(event, "decision")
+	}
+	scope := getStringDetail(event, "scope")
+	agentID := getStringDetail(event, "agent_id")
+	if agentID == "" {
+		agentID = event.SourceIP
+	}
+	approvalRequired := getStringDetail(event, "approval_required")
+	approvalGiven := getStringDetail(event, "approval_given")
+	toolCount := getIntDetail(event, "tool_count")
+	planSteps := getIntDetail(event, "plan_steps")
+
+	var alerts []agencyAlert
+
+	// Detect actions taken without required approval (human-in-the-loop bypass)
+	if approvalRequired == "true" && approvalGiven != "true" {
+		alerts = append(alerts, agencyAlert{
+			alertType: "excessive_agency_no_approval",
+			severity:  core.SeverityCritical,
+			title:     "Agent Action Without Required Approval",
+			desc: fmt.Sprintf("Agent %s took action %q requiring approval without human authorization",
+				agentID, truncate(action, 100)),
+		})
+	}
+
+	// Detect scope violations — agent acting outside defined boundaries
+	actionLower := strings.ToLower(action)
+	scopeLower := strings.ToLower(scope)
+	scopeViolations := []struct {
+		pattern string
+		label   string
+	}{
+		{"delete", "destructive_action"},
+		{"drop", "destructive_action"},
+		{"shutdown", "system_control"},
+		{"reboot", "system_control"},
+		{"modify_permission", "privilege_change"},
+		{"grant_access", "privilege_change"},
+		{"send_email", "external_communication"},
+		{"post_message", "external_communication"},
+		{"transfer_funds", "financial_action"},
+		{"execute_payment", "financial_action"},
+		{"deploy", "deployment_action"},
+		{"publish", "deployment_action"},
+	}
+	for _, sv := range scopeViolations {
+		if strings.Contains(actionLower, sv.pattern) {
+			if scopeLower == "readonly" || scopeLower == "read_only" || scopeLower == "limited" {
+				alerts = append(alerts, agencyAlert{
+					alertType: "excessive_agency_scope_violation",
+					severity:  core.SeverityCritical,
+					title:     fmt.Sprintf("Agent Scope Violation: %s", sv.label),
+					desc: fmt.Sprintf("Agent %s attempted %s action %q but scope is %q",
+						agentID, sv.label, truncate(action, 100), scope),
+				})
+				break
+			}
+		}
+	}
+
+	// Detect excessive tool usage — agent using too many tools in a single plan
+	// Ref: 2026 agentic amplification — more tools = larger attack surface
+	if toolCount > 10 {
+		sev := core.SeverityMedium
+		if toolCount > 25 {
+			sev = core.SeverityHigh
+		}
+		alerts = append(alerts, agencyAlert{
+			alertType: "excessive_agency_tool_sprawl",
+			severity:  sev,
+			title:     "Agent Tool Sprawl",
+			desc: fmt.Sprintf("Agent %s using %d tools — excessive tool access increases attack surface",
+				agentID, toolCount),
+		})
+	}
+
+	// Detect overly complex plans — many steps suggest autonomous decision-making
+	if planSteps > 15 {
+		alerts = append(alerts, agencyAlert{
+			alertType: "excessive_agency_complex_plan",
+			severity:  core.SeverityMedium,
+			title:     "Agent Complex Autonomous Plan",
+			desc: fmt.Sprintf("Agent %s created plan with %d steps — complex autonomous plans should require checkpoints",
+				agentID, planSteps),
+		})
+	}
+
+	// Detect cross-agent privilege escalation (2026 agentic pattern)
+	delegateTo := getStringDetail(event, "delegate_to")
+	if delegateTo != "" {
+		delegateScope := getStringDetail(event, "delegate_scope")
+		if delegateScope != "" && (strings.Contains(strings.ToLower(delegateScope), "admin") ||
+			strings.Contains(strings.ToLower(delegateScope), "elevated") ||
+			strings.Contains(strings.ToLower(delegateScope), "unrestricted")) {
+			alerts = append(alerts, agencyAlert{
+				alertType: "excessive_agency_privilege_delegation",
+				severity:  core.SeverityCritical,
+				title:     "Cross-Agent Privilege Escalation",
+				desc: fmt.Sprintf("Agent %s delegating to %s with elevated scope %q — potential privilege escalation",
+					agentID, delegateTo, delegateScope),
+			})
+		}
+	}
+
+	for _, a := range alerts {
+		newEvent := core.NewSecurityEvent(ModuleName, a.alertType, a.severity, a.desc)
+		newEvent.SourceIP = event.SourceIP
+		newEvent.Details["agent_id"] = agentID
+		newEvent.Details["action"] = action
+		newEvent.Details["scope"] = scope
+
+		if f.bus != nil {
+			_ = f.bus.PublishEvent(newEvent)
+		}
+
+		alert := core.NewAlert(newEvent, a.title, a.desc)
+		alert.Mitigations = getExcessiveAgencyMitigations(a.alertType)
+
+		if f.pipeline != nil {
+			f.pipeline.Process(alert)
+		}
+	}
+}
+
+type agencyAlert struct {
+	alertType string
+	severity  core.Severity
+	title     string
+	desc      string
+}
+
+// ============================================================================
+// RAG / Vector Embedding Weakness Detection (LLM08:2025)
+// ============================================================================
+
+// analyzeRAGRetrieval detects poisoned or manipulated content in RAG retrieval results.
+// Ref: OWASP LLM08:2025 — Vector and Embedding Weaknesses.
+// Ref: 2026 research — indirect prompt injection via RAG is the primary vector for
+// attacking agentic systems that consume external documents.
+func (f *Firewall) analyzeRAGRetrieval(event *core.SecurityEvent) {
+	content := getStringDetail(event, "retrieved_content")
+	if content == "" {
+		content = getStringDetail(event, "context")
+	}
+	if content == "" {
+		return
+	}
+	source := getStringDetail(event, "source")
+	similarity := getStringDetail(event, "similarity_score")
+
+	var alerts []agencyAlert
+
+	// Scan retrieved content for embedded injection payloads
+	decoded := decodeEvasionLayers(content)
+	detections := f.scanInput(decoded)
+	if len(detections) > 0 {
+		alerts = append(alerts, agencyAlert{
+			alertType: "rag_injection_detected",
+			severity:  core.SeverityCritical,
+			title:     "RAG Poisoning: Injection in Retrieved Content",
+			desc: fmt.Sprintf("Retrieved content from %q contains %d injection pattern(s) — indirect prompt injection via RAG",
+				truncate(source, 100), len(detections)),
+		})
+	}
+
+	// Detect hidden instructions in HTML comments, markdown comments, or invisible text
+	hiddenContentPatterns := []struct {
+		name    string
+		pattern *regexp.Regexp
+	}{
+		{"html_comment_injection", regexp.MustCompile("(?i)<!--[^>]*?(ignore|override|system|instruction|execute|follow these)[^>]*?-->")},
+		{"invisible_text_injection", regexp.MustCompile("(?i)(\\{\\s*color\\s*:\\s*white|display\\s*:\\s*none|font-size\\s*:\\s*0|opacity\\s*:\\s*0)")},
+		{"markdown_hidden_injection", regexp.MustCompile("(?i)\\[//\\]:\\s*#\\s*\\(.*?(ignore|override|system|instruction).*?\\)")},
+	}
+	for _, hp := range hiddenContentPatterns {
+		if hp.pattern.MatchString(content) {
+			alerts = append(alerts, agencyAlert{
+				alertType: "rag_hidden_content",
+				severity:  core.SeverityHigh,
+				title:     fmt.Sprintf("RAG Hidden Content: %s", hp.name),
+				desc: fmt.Sprintf("Retrieved content from %q contains hidden instructions (%s) — likely indirect injection",
+					truncate(source, 100), hp.name),
+			})
+			break
+		}
+	}
+
+	// Detect anomalous retrieval — very low similarity scores may indicate adversarial embeddings
+	if similarity != "" {
+		// Parse similarity as a simple heuristic
+		simLower := strings.ToLower(similarity)
+		if strings.Contains(simLower, "0.") {
+			// If similarity is below 0.3, the retrieval is suspicious
+			if strings.HasPrefix(simLower, "0.0") || strings.HasPrefix(simLower, "0.1") || strings.HasPrefix(simLower, "0.2") {
+				alerts = append(alerts, agencyAlert{
+					alertType: "rag_low_similarity",
+					severity:  core.SeverityMedium,
+					title:     "RAG Anomalous Retrieval: Low Similarity",
+					desc: fmt.Sprintf("Retrieved content from %q has low similarity score %s — may indicate adversarial embedding manipulation",
+						truncate(source, 100), similarity),
+				})
+			}
+		}
+	}
+
+	for _, a := range alerts {
+		newEvent := core.NewSecurityEvent(ModuleName, a.alertType, a.severity, a.desc)
+		newEvent.SourceIP = event.SourceIP
+		newEvent.Details["source"] = source
+		newEvent.Details["similarity_score"] = similarity
+
+		if f.bus != nil {
+			_ = f.bus.PublishEvent(newEvent)
+		}
+
+		alert := core.NewAlert(newEvent, a.title, a.desc)
+		alert.Mitigations = getRAGMitigations(a.alertType)
+
+		if f.pipeline != nil {
+			f.pipeline.Process(alert)
+		}
+	}
+}
+
+// ============================================================================
+// Misinformation / Hallucination Detection (LLM09:2025)
+// ============================================================================
+
+// analyzeMisinformation detects hallucination indicators in LLM output,
+// including fabricated citations, false confidence markers, and contradictions.
+// Ref: OWASP LLM09:2025 — "Overreliance" renamed to "Misinformation".
+// This is heuristic-based since we can't do full fact-checking without external services.
+func (f *Firewall) analyzeMisinformation(event *core.SecurityEvent) {
+	content := getStringDetail(event, "content")
+	if content == "" {
+		content = getStringDetail(event, "output")
+	}
+	if content == "" {
+		return
+	}
+	claimType := getStringDetail(event, "claim_type")
+
+	var alerts []agencyAlert
+
+	// Detect fabricated academic citations (common hallucination pattern)
+	// LLMs frequently invent plausible-looking DOIs, arXiv IDs, and paper titles
+	fabricatedCitationPatterns := []struct {
+		name    string
+		pattern *regexp.Regexp
+	}{
+		{"fabricated_url_citation", regexp.MustCompile("(?i)\\(?(https?://[^\\s)]+)\\)?\\s*,?\\s*(accessed|retrieved|visited)\\s+(on\\s+)?\\d")},
+		{"invented_author_citation", regexp.MustCompile("(?i)et\\s+al\\.?,?\\s*\\(?\\d{4}\\)?")},
+		{"fake_journal_reference", regexp.MustCompile("(?i)(journal\\s+of|proceedings\\s+of|international\\s+conference\\s+on)\\s+[A-Z][a-z]+\\s+[A-Z][a-z]+.*?vol\\.?\\s*\\d+")},
+	}
+	citationCount := 0
+	for _, cp := range fabricatedCitationPatterns {
+		matches := cp.pattern.FindAllString(content, -1)
+		citationCount += len(matches)
+	}
+	if citationCount >= 3 {
+		alerts = append(alerts, agencyAlert{
+			alertType: "misinformation_fabricated_citations",
+			severity:  core.SeverityMedium,
+			title:     "Potential Fabricated Citations",
+			desc: fmt.Sprintf("Output contains %d citation-like references — LLMs commonly hallucinate academic citations",
+				citationCount),
+		})
+	}
+
+	// Detect false confidence markers — absolute claims without hedging
+	falseConfidencePattern := regexp.MustCompile("(?i)(it\\s+is\\s+(a\\s+)?well[- ]known\\s+fact|it\\s+is\\s+scientifically\\s+proven|studies\\s+(have\\s+)?conclusively\\s+shown|there\\s+is\\s+no\\s+doubt|100%\\s+(safe|effective|accurate|certain))")
+	if falseConfidencePattern.MatchString(content) {
+		alerts = append(alerts, agencyAlert{
+			alertType: "misinformation_false_confidence",
+			severity:  core.SeverityMedium,
+			title:     "False Confidence Markers in Output",
+			desc:      "Output contains absolute confidence claims — may indicate hallucinated assertions",
+		})
+	}
+
+	// Detect self-contradictions within the same output
+	// Heuristic: look for negation of previously stated claims
+	contradictionPattern := regexp.MustCompile("(?i)(however,?\\s+(this|that|it)\\s+is\\s+(not|incorrect|false|wrong)|actually,?\\s+(the\\s+opposite|that'?s\\s+not\\s+(true|correct|right))|contrary\\s+to\\s+what\\s+I\\s+(just\\s+)?said)")
+	if contradictionPattern.MatchString(content) {
+		alerts = append(alerts, agencyAlert{
+			alertType: "misinformation_self_contradiction",
+			severity:  core.SeverityLow,
+			title:     "Self-Contradiction in Output",
+			desc:      "Output contains self-contradictory statements — may indicate confabulation",
+		})
+	}
+
+	// Medical/legal/financial misinformation markers
+	if claimType == "medical" || claimType == "legal" || claimType == "financial" {
+		dangerousClaims := regexp.MustCompile("(?i)(you\\s+should\\s+(take|stop\\s+taking|increase|decrease)\\s+.{0,30}(medication|dosage|drug)|this\\s+is\\s+not\\s+medical\\s+advice.*?but\\s+you\\s+should|guaranteed\\s+(return|profit|cure|treatment))")
+		if dangerousClaims.MatchString(content) {
+			alerts = append(alerts, agencyAlert{
+				alertType: "misinformation_dangerous_advice",
+				severity:  core.SeverityHigh,
+				title:     fmt.Sprintf("Potentially Dangerous %s Advice", strings.Title(claimType)),
+				desc: fmt.Sprintf("Output contains specific %s advice that could cause harm if hallucinated",
+					claimType),
+			})
+		}
+	}
+
+	for _, a := range alerts {
+		newEvent := core.NewSecurityEvent(ModuleName, a.alertType, a.severity, a.desc)
+		newEvent.SourceIP = event.SourceIP
+		newEvent.Details["claim_type"] = claimType
+
+		if f.bus != nil {
+			_ = f.bus.PublishEvent(newEvent)
+		}
+
+		alert := core.NewAlert(newEvent, a.title, a.desc)
+		alert.Mitigations = getMisinformationMitigations(a.alertType)
+
+		if f.pipeline != nil {
+			f.pipeline.Process(alert)
+		}
+	}
+}
+
+// ============================================================================
+// Contextual Mitigations
+// ============================================================================
+
+// getLLMInputMitigations returns context-specific mitigations based on detected categories.
+func getLLMInputMitigations(categories []string) []string {
+	mitigationMap := map[string][]string{
+		"prompt_injection": {
+			"Enforce strict separation between system instructions and user input",
+			"Use structured message formats (system/user/assistant roles) to prevent injection",
+			"Apply input validation and sanitization before LLM processing",
+		},
+		"jailbreak": {
+			"Implement multi-layer safety classifiers before and after LLM processing",
+			"Use constitutional AI or RLHF-trained refusal behaviors",
+			"Monitor for known jailbreak patterns and update detection rules regularly",
+		},
+		"data_leak": {
+			"Apply output filtering to redact PII, secrets, and sensitive data",
+			"Implement data loss prevention (DLP) on LLM output streams",
+			"Restrict LLM access to sensitive data stores via least-privilege policies",
+		},
+		"tool_abuse": {
+			"Require human approval for destructive or sensitive tool invocations",
+			"Implement tool-use policies that validate action sequences",
+			"Sandbox agent tool access with minimal required permissions",
+		},
+		"policy_puppetry": {
+			"Reject inputs containing structured configuration-like content (XML/JSON/INI)",
+			"Validate that user inputs do not mimic system configuration formats",
+			"Use allowlists for acceptable input structures",
+		},
+		"flip_attack": {
+			"Normalize and decode all text layers before safety classification",
+			"Apply bidirectional text analysis to detect reversed content",
+			"Use character-level analysis alongside token-level safety checks",
+		},
+		"many_shot": {
+			"Limit context window size for user-provided content",
+			"Detect and reject inputs with excessive repetitive Q&A patterns",
+			"Apply sliding-window analysis for long-context inputs",
+		},
+		"multi_turn_attack": {
+			"Track conversation history for gradual escalation patterns",
+			"Implement per-session suspicion scoring with automatic escalation",
+			"Apply rate limiting on suspicious sessions",
+		},
+		"encoding_evasion": {
+			"Decode all encoding layers (base64, hex, unicode, ROT13) before analysis",
+			"Normalize homoglyphs and leetspeak substitutions",
+			"Flag inputs that change meaning after decoding as high-risk",
+		},
+		"semantic_injection": {
+			"Analyze input structure for instruction-like patterns",
+			"Flag inputs with imperative directives, role assignments, or boundary markers",
+			"Use semantic similarity to detect inputs that resemble system prompts",
+		},
+		"temporal_attack": {
+			"Reject prompts that attempt to set temporal context to bypass safety rules",
+			"Ensure safety guidelines are not era-dependent in system prompts",
+		},
+		"narrative_engineering": {
+			"Detect fictional world-building that suspends content policies",
+			"Ensure safety rules apply regardless of narrative framing",
+			"Flag character immersion instructions that override refusal behavior",
+		},
+		"agent_attack": {
+			"Validate all external content before allowing agent processing",
+			"Implement memory integrity checks for persistent agent context",
+			"Require explicit user confirmation for instructions found in external documents",
+		},
+		"echo_chamber": {
+			"Track and validate claims about prior conversation content",
+			"Implement conversation integrity verification",
+			"Detect gradual safeguard erosion across conversation turns",
+		},
+		"fallacy_failure": {
+			"Detect fictional framing combined with requests for realistic harmful content",
+			"Apply safety rules regardless of academic or creative framing",
+		},
+		"concretization": {
+			"Monitor iterative refinement requests that progressively add harmful detail",
+			"Implement cumulative harm scoring across conversation turns",
+		},
+		"distraction_attack": {
+			"Analyze all embedded tasks within complex prompts",
+			"Detect hidden task markers and auxiliary task patterns",
+		},
+		"artistic_framing": {
+			"Apply content safety rules to artistic and poetic output requests",
+			"Detect harmful content requests disguised as creative writing exercises",
+		},
+		"automated_attack": {
+			"Detect automated prompt optimization patterns (iteration counters, scores)",
+			"Implement CAPTCHA or proof-of-work for high-volume prompt submissions",
+		},
+		"token_manipulation": {
+			"Apply character-level normalization to detect token-breaking attacks",
+			"Use multiple tokenization strategies for safety classification",
+		},
+	}
+
+	seen := make(map[string]bool)
+	var result []string
+	for _, cat := range categories {
+		if mits, ok := mitigationMap[cat]; ok {
+			for _, m := range mits {
+				if !seen[m] {
+					seen[m] = true
+					result = append(result, m)
+				}
+			}
+		}
+	}
+	if len(result) == 0 {
+		return []string{
+			"Sanitize user input before passing to LLM",
+			"Implement input/output guardrails",
+			"Monitor and limit token usage per user",
+		}
+	}
+	return result
+}
+
+// getOutputMitigations returns context-specific mitigations for output violations.
+func getOutputMitigations(category string) []string {
+	switch category {
+	case "pii_leak":
+		return []string{
+			"Implement PII detection and redaction on all LLM outputs",
+			"Use data masking for sensitive fields in training and retrieval data",
+			"Apply output filtering with regex and NER-based PII detection",
+			"Audit training data for PII contamination",
+		}
+	case "secret_leak":
+		return []string{
+			"Scan LLM outputs for API keys, tokens, and credentials before delivery",
+			"Remove secrets from training data and RAG knowledge bases",
+			"Implement secret rotation for any credentials detected in output",
+			"Use vault-based secret management to prevent LLM access to raw secrets",
+		}
+	case "prompt_leak":
+		return []string{
+			"Implement output classifiers to detect system prompt leakage (OWASP LLM07:2025)",
+			"Use prompt isolation techniques to prevent instruction echo",
+			"Monitor outputs for role definitions, guardrail configs, and boundary markers",
+			"Avoid embedding sensitive configuration in system prompts",
+		}
+	case "harmful_output":
+		return []string{
+			"Apply output safety classifiers to detect harmful content",
+			"Implement content filtering for code execution commands",
+			"Use sandboxed execution environments for any LLM-generated code",
+		}
+	case "misinformation":
+		return []string{
+			"Implement citation verification for LLM-generated references",
+			"Add disclaimers to LLM outputs in high-stakes domains",
+			"Use retrieval-augmented generation with verified sources",
+			"Flag outputs with absolute confidence claims for human review",
+		}
+	default:
+		return []string{
+			"Apply output filtering to prevent data leakage",
+			"Monitor LLM outputs for policy violations",
+		}
+	}
+}
+
+// getExcessiveAgencyMitigations returns mitigations for excessive agency alerts.
+func getExcessiveAgencyMitigations(alertType string) []string {
+	switch alertType {
+	case "excessive_agency_no_approval":
+		return []string{
+			"Enforce human-in-the-loop approval for all high-impact agent actions (OWASP LLM06:2025)",
+			"Implement approval gates with timeout-based denial",
+			"Log all agent actions with approval status for audit",
+		}
+	case "excessive_agency_scope_violation":
+		return []string{
+			"Define and enforce strict scope boundaries per agent role",
+			"Implement least-privilege tool access — agents should only access tools they need",
+			"Use scope-aware action validators that reject out-of-scope operations",
+		}
+	case "excessive_agency_tool_sprawl":
+		return []string{
+			"Limit the number of tools available to each agent",
+			"Implement tool access reviews and remove unused tool permissions",
+			"Use role-based tool access control (OWASP Agentic Top 10 2026)",
+		}
+	case "excessive_agency_complex_plan":
+		return []string{
+			"Require human checkpoints for plans exceeding a step threshold",
+			"Implement plan review and approval workflows",
+			"Break complex plans into smaller, independently approved stages",
+		}
+	case "excessive_agency_privilege_delegation":
+		return []string{
+			"Prevent agents from delegating elevated privileges to other agents",
+			"Implement delegation scope validation — delegated scope must not exceed delegator scope",
+			"Monitor cross-agent communication for privilege escalation patterns (2026 agentic threat)",
+		}
+	default:
+		return []string{
+			"Apply principle of least privilege to all agent tool access",
+			"Implement human-in-the-loop for sensitive operations",
+		}
+	}
+}
+
+// getRAGMitigations returns mitigations for RAG/vector embedding alerts.
+func getRAGMitigations(alertType string) []string {
+	switch alertType {
+	case "rag_injection_detected":
+		return []string{
+			"Scan all retrieved content for injection payloads before passing to LLM (OWASP LLM08:2025)",
+			"Implement content sanitization on RAG retrieval results",
+			"Use separate safety classifiers for retrieved context vs user input",
+			"Maintain allowlists for trusted content sources",
+		}
+	case "rag_hidden_content":
+		return []string{
+			"Strip HTML comments, invisible CSS, and hidden markdown from retrieved content",
+			"Render and re-extract text from documents to remove hidden layers",
+			"Validate document integrity before indexing into vector stores",
+		}
+	case "rag_low_similarity":
+		return []string{
+			"Set minimum similarity thresholds for RAG retrieval results",
+			"Flag and review low-similarity retrievals before LLM consumption",
+			"Monitor for adversarial embedding manipulation in vector stores",
+		}
+	default:
+		return []string{
+			"Validate RAG retrieval results before LLM processing",
+			"Implement content integrity checks on vector store entries",
+		}
+	}
+}
+
+// getMisinformationMitigations returns mitigations for misinformation/hallucination alerts.
+func getMisinformationMitigations(alertType string) []string {
+	switch alertType {
+	case "misinformation_fabricated_citations":
+		return []string{
+			"Implement automated citation verification against known databases (OWASP LLM09:2025)",
+			"Add disclaimers that LLM-generated citations may be fabricated",
+			"Use retrieval-augmented generation with verified source databases",
+			"Cross-reference generated DOIs and arXiv IDs against real registries",
+		}
+	case "misinformation_false_confidence":
+		return []string{
+			"Flag absolute confidence claims for human review",
+			"Implement confidence calibration in LLM outputs",
+			"Add uncertainty markers to LLM-generated factual claims",
+		}
+	case "misinformation_self_contradiction":
+		return []string{
+			"Implement consistency checking across LLM output paragraphs",
+			"Flag self-contradictory outputs for regeneration or human review",
+			"Use chain-of-thought verification to detect logical inconsistencies",
+		}
+	case "misinformation_dangerous_advice":
+		return []string{
+			"Require domain expert review for medical, legal, and financial advice",
+			"Implement mandatory disclaimers for high-stakes domains",
+			"Restrict LLM from providing specific actionable advice in regulated domains",
+			"Route high-stakes queries to human experts instead of LLM-only responses",
+		}
+	default:
+		return []string{
+			"Implement fact-checking pipelines for LLM-generated content",
+			"Add disclaimers about potential inaccuracies in LLM output",
 		}
 	}
 }

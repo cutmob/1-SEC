@@ -15,7 +15,8 @@ import (
 const ModuleName = "cloud_posture"
 
 // Manager is the Cloud Posture Manager module providing configuration drift detection,
-// misconfiguration scanning, secrets sprawl detection, and multi-cloud policy enforcement.
+// misconfiguration scanning, secrets sprawl detection, multi-cloud policy enforcement,
+// Kubernetes security posture management (KSPM), and container security checks.
 type Manager struct {
 	logger        zerolog.Logger
 	bus           *core.EventBus
@@ -32,7 +33,7 @@ func New() *Manager { return &Manager{} }
 
 func (m *Manager) Name() string { return ModuleName }
 func (m *Manager) Description() string {
-	return "Cloud configuration drift detection, misconfiguration scanning, secrets sprawl detection, and multi-cloud policy enforcement"
+	return "Cloud configuration drift detection, misconfiguration scanning, secrets sprawl detection, multi-cloud policy enforcement, and Kubernetes security posture management (KSPM)"
 }
 func (m *Manager) EventTypes() []string {
 	return []string{
@@ -41,6 +42,8 @@ func (m *Manager) EventTypes() []string {
 		"secret_detected", "credential_found",
 		"log_entry", "audit_log",
 		"policy_check", "compliance_scan",
+		"k8s_rbac_change", "k8s_admission", "k8s_network_policy",
+		"container_config", "pod_security",
 	}
 }
 
@@ -78,6 +81,10 @@ func (m *Manager) HandleEvent(event *core.SecurityEvent) error {
 		m.handleLogForSecrets(event)
 	case "policy_check", "compliance_scan":
 		m.handlePolicyCheck(event)
+	case "k8s_rbac_change", "k8s_admission", "k8s_network_policy":
+		m.handleKubernetesEvent(event)
+	case "container_config", "pod_security":
+		m.handleContainerPosture(event)
 	}
 	return nil
 }
@@ -196,6 +203,142 @@ func (m *Manager) handlePolicyCheck(event *core.SecurityEvent) {
 	}
 }
 
+// handleKubernetesEvent detects Kubernetes security posture issues (KSPM).
+// Ref: ARMO, Aqua, Sysdig KSPM best practices 2025-2026
+func (m *Manager) handleKubernetesEvent(event *core.SecurityEvent) {
+	namespace := getStringDetail(event, "namespace")
+	resource := getStringDetail(event, "resource")
+	user := getStringDetail(event, "user")
+	action := getStringDetail(event, "action")
+
+	switch event.Type {
+	case "k8s_rbac_change":
+		role := getStringDetail(event, "role")
+		verbs := getStringDetail(event, "verbs")
+		resources := getStringDetail(event, "resources")
+
+		// Detect wildcard RBAC permissions
+		if strings.Contains(verbs, "*") || strings.Contains(resources, "*") {
+			m.raiseAlert(event, core.SeverityCritical,
+				"Kubernetes RBAC Wildcard Permissions",
+				fmt.Sprintf("RBAC role %q in namespace %q grants wildcard permissions (verbs: %s, resources: %s). "+
+					"Changed by %s. Apply least-privilege RBAC.",
+					role, namespace, verbs, resources, user),
+				"k8s_rbac_wildcard")
+		}
+
+		// Detect cluster-admin binding to non-system accounts
+		if strings.Contains(strings.ToLower(role), "cluster-admin") &&
+			!strings.HasPrefix(user, "system:") {
+			m.raiseAlert(event, core.SeverityHigh,
+				"Kubernetes Cluster-Admin Binding",
+				fmt.Sprintf("User %q bound to cluster-admin role in namespace %q. "+
+					"Cluster-admin grants unrestricted access to all resources.",
+					user, namespace),
+				"k8s_cluster_admin_binding")
+		}
+
+		// Detect secrets access grants
+		if strings.Contains(strings.ToLower(resources), "secrets") &&
+			(strings.Contains(verbs, "get") || strings.Contains(verbs, "list") || strings.Contains(verbs, "*")) {
+			m.raiseAlert(event, core.SeverityHigh,
+				"Kubernetes Secrets Access Granted",
+				fmt.Sprintf("RBAC role %q grants access to secrets (verbs: %s) in namespace %q. "+
+					"Secrets access should be tightly controlled.",
+					role, verbs, namespace),
+				"k8s_secrets_access")
+		}
+
+	case "k8s_admission":
+		// Detect privileged container admission
+		privileged := getStringDetail(event, "privileged")
+		hostNetwork := getStringDetail(event, "host_network")
+		hostPID := getStringDetail(event, "host_pid")
+
+		if privileged == "true" {
+			m.raiseAlert(event, core.SeverityCritical,
+				"Privileged Container Admitted",
+				fmt.Sprintf("Privileged container admitted in namespace %q (resource: %s) by %s. "+
+					"Privileged containers can escape to the host.",
+					namespace, resource, user),
+				"k8s_privileged_container")
+		}
+
+		if hostNetwork == "true" || hostPID == "true" {
+			m.raiseAlert(event, core.SeverityHigh,
+				"Container with Host Namespace Access",
+				fmt.Sprintf("Container in namespace %q admitted with host access (hostNetwork: %s, hostPID: %s). "+
+					"Host namespace sharing breaks container isolation.",
+					namespace, hostNetwork, hostPID),
+				"k8s_host_namespace")
+		}
+
+	case "k8s_network_policy":
+		// Detect missing or overly permissive network policies
+		policyAction := getStringDetail(event, "policy_action")
+		if policyAction == "deleted" || action == "delete" {
+			m.raiseAlert(event, core.SeverityHigh,
+				"Kubernetes Network Policy Deleted",
+				fmt.Sprintf("Network policy %q deleted from namespace %q by %s. "+
+					"Without network policies, all pod-to-pod traffic is allowed.",
+					resource, namespace, user),
+				"k8s_netpol_deleted")
+		}
+	}
+}
+
+// handleContainerPosture detects container security misconfigurations.
+func (m *Manager) handleContainerPosture(event *core.SecurityEvent) {
+	image := getStringDetail(event, "image")
+	runAsRoot := getStringDetail(event, "run_as_root")
+	readOnlyFS := getStringDetail(event, "read_only_root_fs")
+	capabilities := getStringDetail(event, "capabilities")
+	namespace := getStringDetail(event, "namespace")
+
+	if runAsRoot == "true" {
+		m.raiseAlert(event, core.SeverityHigh,
+			"Container Running as Root",
+			fmt.Sprintf("Container image %q in namespace %q is running as root. "+
+				"Containers should run as non-root users.",
+				image, namespace),
+			"container_root_user")
+	}
+
+	if readOnlyFS == "false" || readOnlyFS == "" {
+		m.raiseAlert(event, core.SeverityMedium,
+			"Container Without Read-Only Root Filesystem",
+			fmt.Sprintf("Container image %q in namespace %q does not have a read-only root filesystem. "+
+				"Writable filesystems increase the attack surface.",
+				image, namespace),
+			"container_writable_fs")
+	}
+
+	// Detect dangerous capabilities
+	capsLower := strings.ToLower(capabilities)
+	dangerousCaps := []string{"sys_admin", "sys_ptrace", "net_admin", "net_raw", "sys_module", "dac_override"}
+	for _, cap := range dangerousCaps {
+		if strings.Contains(capsLower, cap) {
+			m.raiseAlert(event, core.SeverityHigh,
+				"Container with Dangerous Capability",
+				fmt.Sprintf("Container image %q in namespace %q has dangerous capability %s. "+
+					"Drop all capabilities and add only what is needed.",
+					image, namespace, strings.ToUpper(cap)),
+				"container_dangerous_cap")
+			break
+		}
+	}
+
+	// Detect images without tags or using :latest
+	if strings.HasSuffix(image, ":latest") || (!strings.Contains(image, ":") && image != "") {
+		m.raiseAlert(event, core.SeverityMedium,
+			"Container Using Unpinned Image Tag",
+			fmt.Sprintf("Container image %q uses :latest or no tag. "+
+				"Pin images to specific digests or version tags for reproducibility.",
+				image),
+			"container_unpinned_image")
+	}
+}
+
 func (m *Manager) raiseAlert(event *core.SecurityEvent, severity core.Severity, title, description, alertType string) {
 	newEvent := core.NewSecurityEvent(ModuleName, alertType, severity, description)
 	newEvent.SourceIP = event.SourceIP
@@ -206,15 +349,81 @@ func (m *Manager) raiseAlert(event *core.SecurityEvent, severity core.Severity, 
 	}
 
 	alert := core.NewAlert(newEvent, title, description)
-	alert.Mitigations = []string{
-		"Implement infrastructure-as-code with drift detection",
-		"Use policy-as-code frameworks (OPA, Sentinel) for enforcement",
-		"Rotate any exposed secrets immediately",
-		"Enable cloud provider security scanning services",
-		"Maintain a baseline configuration and alert on deviations",
-	}
+	alert.Mitigations = getCloudPostureMitigations(alertType)
 	if m.pipeline != nil {
 		m.pipeline.Process(alert)
+	}
+}
+
+func getCloudPostureMitigations(alertType string) []string {
+	switch alertType {
+	case "config_drift", "rapid_config_changes":
+		return []string{
+			"Implement infrastructure-as-code with drift detection and auto-remediation",
+			"Use GitOps workflows to ensure all changes go through version control",
+			"Alert on out-of-band changes that bypass the IaC pipeline",
+		}
+	case "security_degradation":
+		return []string{
+			"Immediately revert the security-degrading change",
+			"Implement preventive guardrails (SCPs, OPA policies) to block degradations",
+			"Require approval workflows for security-sensitive configuration changes",
+		}
+	case "secret_detected", "secret_in_logs":
+		return []string{
+			"Rotate the exposed secret immediately",
+			"Remove the secret from source code/logs and scrub from history",
+			"Use a secrets manager (Vault, AWS Secrets Manager) instead of hardcoded values",
+		}
+	case "public_bucket", "public_database", "open_security_group":
+		return []string{
+			"Remove public access immediately",
+			"Implement account-level public access blocks",
+			"Deploy automated remediation for public resource detection",
+		}
+	case "permissive_iam":
+		return []string{
+			"Replace wildcard permissions with specific resource and action grants",
+			"Use IAM Access Analyzer to identify unused permissions",
+			"Implement permission boundaries to limit maximum possible permissions",
+		}
+	case "k8s_rbac_wildcard", "k8s_cluster_admin_binding", "k8s_secrets_access":
+		return []string{
+			"Apply least-privilege RBAC: grant only the specific verbs and resources needed",
+			"Avoid cluster-admin bindings for non-system accounts",
+			"Use namespace-scoped roles instead of cluster-scoped where possible",
+			"Audit RBAC bindings regularly with tools like kubectl-who-can",
+		}
+	case "k8s_privileged_container", "k8s_host_namespace":
+		return []string{
+			"Enforce Pod Security Standards (Restricted profile) via admission controllers",
+			"Block privileged containers and host namespace access by default",
+			"Use OPA Gatekeeper or Kyverno to enforce container security policies",
+		}
+	case "k8s_netpol_deleted":
+		return []string{
+			"Implement default-deny network policies for all namespaces",
+			"Protect network policies with RBAC to prevent unauthorized deletion",
+			"Monitor for network policy changes and alert on deletions",
+		}
+	case "container_root_user", "container_writable_fs", "container_dangerous_cap":
+		return []string{
+			"Run containers as non-root with a specific UID",
+			"Set readOnlyRootFilesystem: true and use emptyDir for writable paths",
+			"Drop all capabilities and add only required ones explicitly",
+		}
+	case "container_unpinned_image":
+		return []string{
+			"Pin container images to specific SHA256 digests",
+			"Use image scanning in CI/CD to catch vulnerabilities before deployment",
+			"Implement image allowlists in admission controllers",
+		}
+	default:
+		return []string{
+			"Review cloud configuration against security benchmarks (CIS, NIST)",
+			"Implement continuous posture monitoring and automated remediation",
+			"Maintain baseline configurations and alert on deviations",
+		}
 	}
 }
 
@@ -345,14 +554,24 @@ func NewSecretScanner() *SecretScanner {
 			{Name: "aws_secret_key", Type: "AWS Secret Key", Regex: regexp.MustCompile(`(?i)aws_secret_access_key\s*[=:]\s*[A-Za-z0-9/+=]{40}`)},
 			{Name: "github_token", Type: "GitHub Token", Regex: regexp.MustCompile(`ghp_[a-zA-Z0-9]{36}`)},
 			{Name: "github_oauth", Type: "GitHub OAuth", Regex: regexp.MustCompile(`gho_[a-zA-Z0-9]{36}`)},
+			{Name: "github_fine_grained", Type: "GitHub Fine-Grained PAT", Regex: regexp.MustCompile(`github_pat_[a-zA-Z0-9_]{22,}`)},
 			{Name: "gitlab_token", Type: "GitLab Token", Regex: regexp.MustCompile(`glpat-[a-zA-Z0-9\-]{20,}`)},
 			{Name: "slack_token", Type: "Slack Token", Regex: regexp.MustCompile(`xox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24,34}`)},
 			{Name: "openai_key", Type: "OpenAI API Key", Regex: regexp.MustCompile(`sk-[a-zA-Z0-9]{20,}`)},
+			{Name: "anthropic_key", Type: "Anthropic API Key", Regex: regexp.MustCompile(`sk-ant-[a-zA-Z0-9\-]{20,}`)},
 			{Name: "stripe_key", Type: "Stripe Key", Regex: regexp.MustCompile(`(?:sk|pk)_(test|live)_[a-zA-Z0-9]{24,}`)},
 			{Name: "private_key", Type: "Private Key", Regex: regexp.MustCompile(`-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+)?PRIVATE\s+KEY-----`)},
 			{Name: "generic_secret", Type: "Generic Secret", Regex: regexp.MustCompile(`(?i)(password|secret|token|api_key|apikey)\s*[=:]\s*['"][^'"]{8,}['"]`)},
 			{Name: "connection_string", Type: "Connection String", Regex: regexp.MustCompile(`(?i)(mongodb|postgres|mysql|redis|amqp)://[^\s]+:[^\s]+@`)},
 			{Name: "jwt_token", Type: "JWT Token", Regex: regexp.MustCompile(`eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}`)},
+			// 2025-2026 additions
+			{Name: "gcp_service_account", Type: "GCP Service Account Key", Regex: regexp.MustCompile(`(?i)"type"\s*:\s*"service_account"`)},
+			{Name: "azure_client_secret", Type: "Azure Client Secret", Regex: regexp.MustCompile(`(?i)(client_secret|AZURE_CLIENT_SECRET)\s*[=:]\s*[A-Za-z0-9\-_.~]{30,}`)},
+			{Name: "hashicorp_vault_token", Type: "Vault Token", Regex: regexp.MustCompile(`hvs\.[a-zA-Z0-9_-]{24,}`)},
+			{Name: "npm_token", Type: "NPM Token", Regex: regexp.MustCompile(`npm_[a-zA-Z0-9]{36}`)},
+			{Name: "pypi_token", Type: "PyPI Token", Regex: regexp.MustCompile(`pypi-[a-zA-Z0-9_-]{50,}`)},
+			{Name: "docker_hub_token", Type: "Docker Hub Token", Regex: regexp.MustCompile(`dckr_pat_[a-zA-Z0-9_-]{20,}`)},
+			{Name: "age_secret_key", Type: "Age Secret Key", Regex: regexp.MustCompile(`AGE-SECRET-KEY-[A-Z0-9]{59}`)},
 		},
 	}
 }
@@ -391,6 +610,8 @@ func NewCloudPolicyEngine() *CloudPolicyEngine {
 		{ResourceType: "security_group", Check: checkOpenSecurityGroup},
 		{ResourceType: "database", Check: checkPublicDatabase},
 		{ResourceType: "iam_policy", Check: checkOverlyPermissiveIAM},
+		{ResourceType: "k8s_pod", Check: checkK8sPodSecurity},
+		{ResourceType: "k8s_service", Check: checkK8sExposedService},
 	}
 	return pe
 }
@@ -458,6 +679,44 @@ func checkOverlyPermissiveIAM(event *core.SecurityEvent) *Misconfiguration {
 			Description: fmt.Sprintf("IAM policy on %s uses wildcard permissions. Apply least-privilege principle.", getStringDetail(event, "resource")),
 			Severity:    core.SeverityHigh,
 			AlertType:   "permissive_iam",
+		}
+	}
+	return nil
+}
+
+func checkK8sPodSecurity(event *core.SecurityEvent) *Misconfiguration {
+	privileged := getStringDetail(event, "privileged")
+	runAsRoot := getStringDetail(event, "run_as_root")
+	if privileged == "true" {
+		return &Misconfiguration{
+			Title:       "Privileged Pod Detected",
+			Description: fmt.Sprintf("Pod %s is running in privileged mode. This grants full host access.", getStringDetail(event, "resource")),
+			Severity:    core.SeverityCritical,
+			AlertType:   "k8s_privileged_pod",
+		}
+	}
+	if runAsRoot == "true" {
+		return &Misconfiguration{
+			Title:       "Pod Running as Root",
+			Description: fmt.Sprintf("Pod %s is running as root user. Use runAsNonRoot: true.", getStringDetail(event, "resource")),
+			Severity:    core.SeverityHigh,
+			AlertType:   "k8s_root_pod",
+		}
+	}
+	return nil
+}
+
+func checkK8sExposedService(event *core.SecurityEvent) *Misconfiguration {
+	serviceType := getStringDetail(event, "service_type")
+	if serviceType == "LoadBalancer" || serviceType == "NodePort" {
+		namespace := getStringDetail(event, "namespace")
+		if namespace == "default" || namespace == "kube-system" {
+			return &Misconfiguration{
+				Title:       "Kubernetes Service Exposed in Sensitive Namespace",
+				Description: fmt.Sprintf("Service %s of type %s in namespace %q is externally accessible. Sensitive namespaces should not expose services directly.", getStringDetail(event, "resource"), serviceType, namespace),
+				Severity:    core.SeverityHigh,
+				AlertType:   "k8s_exposed_service",
+			}
 		}
 	}
 	return nil

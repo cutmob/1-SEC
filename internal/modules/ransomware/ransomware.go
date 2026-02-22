@@ -45,6 +45,9 @@ func (i *Interceptor) EventTypes() []string {
 		"shadow_copy_delete", "vss_manipulation",
 		"backup_destruction", "backup_delete",
 		"wiper_activity", "disk_write", "mbr_write", "partition_write",
+		// 2025-2026: intermittent encryption, ESXi/hypervisor targeting, data-only extortion
+		"vm_encryption", "esxi_command", "hypervisor_activity",
+		"credential_dump", "credential_access",
 	}
 }
 
@@ -102,6 +105,12 @@ func (i *Interceptor) HandleEvent(event *core.SecurityEvent) error {
 		i.handleBackupDestruction(event)
 	case "wiper_activity", "disk_write", "mbr_write", "partition_write":
 		i.handleWiperActivity(event)
+	// 2025-2026: ESXi/hypervisor ransomware targeting
+	case "vm_encryption", "esxi_command", "hypervisor_activity":
+		i.handleHypervisorAttack(event)
+	// 2025-2026: pre-ransomware credential harvesting
+	case "credential_dump", "credential_access":
+		i.handleCredentialHarvesting(event)
 	}
 	return nil
 }
@@ -117,6 +126,32 @@ func (i *Interceptor) handleFileActivity(event *core.SecurityEvent) {
 			fmt.Sprintf("File with known ransomware extension detected: %s (process: %s). MITRE ATT&CK T1486: Data Encrypted for Impact.",
 				path, processName),
 			"ransomware_extension")
+		return
+	}
+
+	// 2025-2026: Intermittent/partial encryption detection.
+	// Modern ransomware encrypts only portions of files (first N bytes, random segments,
+	// or every Nth block) to evade entropy-based detection while still rendering files unusable.
+	partialEncryption := getStringDetail(event, "partial_encryption")
+	bytesEncrypted := getIntDetail(event, "bytes_encrypted")
+	fileSize := getIntDetail(event, "file_size")
+	encryptionPattern := getStringDetail(event, "encryption_pattern")
+
+	if partialEncryption == "true" || (bytesEncrypted > 0 && fileSize > 0 && bytesEncrypted < fileSize) {
+		ratio := float64(0)
+		if fileSize > 0 {
+			ratio = float64(bytesEncrypted) / float64(fileSize) * 100
+		}
+		desc := fmt.Sprintf("Intermittent encryption detected on %s by process %s. Only %.1f%% of file encrypted (%d/%d bytes).",
+			path, processName, ratio, bytesEncrypted, fileSize)
+		if encryptionPattern != "" {
+			desc += fmt.Sprintf(" Pattern: %s.", encryptionPattern)
+		}
+		desc += " Modern ransomware uses partial encryption to evade entropy-based detection while rendering files unusable."
+		i.raiseAlert(event, core.SeverityCritical,
+			"Intermittent Encryption Detected [T1486]",
+			desc,
+			"intermittent_encryption")
 		return
 	}
 
@@ -307,6 +342,60 @@ func (i *Interceptor) handleProcessExecution(event *core.SecurityEvent) {
 			return
 		}
 	}
+
+	// 2025-2026: ESXi/hypervisor ransomware commands (Akira, ESXiArgs, etc.)
+	// Hypervisor ransomware surged from 3% to 25% of encryption incidents in 2025.
+	esxiPatterns := []struct {
+		pattern string
+		desc    string
+	}{
+		{"esxcli vm process kill", "ESXi VM process kill (pre-encryption)"},
+		{"esxcli vm process list", "ESXi VM enumeration (reconnaissance)"},
+		{"vim-cmd vmsvc/power.off", "ESXi VM power off via vim-cmd"},
+		{"vim-cmd vmsvc/getallvms", "ESXi VM enumeration via vim-cmd"},
+		{"esxcli storage filesystem list", "ESXi datastore enumeration"},
+		{"esxcli system syslog config set", "ESXi syslog tampering (anti-forensics)"},
+		{"esxcli network firewall set --enabled false", "ESXi firewall disabled"},
+		{"/sbin/esxcli", "ESXi CLI tool execution"},
+		{"openssl enc -aes", "OpenSSL encryption (Linux ransomware)"},
+		{"chmod +x /tmp/encrypt", "Encryption binary staging in /tmp"},
+	}
+
+	for _, ep := range esxiPatterns {
+		if strings.Contains(commandLine, ep.pattern) {
+			i.raiseAlert(event, core.SeverityCritical,
+				"ESXi/Hypervisor Ransomware Activity [T1486]",
+				fmt.Sprintf("ESXi ransomware indicator: %s (%s). Process: %s. Hypervisor targeting can encrypt entire virtualized infrastructure in one strike.",
+					ep.desc, commandLine, processName),
+				"esxi_ransomware")
+			return
+		}
+	}
+
+	// 2025-2026: Linux-specific ransomware patterns
+	linuxRansomPatterns := []struct {
+		pattern string
+		desc    string
+	}{
+		{"find / -name *.vmdk", "VMDK file enumeration (VM disk targeting)"},
+		{"find / -name *.vmsn", "VM snapshot file enumeration"},
+		{"find / -name *.vmem", "VM memory file enumeration"},
+		{"chmod 777 /tmp/", "Permissive /tmp staging (ransomware deployment)"},
+		{"nohup ./encrypt", "Background encryption process launch"},
+		{"systemctl stop firewalld", "Linux firewall disabled"},
+		{"iptables -f", "Linux iptables flushed"},
+	}
+
+	for _, lp := range linuxRansomPatterns {
+		if strings.Contains(commandLine, lp.pattern) {
+			i.raiseAlert(event, core.SeverityHigh,
+				"Linux Ransomware Indicator [T1486]",
+				fmt.Sprintf("Linux ransomware indicator: %s (%s). Process: %s.",
+					lp.desc, commandLine, processName),
+				"linux_ransomware")
+			return
+		}
+	}
 }
 
 // handleShadowCopyDeletion handles direct shadow copy deletion events from OS-level monitoring.
@@ -441,6 +530,155 @@ func (i *Interceptor) checkCompoundAttack(event *core.SecurityEvent) {
 	}
 }
 
+// handleHypervisorAttack detects ESXi/hypervisor-targeted ransomware activity.
+// 2025-2026 threat: Akira, ESXiArgs, and other groups targeting VMware ESXi directly.
+// Hypervisor ransomware surged from 3% to 25% of encryption incidents in H2 2025.
+// Attackers use SSH tunneling, native esxcli commands, and LotL techniques.
+// References: Huntress 2025 report, Sygnia ESXi SSH tunneling research, CrowdStrike ESXi detection.
+func (i *Interceptor) handleHypervisorAttack(event *core.SecurityEvent) {
+	action := strings.ToLower(getStringDetail(event, "action"))
+	vmName := getStringDetail(event, "vm_name")
+	datastore := getStringDetail(event, "datastore")
+	processName := getStringDetail(event, "process_name")
+	commandLine := strings.ToLower(getStringDetail(event, "command_line"))
+	vmCount := getIntDetail(event, "vm_count")
+
+	// VM encryption event (direct VMDK/snapshot encryption)
+	if event.Type == "vm_encryption" {
+		desc := fmt.Sprintf("Virtual machine encryption detected. VM: %s, Datastore: %s, Process: %s.",
+			vmName, datastore, processName)
+		if vmCount > 1 {
+			desc += fmt.Sprintf(" %d VMs affected — mass VM encryption in progress.", vmCount)
+		}
+		desc += " MITRE ATT&CK T1486. Hypervisor-level encryption can destroy entire virtualized infrastructure."
+		i.raiseAlert(event, core.SeverityCritical,
+			"VM Encryption Detected [T1486]",
+			desc,
+			"vm_encryption")
+		return
+	}
+
+	// ESXi SSH tunneling (C2 via SSH SOCKS proxy)
+	if strings.Contains(commandLine, "ssh") && (strings.Contains(commandLine, "-d") || strings.Contains(commandLine, "socks") || strings.Contains(commandLine, "-r")) {
+		i.raiseAlert(event, core.SeverityCritical,
+			"ESXi SSH Tunneling Detected [T1572]",
+			fmt.Sprintf("SSH tunnel established on ESXi host: %s. Attackers use SSH SOCKS tunnels to proxy C2 traffic through ESXi, blending with legitimate admin traffic.",
+				commandLine),
+			"esxi_ssh_tunnel")
+		return
+	}
+
+	// ESXi configuration tampering
+	if strings.Contains(action, "config_change") || strings.Contains(action, "firewall_disable") ||
+		strings.Contains(action, "syslog_disable") {
+		i.raiseAlert(event, core.SeverityHigh,
+			"ESXi Configuration Tampering",
+			fmt.Sprintf("ESXi configuration modified: %s. Action: %s. Attackers tamper with ESXi configs to disable logging and security controls before encryption.",
+				commandLine, action),
+			"esxi_config_tamper")
+		return
+	}
+
+	// VM power-off (pre-encryption step — VMs must be off to encrypt VMDK files)
+	if strings.Contains(action, "power_off") || strings.Contains(action, "vm_kill") {
+		desc := fmt.Sprintf("VM power-off detected: %s. Process: %s.", vmName, processName)
+		if vmCount > 2 {
+			desc += fmt.Sprintf(" %d VMs powered off — likely pre-encryption preparation.", vmCount)
+		}
+		i.raiseAlert(event, core.SeverityHigh,
+			"Mass VM Power-Off Detected [T1529]",
+			desc,
+			"vm_power_off")
+		return
+	}
+
+	// Snapshot deletion (removing recovery points)
+	if strings.Contains(action, "snapshot_delete") || strings.Contains(action, "snapshot_remove") {
+		i.raiseAlert(event, core.SeverityHigh,
+			"VM Snapshot Deletion Detected [T1490]",
+			fmt.Sprintf("VM snapshot deletion: VM=%s, Action=%s. Removing snapshots eliminates recovery options before encryption.",
+				vmName, action),
+			"vm_snapshot_delete")
+	}
+}
+
+// handleCredentialHarvesting detects pre-ransomware credential harvesting.
+// 2025-2026 threat: ransomware operators increasingly harvest credentials before
+// deploying encryption to enable lateral movement and maximize blast radius.
+// References: Splunk 2026 ransomware trends, Microsoft Storm-0501 analysis.
+func (i *Interceptor) handleCredentialHarvesting(event *core.SecurityEvent) {
+	technique := strings.ToLower(getStringDetail(event, "technique"))
+	toolName := strings.ToLower(getStringDetail(event, "tool_name"))
+	processName := strings.ToLower(getStringDetail(event, "process_name"))
+	target := getStringDetail(event, "target")
+
+	// Check specific techniques first (before generic tool matching)
+
+	// LSASS memory access
+	if technique == "lsass_dump" || technique == "lsass_access" || strings.Contains(target, "lsass") {
+		i.raiseAlert(event, core.SeverityCritical,
+			"LSASS Memory Access Detected [T1003.001]",
+			fmt.Sprintf("LSASS process memory accessed by %s. Technique: %s. MITRE ATT&CK T1003.001: LSASS Memory. Credential theft enables lateral movement for ransomware deployment.",
+				processName, technique),
+			"lsass_access")
+		return
+	}
+
+	// NTLM hash extraction
+	if technique == "ntlm_dump" || technique == "sam_dump" || technique == "ntds_dump" {
+		i.raiseAlert(event, core.SeverityCritical,
+			"NTLM/SAM Hash Extraction [T1003.002]",
+			fmt.Sprintf("Credential hash extraction detected. Technique: %s, Process: %s, Target: %s. MITRE ATT&CK T1003.002/003. Extracted hashes enable pass-the-hash attacks for ransomware propagation.",
+				technique, processName, target),
+			"ntlm_hash_extraction")
+		return
+	}
+
+	// Kerberos ticket theft
+	if technique == "kerberoasting" || technique == "ticket_dump" || technique == "golden_ticket" {
+		i.raiseAlert(event, core.SeverityCritical,
+			"Kerberos Credential Theft [T1558]",
+			fmt.Sprintf("Kerberos credential theft detected. Technique: %s, Process: %s. MITRE ATT&CK T1558. Kerberos tickets enable domain-wide ransomware deployment.",
+				technique, processName),
+			"kerberos_theft")
+		return
+	}
+
+	// Known credential dumping tools
+	knownTools := []struct {
+		name string
+		desc string
+	}{
+		{"mimikatz", "Mimikatz credential dumper"},
+		{"lazagne", "LaZagne credential recovery"},
+		{"secretsdump", "Impacket secretsdump"},
+		{"pypykatz", "Python Mimikatz implementation"},
+		{"nanodump", "Nanodump LSASS dumper"},
+		{"procdump", "ProcDump (potential LSASS dump)"},
+		{"comsvcs.dll", "LSASS dump via comsvcs.dll"},
+	}
+
+	for _, kt := range knownTools {
+		if strings.Contains(toolName, kt.name) || strings.Contains(processName, kt.name) {
+			i.raiseAlert(event, core.SeverityCritical,
+				"Credential Dumping Tool Detected [T1003]",
+				fmt.Sprintf("Credential dumping tool detected: %s. Process: %s, Target: %s. MITRE ATT&CK T1003: OS Credential Dumping. This is a common pre-ransomware lateral movement technique.",
+					kt.desc, processName, target),
+				"credential_dump")
+			return
+		}
+	}
+
+	// Generic credential access
+	if technique != "" || toolName != "" {
+		i.raiseAlert(event, core.SeverityHigh,
+			"Pre-Ransomware Credential Access [T1003]",
+			fmt.Sprintf("Credential access detected. Technique: %s, Tool: %s, Process: %s, Target: %s. Credential harvesting often precedes ransomware deployment.",
+				technique, toolName, processName, target),
+			"credential_access")
+	}
+}
+
 func (i *Interceptor) raiseAlert(event *core.SecurityEvent, severity core.Severity, title, description, alertType string) {
 	newEvent := core.NewSecurityEvent(ModuleName, alertType, severity, description)
 	newEvent.SourceIP = event.SourceIP
@@ -492,6 +730,39 @@ func getRansomwareMitigations(alertType string) []string {
 			"Block outbound connections from the affected host",
 			"Identify what data was transferred and to where",
 			"This may indicate double-extortion ransomware (encrypt + leak)",
+		)
+	// 2025-2026: intermittent/partial encryption
+	case "intermittent_encryption":
+		return append(base,
+			"Intermittent encryption evades entropy-based detection — do not rely solely on entropy monitoring",
+			"Terminate the encrypting process immediately",
+			"Check file headers for corruption even if entropy appears normal",
+			"Restore affected files from immutable backups",
+		)
+	// 2025-2026: ESXi/hypervisor ransomware
+	case "esxi_ransomware", "vm_encryption", "esxi_ssh_tunnel", "esxi_config_tamper", "vm_power_off", "vm_snapshot_delete":
+		return append(base,
+			"Disable SSH on ESXi hosts when not in active maintenance",
+			"Enable ESXi lockdown mode to restrict management access",
+			"Stream ESXi logs to external SIEM — attackers tamper with local logs",
+			"Maintain offline backups of VM configurations and VMDK files",
+			"Restrict ESXi management to dedicated jump hosts with MFA",
+		)
+	// 2025-2026: Linux ransomware
+	case "linux_ransomware":
+		return append(base,
+			"Audit /tmp and world-writable directories for suspicious binaries",
+			"Implement application allowlisting on Linux servers",
+			"Monitor for unusual file enumeration patterns (find commands targeting VM files)",
+		)
+	// 2025-2026: pre-ransomware credential harvesting
+	case "credential_dump", "lsass_access", "ntlm_hash_extraction", "kerberos_theft", "credential_access":
+		return append(base,
+			"Enable Credential Guard and VBS key isolation on Windows endpoints",
+			"Rotate all potentially compromised credentials immediately",
+			"Check for lateral movement — credential theft precedes ransomware deployment",
+			"Implement LSASS protection (RunAsPPL) on all Windows systems",
+			"Monitor for pass-the-hash and pass-the-ticket activity",
 		)
 	default:
 		return append(base,

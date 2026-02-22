@@ -542,3 +542,162 @@ func TestGetIntSetting(t *testing.T) {
 
 // Compile-time interface check
 var _ core.Module = (*Fortress)(nil)
+
+// ─── AitM Detector ────────────────────────────────────────────────────────────
+
+func TestAitMDetector_NoIndicators(t *testing.T) {
+	ad := NewAitMDetector()
+	result := ad.AnalyzeLogin("10.0.0.1", "alice", "Mozilla/5.0", "", "", "", "password")
+	if result.Detected {
+		t.Error("expected no AitM detection with no indicators")
+	}
+}
+
+func TestAitMDetector_ProxyHeaders(t *testing.T) {
+	ad := NewAitMDetector()
+	result := ad.AnalyzeLogin("10.0.0.1", "alice", "Mozilla/5.0", "",
+		"X-Forwarded-For: 1.2.3.4, X-Real-IP: 1.2.3.4, Via: 1.1 proxy",
+		"3000", "password")
+	if !result.Detected {
+		t.Error("expected AitM detection with proxy headers + high latency")
+	}
+}
+
+func TestAitMDetector_KnownFingerprint(t *testing.T) {
+	ad := NewAitMDetector()
+	result := ad.AnalyzeLogin("10.0.0.1", "alice", "Mozilla/5.0", "evilginx",
+		"Via: 1.1 proxy", "", "password")
+	if !result.Detected {
+		t.Error("expected AitM detection with known fingerprint + Via header")
+	}
+}
+
+func TestAitMDetector_PasskeyRegistrationAnomaly(t *testing.T) {
+	ad := NewAitMDetector()
+	ad.RecordPasskeyRegistration("10.0.0.1", "user1")
+	ad.RecordPasskeyRegistration("10.0.0.1", "user2")
+	ad.RecordPasskeyRegistration("10.0.0.1", "user3")
+
+	if !ad.IsPasskeyRegistrationAnomaly("10.0.0.1") {
+		t.Error("expected anomaly with 3+ passkey registrations from same IP")
+	}
+}
+
+func TestAitMDetector_PasskeyRegistrationNormal(t *testing.T) {
+	ad := NewAitMDetector()
+	ad.RecordPasskeyRegistration("10.0.0.1", "user1")
+
+	if ad.IsPasskeyRegistrationAnomaly("10.0.0.1") {
+		t.Error("single registration should not be anomalous")
+	}
+}
+
+// ─── Passkey/FIDO2 Event Handling ─────────────────────────────────────────────
+
+func TestFortress_HandleEvent_PasskeyDowngrade(t *testing.T) {
+	cp := makeCapturingPipeline()
+	f := startedModuleWithPipeline(t, cp)
+	defer f.Stop()
+
+	ev := core.NewSecurityEvent("test", "passkey_auth", core.SeverityInfo, "passkey auth")
+	ev.Details["username"] = "alice"
+	ev.Details["method"] = "password"
+	ev.Details["previous_method"] = "passkey"
+	ev.SourceIP = "10.0.0.1"
+
+	f.HandleEvent(ev)
+
+	if !cp.hasAlertType("passkey_downgrade") {
+		t.Error("expected passkey_downgrade alert when downgrading from passkey to password")
+	}
+}
+
+func TestFortress_HandleEvent_WebAuthnOriginMismatch(t *testing.T) {
+	cp := makeCapturingPipeline()
+	f := startedModuleWithPipeline(t, cp)
+	defer f.Stop()
+
+	ev := core.NewSecurityEvent("test", "webauthn_ceremony", core.SeverityInfo, "webauthn")
+	ev.Details["username"] = "alice"
+	ev.Details["origin"] = "https://evil-phishing.com"
+	ev.Details["expected_origin"] = "https://legitimate-app.com"
+	ev.SourceIP = "10.0.0.1"
+
+	f.HandleEvent(ev)
+
+	if !cp.hasAlertType("webauthn_origin_mismatch") {
+		t.Error("expected webauthn_origin_mismatch alert")
+	}
+}
+
+func TestFortress_HandleEvent_AuthDowngrade(t *testing.T) {
+	cp := makeCapturingPipeline()
+	f := startedModuleWithPipeline(t, cp)
+	defer f.Stop()
+
+	ev := core.NewSecurityEvent("test", "auth_downgrade", core.SeverityInfo, "downgrade")
+	ev.Details["username"] = "bob"
+	ev.Details["from_method"] = "fido2"
+	ev.Details["to_method"] = "sms"
+	ev.Details["reason"] = "unsupported_user_agent"
+	ev.SourceIP = "10.0.0.2"
+
+	f.HandleEvent(ev)
+
+	if !cp.hasAlertType("auth_method_downgrade") {
+		t.Error("expected auth_method_downgrade alert")
+	}
+}
+
+// ─── PTR Record Validation ────────────────────────────────────────────────────
+
+func TestFortress_HandleEvent_PTRSpoofing(t *testing.T) {
+	cp := makeCapturingPipeline()
+	f := startedModuleWithPipeline(t, cp)
+	defer f.Stop()
+
+	// Login with a hostname that won't match PTR for 127.0.0.1
+	ev := core.NewSecurityEvent("test", "login_success", core.SeverityInfo, "login success")
+	ev.Details["username"] = "admin"
+	ev.Details["session_id"] = "sess-ptr-1"
+	ev.Details["hostname"] = "definitely-not-localhost.evil.com"
+	ev.SourceIP = "127.0.0.1"
+
+	f.HandleEvent(ev)
+
+	if !cp.hasAlertType("ptr_spoofing") {
+		t.Error("expected ptr_spoofing alert when hostname doesn't match reverse DNS")
+	}
+}
+
+func TestFortress_VerifyPTR_EmptyInputs(t *testing.T) {
+	f := startedModule(t)
+	defer f.Stop()
+
+	// Empty IP or hostname should return true (nothing to verify)
+	if !f.verifyPTR("", "example.com") {
+		t.Error("verifyPTR with empty IP should return true")
+	}
+	if !f.verifyPTR("10.0.0.1", "") {
+		t.Error("verifyPTR with empty hostname should return true")
+	}
+}
+
+// ─── Contextual Mitigations ──────────────────────────────────────────────────
+
+func TestGetAuthMitigations_Contextual(t *testing.T) {
+	alertTypes := []string{
+		"brute_force", "credential_stuffing", "post_bruteforce_login",
+		"session_hijack", "impossible_travel", "mfa_bypass", "mfa_fatigue",
+		"consent_phishing", "stolen_token", "password_spray",
+		"aitm_proxy_detected", "suspicious_passkey_registration",
+		"webauthn_origin_mismatch", "passkey_downgrade", "auth_method_downgrade",
+		"ptr_spoofing",
+	}
+	for _, at := range alertTypes {
+		mitigations := getAuthMitigations(at)
+		if len(mitigations) == 0 {
+			t.Errorf("getAuthMitigations(%q) returned empty", at)
+		}
+	}
+}

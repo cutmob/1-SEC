@@ -220,13 +220,7 @@ func (s *Sentinel) raiseAlert(event *core.SecurityEvent, severity core.Severity,
 	}
 
 	alert := core.NewAlert(newEvent, title, description)
-	alert.Mitigations = []string{
-		"Verify package integrity using checksums and signatures",
-		"Use a private registry mirror with allow-listing",
-		"Enable lockfile enforcement in your package manager",
-		"Implement SBOM scanning in your CI/CD pipeline",
-		"Review and audit all dependency changes before merging",
-	}
+	alert.Mitigations = getSupplyChainMitigations(alertType)
 	if s.pipeline != nil {
 		s.pipeline.Process(alert)
 	}
@@ -444,4 +438,83 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// getSupplyChainMitigations returns context-specific mitigations based on alert type.
+func getSupplyChainMitigations(alertType string) []string {
+	switch alertType {
+	case "typosquat":
+		return []string{
+			"Verify the package name against the official registry listing",
+			"Check package download counts, author, and publication date",
+			"Use lockfiles and hash pinning to prevent substitution",
+			"Implement package name validation in CI/CD pipelines",
+		}
+	case "package_integrity_violation":
+		return []string{
+			"Do not install the package — hash mismatch indicates tampering",
+			"Verify the package hash against the official registry",
+			"Check if the registry has been compromised",
+			"Use signed packages and verify signatures before installation",
+		}
+	case "dependency_confusion":
+		return []string{
+			"Configure package managers to prioritize private registries",
+			"Use scoped packages or namespaces to prevent confusion",
+			"Register placeholder packages on public registries for private package names",
+			"Implement registry allowlisting in your package manager configuration",
+		}
+	case "known_malicious_package":
+		return []string{
+			"Remove the package immediately from all environments",
+			"Audit systems where the package was installed for compromise indicators",
+			"Rotate any credentials that may have been exposed",
+			"Report the package to the registry maintainers",
+		}
+	case "unsigned_artifact":
+		return []string{
+			"Implement artifact signing in your build pipeline (e.g., Sigstore, cosign)",
+			"Require signature verification before deployment",
+			"Use SLSA framework for build provenance attestation",
+		}
+	case "missing_provenance":
+		return []string{
+			"Implement build provenance attestation (SLSA Level 2+)",
+			"Use reproducible builds to enable independent verification",
+			"Require provenance for all artifacts before deployment",
+		}
+	case "unauthorized_cicd_change":
+		return []string{
+			"Require code review and approval for all CI/CD pipeline changes",
+			"Implement branch protection rules on pipeline configuration files",
+			"Use infrastructure-as-code with version control for pipeline definitions",
+			"Monitor and alert on pipeline configuration changes",
+		}
+	case "suspicious_cicd_step":
+		return []string{
+			"Review the suspicious pipeline step for malicious intent",
+			"Implement allowlists for permitted CI/CD actions and commands",
+			"Use hardened, minimal base images for CI/CD runners",
+		}
+	case "cicd_secret_exposure":
+		return []string{
+			"Rotate all secrets that may have been exposed",
+			"Use secret management tools (Vault, AWS Secrets Manager) instead of env vars",
+			"Implement secret scanning in CI/CD logs and artifacts",
+			"Mask secrets in CI/CD output and disable debug logging in production",
+		}
+	case "sbom_critical_vulns", "sbom_high_vulns":
+		return []string{
+			"Prioritize patching critical and high vulnerabilities",
+			"Implement automated dependency updates with security scanning",
+			"Use SBOM scanning in CI/CD to block deployments with critical vulns",
+			"Monitor vulnerability databases for new disclosures affecting your dependencies",
+		}
+	default:
+		return []string{
+			"Verify package integrity using checksums and signatures",
+			"Use a private registry mirror with allow-listing",
+			"Implement SBOM scanning in your CI/CD pipeline",
+		}
+	}
 }

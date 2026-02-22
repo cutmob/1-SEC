@@ -205,6 +205,7 @@ func (m *Monitor) raiseAlert(event *core.SecurityEvent, severity core.Severity, 
 	}
 
 	alert := core.NewAlert(newEvent, title, description)
+	alert.Mitigations = getIdentityMitigations(alertType)
 	if m.pipeline != nil {
 		m.pipeline.Process(alert)
 	}
@@ -526,4 +527,76 @@ func getStringDetail(event *core.SecurityEvent, key string) string {
 		return val
 	}
 	return ""
+}
+
+// getIdentityMitigations returns context-specific mitigations based on alert type.
+func getIdentityMitigations(alertType string) []string {
+	switch alertType {
+	case "synthetic_identity":
+		return []string{
+			"Require additional identity verification (document check, biometric)",
+			"Flag the account for manual review before granting access",
+			"Check for correlated synthetic identity indicators across accounts",
+			"Implement progressive trust — limit new account capabilities initially",
+		}
+	case "bulk_identity_creation":
+		return []string{
+			"Implement CAPTCHA or proof-of-work for account creation",
+			"Rate limit account creation per IP address and email domain",
+			"Block disposable email domains for account registration",
+			"Investigate the source IP for bot activity indicators",
+		}
+	case "privilege_escalation":
+		return []string{
+			"Review and revert the privilege change if unauthorized",
+			"Implement multi-party approval for privilege escalations",
+			"Enforce separation of duties — users should not approve their own escalations",
+			"Audit all privilege changes with immutable logging",
+		}
+	case "self_granted_privilege":
+		return []string{
+			"Immediately revert the self-granted privilege",
+			"Investigate the account for compromise indicators",
+			"Implement controls preventing self-service privilege escalation",
+			"Require a different administrator to approve privilege changes",
+		}
+	case "sensitive_permission_grant":
+		return []string{
+			"Verify the permission grant was authorized through proper channels",
+			"Implement just-in-time access for sensitive permissions",
+			"Set expiration times on sensitive permission grants",
+			"Monitor usage of sensitive permissions for anomalies",
+		}
+	case "unusual_service_account_activity":
+		return []string{
+			"Investigate the unusual action for signs of compromise",
+			"Review service account permissions — apply least privilege",
+			"Implement behavioral baselines for service accounts",
+			"Rotate service account credentials if compromise is suspected",
+		}
+	case "service_account_new_ip":
+		return []string{
+			"Verify the new IP is a legitimate infrastructure change",
+			"Implement IP allowlisting for service accounts",
+			"Check for credential theft or lateral movement indicators",
+		}
+	case "service_account_high_volume":
+		return []string{
+			"Investigate the cause of elevated activity",
+			"Implement rate limiting on service account API calls",
+			"Check for automated abuse or credential compromise",
+		}
+	case "verification_failed":
+		return []string{
+			"Lock the account pending manual identity verification",
+			"Investigate for stolen or synthetic identity indicators",
+			"Require step-up authentication before allowing access",
+		}
+	default:
+		return []string{
+			"Review the identity event and investigate for anomalies",
+			"Implement multi-factor authentication for sensitive operations",
+			"Monitor identity lifecycle events for suspicious patterns",
+		}
+	}
 }

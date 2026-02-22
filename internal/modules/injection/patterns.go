@@ -51,6 +51,13 @@ func compilePatterns() []Pattern {
 			Regex: regexp.MustCompile(`(>\s*/etc/|>\s*/tmp/|<\s*/etc/passwd|/dev/(tcp|udp)/)`)},
 		{Name: "cmdi_reverse_shell", Category: "cmdi", Severity: core.SeverityCritical,
 			Regex: regexp.MustCompile(`(?i)(bash\s+-i\s+>&|nc\s+-[elp]|ncat\s+-|python\s+-c\s+.*socket|perl\s+-e\s+.*socket|ruby\s+-rsocket|php\s+-r\s+.*fsockopen)`)},
+		// Node.js / server-side JS command injection — CVE-2026-2544 (LuLu UI child_process.exec)
+		{Name: "cmdi_nodejs_exec", Category: "cmdi", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile(`(?i)(child_process|require\s*\(\s*['"]child_process['"]\s*\))\s*\.\s*(exec|execSync|spawn|spawnSync|execFile|fork)\s*\(`)},
+		{Name: "cmdi_nodejs_eval", Category: "cmdi", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile(`(?i)(eval|Function|vm\.runInNewContext|vm\.runInThisContext|vm\.createScript)\s*\(`)},
+		{Name: "cmdi_nodejs_require", Category: "cmdi", Severity: core.SeverityHigh,
+			Regex: regexp.MustCompile(`(?i)require\s*\(\s*['"](fs|net|http|child_process|os|cluster|dgram|dns|tls|crypto)['"]\s*\)`)},
 
 		// SSRF patterns
 		{Name: "ssrf_internal_ip", Category: "ssrf", Severity: core.SeverityHigh,

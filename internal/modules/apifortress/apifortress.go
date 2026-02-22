@@ -50,6 +50,7 @@ func (f *Fortress) EventTypes() []string {
 		"http_response", "api_response",
 		"graphql_request",
 		"jwt_validation", "token_event",
+		"api_config", "api_upstream_response",
 	}
 }
 
@@ -92,10 +93,15 @@ func (f *Fortress) HandleEvent(event *core.SecurityEvent) error {
 		f.handleAPIRequest(event)
 	case "http_response", "api_response":
 		f.handleAPIResponse(event)
+		f.checkSecurityMisconfiguration(event)
 	case "graphql_request":
 		f.handleGraphQLRequest(event)
 	case "jwt_validation", "token_event":
 		f.handleJWTEvent(event)
+	case "api_config":
+		f.checkSecurityMisconfiguration(event)
+	case "api_upstream_response":
+		f.checkUnsafeConsumption(event)
 	}
 	return nil
 }
@@ -332,6 +338,61 @@ func getAPIMitigations(alertType string) []string {
 			"Disable introspection in production",
 			"Implement query cost analysis and budget limits",
 			"Use persisted queries to prevent arbitrary query execution",
+		}
+	case "api_rate_limit":
+		return []string{
+			"Implement per-endpoint rate limiting with appropriate thresholds (OWASP API4:2023)",
+			"Use sliding window or token bucket algorithms for rate limiting",
+			"Return 429 Too Many Requests with Retry-After header",
+			"Monitor for distributed rate limit bypass across multiple IPs",
+		}
+	case "shadow_api":
+		return []string{
+			"Maintain a complete API inventory and deprecate unused endpoints (OWASP API9:2023)",
+			"Use API gateway to enforce that only documented endpoints are accessible",
+			"Implement automated API discovery and compare against documentation",
+			"Remove or restrict access to debug, test, and legacy endpoints",
+		}
+	case "schema_violation":
+		return []string{
+			"Enforce strict API schema validation on all request parameters (OWASP API3:2023)",
+			"Use allowlists for accepted request body properties",
+			"Reject requests with unexpected or extra parameters",
+		}
+	case "error_rate_spike":
+		return []string{
+			"Investigate the root cause of elevated error rates",
+			"Implement circuit breakers to prevent cascading failures",
+			"Monitor for brute-force or fuzzing attacks causing error spikes",
+		}
+	case "response_size_anomaly":
+		return []string{
+			"Implement response size limits per endpoint",
+			"Use pagination for list endpoints to prevent bulk data extraction",
+			"Monitor for data exfiltration via oversized responses",
+		}
+	case "jwt_none_algorithm", "jwt_weak_algorithm", "jwt_expired", "jwt_missing_claims", "jwt_algorithm_confusion":
+		return []string{
+			"Reject tokens with 'none' algorithm (OWASP API2:2023)",
+			"Use strong algorithms (RS256, ES256) and reject weak ones",
+			"Validate all required claims including exp, iss, aud",
+			"Implement token rotation and short expiration times",
+		}
+	case "security_misconfiguration":
+		return []string{
+			"Restrict CORS to specific trusted origins — never use wildcard with credentials (OWASP API8:2023)",
+			"Disable verbose error messages and stack traces in production",
+			"Remove debug endpoints and development tools from production deployments",
+			"Set security headers: X-Content-Type-Options, X-Frame-Options, Strict-Transport-Security",
+			"Disable unnecessary HTTP methods (TRACE, OPTIONS in production)",
+		}
+	case "unsafe_api_consumption":
+		return []string{
+			"Validate and sanitize all data received from third-party APIs (OWASP API10:2023)",
+			"Implement timeouts and circuit breakers for upstream API calls",
+			"Use TLS for all upstream API communication",
+			"Apply input validation to upstream responses before processing",
+			"Maintain an inventory of all third-party API dependencies",
 		}
 	default:
 		return []string{
@@ -1368,4 +1429,157 @@ func getIntDetail(event *core.SecurityEvent, key string) int {
 		return int(v)
 	}
 	return 0
+}
+
+// ===========================================================================
+// Security Misconfiguration Detection (API8:2023)
+// ===========================================================================
+
+// checkSecurityMisconfiguration detects common API security misconfigurations
+// including CORS issues, verbose errors, missing security headers, and debug endpoints.
+// Ref: OWASP API8:2023 — Security Misconfiguration.
+func (f *Fortress) checkSecurityMisconfiguration(event *core.SecurityEvent) {
+	path := getStringDetail(event, "path")
+	corsOrigin := getStringDetail(event, "cors_origin")
+	corsCredentials := getStringDetail(event, "cors_credentials")
+	errorBody := getStringDetail(event, "error_body")
+	responseHeaders := getStringDetail(event, "response_headers")
+	method := getStringDetail(event, "method")
+
+	// CORS wildcard with credentials — critical misconfiguration
+	if corsOrigin == "*" && corsCredentials == "true" {
+		f.raiseAlert(event, core.SeverityCritical,
+			"CORS Misconfiguration: Wildcard with Credentials [API8:2023]",
+			fmt.Sprintf("API at %s %s has Access-Control-Allow-Origin: * with credentials enabled. "+
+				"This allows any origin to make authenticated requests.", method, path),
+			"security_misconfiguration")
+	}
+
+	// Verbose error messages leaking internals
+	if errorBody != "" {
+		verbosePatterns := []struct {
+			pattern *regexp.Regexp
+			label   string
+		}{
+			{regexp.MustCompile("(?i)(stack\\s*trace|traceback|at\\s+[a-zA-Z0-9_.]+\\([^)]*\\)\\s*$)"), "stack_trace"},
+			{regexp.MustCompile("(?i)(sql\\s*(syntax|error|exception)|ORA-\\d+|pg_catalog|mysql_)"), "sql_error"},
+			{regexp.MustCompile("(?i)(internal\\s+server\\s+error.*?(file|line|column|path)|debug\\s*=\\s*true)"), "debug_info"},
+			{regexp.MustCompile("(?i)(version\\s*[:=]\\s*[\\d.]+.*(framework|server|runtime|engine))"), "version_disclosure"},
+		}
+		for _, vp := range verbosePatterns {
+			if vp.pattern.MatchString(errorBody) {
+				f.raiseAlert(event, core.SeverityMedium,
+					fmt.Sprintf("Verbose Error Disclosure: %s [API8:2023]", vp.label),
+					fmt.Sprintf("API response from %s %s contains %s information. "+
+						"Verbose errors help attackers understand internal architecture.", method, path, vp.label),
+					"security_misconfiguration")
+				break
+			}
+		}
+	}
+
+	// Missing security headers
+	if responseHeaders != "" {
+		headersLower := strings.ToLower(responseHeaders)
+		missingHeaders := []struct {
+			header string
+			label  string
+		}{
+			{"x-content-type-options", "X-Content-Type-Options"},
+			{"strict-transport-security", "Strict-Transport-Security"},
+			{"x-frame-options", "X-Frame-Options"},
+		}
+		missing := []string{}
+		for _, mh := range missingHeaders {
+			if !strings.Contains(headersLower, mh.header) {
+				missing = append(missing, mh.label)
+			}
+		}
+		if len(missing) >= 2 {
+			f.raiseAlert(event, core.SeverityMedium,
+				"Missing Security Headers [API8:2023]",
+				fmt.Sprintf("API response from %s %s is missing security headers: %s. "+
+					"These headers protect against common web attacks.",
+					method, path, strings.Join(missing, ", ")),
+				"security_misconfiguration")
+		}
+	}
+
+	// Debug/admin endpoints exposed
+	if path != "" {
+		debugPatterns := regexp.MustCompile("(?i)(/debug/|/actuator/|/swagger-ui|/api-docs|/graphiql|/phpinfo|/__debug__|/trace|/metrics|/health/detailed|/env|/configprops)")
+		if debugPatterns.MatchString(path) {
+			f.raiseAlert(event, core.SeverityHigh,
+				"Debug/Admin Endpoint Exposed [API8:2023]",
+				fmt.Sprintf("Debug or admin endpoint accessed: %s %s from IP %s. "+
+					"These endpoints should be disabled or restricted in production.", method, path, event.SourceIP),
+				"security_misconfiguration")
+		}
+	}
+}
+
+// ===========================================================================
+// Unsafe Consumption of APIs Detection (API10:2023)
+// ===========================================================================
+
+// checkUnsafeConsumption detects when the API blindly trusts data from upstream/third-party APIs.
+// Ref: OWASP API10:2023 — Unsafe Consumption of APIs.
+func (f *Fortress) checkUnsafeConsumption(event *core.SecurityEvent) {
+	upstreamURL := getStringDetail(event, "upstream_url")
+	responseBody := getStringDetail(event, "response_body")
+	statusCode := getIntDetail(event, "status_code")
+	validated := getStringDetail(event, "validated")
+	tlsUsed := getStringDetail(event, "tls")
+	redirectCount := getIntDetail(event, "redirect_count")
+
+	if upstreamURL == "" {
+		return
+	}
+
+	// Upstream response not validated before use
+	if validated != "true" && responseBody != "" {
+		// Check for injection payloads in upstream response
+		injectionPatterns := regexp.MustCompile("(?i)(<script|javascript:|on(error|load|click)=|\\$\\{|\\{\\{|;\\s*(drop|delete|update|insert)\\s)")
+		if injectionPatterns.MatchString(responseBody) {
+			f.raiseAlert(event, core.SeverityCritical,
+				"Unsafe API Consumption: Injection in Upstream Response [API10:2023]",
+				fmt.Sprintf("Upstream API %s returned response containing injection payloads that were not validated before processing. "+
+					"This can lead to second-order injection attacks.", truncateStr(upstreamURL, 200)),
+				"unsafe_api_consumption")
+		}
+	}
+
+	// Upstream API returning errors but still being consumed
+	if statusCode >= 500 && validated != "true" {
+		f.raiseAlert(event, core.SeverityMedium,
+			"Unsafe API Consumption: Error Response Consumed [API10:2023]",
+			fmt.Sprintf("Upstream API %s returned status %d but response was consumed without validation. "+
+				"Error responses from third-party APIs should be handled defensively.", truncateStr(upstreamURL, 200), statusCode),
+			"unsafe_api_consumption")
+	}
+
+	// No TLS for upstream communication
+	if tlsUsed == "false" || strings.HasPrefix(strings.ToLower(upstreamURL), "http://") {
+		f.raiseAlert(event, core.SeverityHigh,
+			"Unsafe API Consumption: No TLS [API10:2023]",
+			fmt.Sprintf("Upstream API call to %s uses unencrypted HTTP. "+
+				"All third-party API communication should use TLS.", truncateStr(upstreamURL, 200)),
+			"unsafe_api_consumption")
+	}
+
+	// Excessive redirects — potential SSRF via redirect chain
+	if redirectCount > 5 {
+		f.raiseAlert(event, core.SeverityHigh,
+			"Unsafe API Consumption: Excessive Redirects [API10:2023]",
+			fmt.Sprintf("Upstream API call to %s followed %d redirects. "+
+				"Excessive redirects may indicate SSRF via redirect chain.", truncateStr(upstreamURL, 200), redirectCount),
+			"unsafe_api_consumption")
+	}
+}
+
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

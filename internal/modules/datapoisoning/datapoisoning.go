@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,7 @@ func (g *Guard) EventTypes() []string {
 		"rag_retrieval", "rag_query", "context_injection",
 		"inference_result", "model_inference", "prediction",
 		"model_update", "model_deploy", "weight_change",
+		"model_download", "model_registry",
 	}
 }
 func (g *Guard) Description() string {
@@ -77,6 +79,8 @@ func (g *Guard) HandleEvent(event *core.SecurityEvent) error {
 		g.handleInference(event)
 	case "model_update", "model_deploy", "weight_change":
 		g.handleModelUpdate(event)
+	case "model_download", "model_registry":
+		g.handleModelSupplyChain(event)
 	}
 	return nil
 }
@@ -206,13 +210,7 @@ func (g *Guard) raiseAlert(event *core.SecurityEvent, severity core.Severity, ti
 	}
 
 	alert := core.NewAlert(newEvent, title, description)
-	alert.Mitigations = []string{
-		"Verify training data provenance and integrity",
-		"Implement data validation pipelines with anomaly detection",
-		"Use cryptographic signing for model weights and datasets",
-		"Monitor model performance metrics for drift",
-		"Validate RAG sources against a trusted allowlist",
-	}
+	alert.Mitigations = getDataPoisoningMitigations(alertType)
 	if g.pipeline != nil {
 		g.pipeline.Process(alert)
 	}
@@ -523,4 +521,142 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// ===========================================================================
+// Model Supply Chain Attack Detection (2025-2026)
+// ===========================================================================
+
+// handleModelSupplyChain detects supply chain attacks on model registries,
+// including slopsquatting (AI-hallucinated package names registered by attackers),
+// typosquatting on model hubs, and unsigned model downloads.
+// Ref: OWASP LLM03:2025 — Supply Chain, extended to model registries.
+// Ref: 2025-2026 research on slopsquatting attacks targeting AI model hubs.
+func (g *Guard) handleModelSupplyChain(event *core.SecurityEvent) {
+	modelName := getStringDetail(event, "model_name")
+	registry := getStringDetail(event, "registry")
+	hash := getStringDetail(event, "hash")
+	signature := getStringDetail(event, "signature")
+	downloads := getIntDetail(event, "download_count")
+	author := getStringDetail(event, "author")
+	createdDaysAgo := getIntDetail(event, "created_days_ago")
+
+	if modelName == "" {
+		return
+	}
+
+	// Unsigned model download
+	if signature == "" && hash == "" {
+		g.raiseAlert(event, core.SeverityHigh,
+			"Unsigned Model Download",
+			fmt.Sprintf("Model %s downloaded from %s without signature or hash verification. "+
+				"Model weights could be backdoored.", modelName, registry),
+			"unsigned_model")
+	}
+
+	// Newly created model with suspicious characteristics (slopsquatting indicator)
+	if createdDaysAgo >= 0 && createdDaysAgo < 7 && downloads < 100 {
+		g.raiseAlert(event, core.SeverityMedium,
+			"Suspicious New Model on Registry",
+			fmt.Sprintf("Model %s by %s on %s was created %d days ago with only %d downloads. "+
+				"May be a slopsquatting or typosquatting attack.", modelName, author, registry, createdDaysAgo, downloads),
+			"suspicious_model_registry")
+	}
+
+	// Known malicious model name patterns
+	suspiciousPatterns := regexp.MustCompile("(?i)(backdoor|trojan|malicious|test-only|temp-model|_pwned|_evil)")
+	if suspiciousPatterns.MatchString(modelName) {
+		g.raiseAlert(event, core.SeverityCritical,
+			"Suspicious Model Name Pattern",
+			fmt.Sprintf("Model %s from %s has a suspicious name pattern indicating potential malicious intent.",
+				modelName, registry),
+			"malicious_model_name")
+	}
+}
+
+// ===========================================================================
+// Contextual Mitigations
+// ===========================================================================
+
+func getDataPoisoningMitigations(alertType string) []string {
+	switch alertType {
+	case "data_integrity_violation":
+		return []string{
+			"Verify training data provenance using cryptographic hashes",
+			"Implement immutable audit logs for all dataset modifications",
+			"Use content-addressable storage for training data",
+			"Require multi-party approval for training data changes",
+		}
+	case "anomalous_data_change":
+		return []string{
+			"Investigate the source and nature of the anomalous data change",
+			"Implement statistical anomaly detection on data ingestion pipelines",
+			"Set change rate thresholds and alert on violations",
+			"Maintain data lineage tracking for all training datasets",
+		}
+	case "untrusted_data_source":
+		return []string{
+			"Maintain an allowlist of trusted data sources",
+			"Validate data source identity and integrity before ingestion",
+			"Implement data quarantine for untrusted sources pending review",
+		}
+	case "rag_poisoning":
+		return []string{
+			"Scan RAG retrieval results for injection payloads before LLM consumption",
+			"Implement content integrity checks on vector store entries",
+			"Use separate safety classifiers for retrieved context",
+			"Maintain allowlists for trusted RAG content sources",
+		}
+	case "rag_untrusted_source":
+		return []string{
+			"Validate RAG sources against a trusted allowlist",
+			"Implement source reputation scoring for RAG retrievals",
+			"Log and audit all RAG source access patterns",
+		}
+	case "adversarial_input":
+		return []string{
+			"Implement input validation and anomaly detection before model inference",
+			"Use adversarial training to improve model robustness",
+			"Monitor confidence distributions for signs of adversarial perturbation",
+		}
+	case "model_tampering":
+		return []string{
+			"Use cryptographic signing for model weights and verify before deployment",
+			"Implement model integrity checks in the deployment pipeline",
+			"Store model hashes in a tamper-proof registry",
+			"Require multi-party approval for model deployments",
+		}
+	case "model_drift":
+		return []string{
+			"Monitor model performance metrics continuously for drift",
+			"Implement automated model retraining triggers on drift detection",
+			"Maintain baseline performance metrics for comparison",
+			"Investigate root cause — drift may indicate data poisoning",
+		}
+	case "unsigned_model":
+		return []string{
+			"Require cryptographic signatures for all model downloads (OWASP LLM03:2025)",
+			"Verify model hashes against a trusted registry before deployment",
+			"Use model provenance tracking (e.g., SLSA for ML models)",
+		}
+	case "suspicious_model_registry":
+		return []string{
+			"Verify model author identity and reputation before downloading",
+			"Check model download counts and community reviews",
+			"Use only models from verified publishers on trusted registries",
+			"Scan downloaded models for known backdoor patterns",
+		}
+	case "malicious_model_name":
+		return []string{
+			"Block download of models with suspicious name patterns",
+			"Report suspicious models to the registry maintainers",
+			"Implement model name validation against known-good patterns",
+		}
+	default:
+		return []string{
+			"Verify training data provenance and integrity",
+			"Implement data validation pipelines with anomaly detection",
+			"Use cryptographic signing for model weights and datasets",
+		}
+	}
 }

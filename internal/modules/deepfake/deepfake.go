@@ -1266,13 +1266,7 @@ func (s *Shield) raiseAlert(event *core.SecurityEvent, severity core.Severity, t
 	}
 
 	alert := core.NewAlert(newEvent, title, description)
-	alert.Mitigations = []string{
-		"Verify the identity through a separate, trusted communication channel",
-		"Never approve financial transactions based solely on voice/video requests",
-		"Implement multi-person approval for high-value transactions",
-		"Check email headers and sender authentication (SPF, DKIM, DMARC)",
-		"Report suspected deepfake attempts to your security team",
-	}
+	alert.Mitigations = getDeepfakeMitigations(alertType)
 	if s.pipeline != nil {
 		s.pipeline.Process(alert)
 	}
@@ -1910,4 +1904,68 @@ func getFloatDetail(event *core.SecurityEvent, key string) float64 {
 		return float64(v)
 	}
 	return 0
+}
+
+// getDeepfakeMitigations returns context-specific mitigations based on alert type.
+func getDeepfakeMitigations(alertType string) []string {
+	switch alertType {
+	case "audio_deepfake", "audio_deepfake_high_confidence":
+		return []string{
+			"Verify the speaker's identity through a separate, trusted communication channel",
+			"Use voice biometric verification with liveness detection",
+			"Never approve financial transactions based solely on voice requests",
+			"Implement callback verification for voice-initiated requests",
+		}
+	case "video_deepfake", "video_deepfake_high_confidence":
+		return []string{
+			"Verify identity through a separate channel — do not trust video alone",
+			"Look for visual artifacts: inconsistent lighting, blurring around face edges",
+			"Implement multi-factor verification for video-based approvals",
+			"Use certified video conferencing platforms with deepfake detection",
+		}
+	case "ai_phishing", "ai_phishing_high_confidence":
+		return []string{
+			"Check email headers for SPF, DKIM, and DMARC authentication failures",
+			"Verify sender identity through a known, trusted contact method",
+			"Report the email to your security team for analysis",
+			"Do not click links or download attachments from suspicious emails",
+		}
+	case "domain_spoof":
+		return []string{
+			"Verify the sender domain against known trusted domains",
+			"Check for homoglyph substitutions and punycode in domain names",
+			"Implement domain allowlisting for sensitive communications",
+		}
+	case "reply_chain_hijack":
+		return []string{
+			"Verify the conversation thread through a separate channel",
+			"Check email headers for thread integrity (References, In-Reply-To)",
+			"Be suspicious of urgent requests in existing email threads",
+		}
+	case "writing_style_anomaly":
+		return []string{
+			"Compare the message style against known communication patterns",
+			"Verify the sender's identity through a separate channel",
+			"Flag messages with significant style deviations for manual review",
+		}
+	case "high_value_deepfake_risk":
+		return []string{
+			"Implement multi-person approval for high-value transactions",
+			"Require in-person or multi-factor verification for financial requests",
+			"Never approve wire transfers based solely on voice or video requests",
+			"Establish code words or verification protocols for sensitive operations",
+		}
+	case "communication_pattern_anomaly":
+		return []string{
+			"Investigate unusual communication patterns from known identities",
+			"Check for account compromise indicators",
+			"Verify the sender through an independent channel",
+		}
+	default:
+		return []string{
+			"Verify the identity through a separate, trusted communication channel",
+			"Never approve financial transactions based solely on voice/video requests",
+			"Report suspected deepfake attempts to your security team",
+		}
+	}
 }

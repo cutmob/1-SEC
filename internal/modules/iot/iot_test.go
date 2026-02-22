@@ -54,6 +54,17 @@ func (cp *capturingPipeline) alertTitles() []string {
 	return titles
 }
 
+func (cp *capturingPipeline) hasAlertType(alertType string) bool {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	for _, a := range cp.alerts {
+		if a.Type == alertType {
+			return true
+		}
+	}
+	return false
+}
+
 func startedModule(t *testing.T) *Shield {
 	t.Helper()
 	s := New()
@@ -878,5 +889,276 @@ func TestCredentialScanner_SupermicroDefaults(t *testing.T) {
 	result := cs.Check("ADMIN", "ADMIN", "server", "supermicro")
 	if result == "" {
 		t.Error("expected credential detection for Supermicro ADMIN/ADMIN")
+	}
+}
+
+// ===========================================================================
+// 2025-2026: Persistent Firmware Implant Detection Tests
+// ===========================================================================
+
+func TestShield_HandleEvent_BootloaderRootkit(t *testing.T) {
+	cp := makeCapturingPipeline()
+	s := startedModuleWithPipeline(t, cp)
+	defer s.Stop()
+
+	ev := core.NewSecurityEvent("test", "firmware_boot", core.SeverityInfo, "boot event")
+	ev.Details["device_id"] = "plc-100"
+	ev.Details["bootloader"] = "modified-uboot"
+	ev.Details["persistence_method"] = "flash_rewrite"
+	ev.SourceIP = "10.0.0.100"
+
+	if err := s.HandleEvent(ev); err != nil {
+		t.Fatalf("HandleEvent() error: %v", err)
+	}
+	if !cp.hasAlertType("bootloader_rootkit") {
+		t.Error("expected bootloader_rootkit alert")
+	}
+}
+
+func TestShield_HandleEvent_PersistentFirmwareImplant(t *testing.T) {
+	cp := makeCapturingPipeline()
+	s := startedModuleWithPipeline(t, cp)
+	defer s.Stop()
+
+	ev := core.NewSecurityEvent("test", "firmware_flash", core.SeverityInfo, "flash event")
+	ev.Details["device_id"] = "router-001"
+	ev.Details["implant_type"] = "persistent_backdoor"
+	ev.Details["survives_factory_reset"] = "true"
+	ev.Details["persistence_method"] = "u-boot_env_rewrite"
+	ev.SourceIP = "10.0.0.101"
+
+	s.HandleEvent(ev)
+	if !cp.hasAlertType("persistent_firmware_implant") {
+		t.Error("expected persistent_firmware_implant alert")
+	}
+}
+
+func TestShield_HandleEvent_BootPartitionWrite(t *testing.T) {
+	cp := makeCapturingPipeline()
+	s := startedModuleWithPipeline(t, cp)
+	defer s.Stop()
+
+	ev := core.NewSecurityEvent("test", "firmware_flash", core.SeverityInfo, "flash write")
+	ev.Details["device_id"] = "switch-001"
+	ev.Details["implant_type"] = "boot_partition_write"
+	ev.SourceIP = "10.0.0.102"
+
+	s.HandleEvent(ev)
+	if !cp.hasAlertType("boot_partition_write") {
+		t.Error("expected boot_partition_write alert")
+	}
+}
+
+func TestShield_HandleEvent_SecureBootBypass(t *testing.T) {
+	cp := makeCapturingPipeline()
+	s := startedModuleWithPipeline(t, cp)
+	defer s.Stop()
+
+	ev := core.NewSecurityEvent("test", "firmware_boot", core.SeverityInfo, "boot event")
+	ev.Details["device_id"] = "gateway-001"
+	ev.Details["implant_type"] = "secure_boot_bypass"
+	ev.Details["bootloader"] = "unsigned_custom"
+	ev.SourceIP = "10.0.0.103"
+
+	s.HandleEvent(ev)
+	if !cp.hasAlertType("secure_boot_bypass") {
+		t.Error("expected secure_boot_bypass alert")
+	}
+}
+
+// ===========================================================================
+// 2025-2026: ICS Wiper/Destructive Malware Detection Tests
+// ===========================================================================
+
+func TestShield_HandleEvent_PLCLogicWipe(t *testing.T) {
+	cp := makeCapturingPipeline()
+	s := startedModuleWithPipeline(t, cp)
+	defer s.Stop()
+
+	ev := core.NewSecurityEvent("test", "ot_wiper", core.SeverityInfo, "wiper event")
+	ev.Details["device_id"] = "plc-200"
+	ev.Details["action"] = "logic_wipe"
+	ev.Details["target"] = "main_program"
+	ev.Details["target_protocol"] = "modbus"
+	ev.SourceIP = "10.0.0.200"
+
+	s.HandleEvent(ev)
+	if !cp.hasAlertType("plc_logic_wipe") {
+		t.Error("expected plc_logic_wipe alert")
+	}
+}
+
+func TestShield_HandleEvent_SafetySystemTamper(t *testing.T) {
+	cp := makeCapturingPipeline()
+	s := startedModuleWithPipeline(t, cp)
+	defer s.Stop()
+
+	ev := core.NewSecurityEvent("test", "ics_destructive", core.SeverityInfo, "destructive event")
+	ev.Details["device_id"] = "sis-001"
+	ev.Details["action"] = "disable"
+	ev.Details["target"] = "safety_interlock_system"
+	ev.SourceIP = "10.0.0.201"
+
+	s.HandleEvent(ev)
+	if !cp.hasAlertType("safety_system_tamper") {
+		t.Error("expected safety_system_tamper alert")
+	}
+}
+
+func TestShield_HandleEvent_HMITamper(t *testing.T) {
+	cp := makeCapturingPipeline()
+	s := startedModuleWithPipeline(t, cp)
+	defer s.Stop()
+
+	ev := core.NewSecurityEvent("test", "ics_destructive", core.SeverityInfo, "hmi event")
+	ev.Details["device_id"] = "hmi-001"
+	ev.Details["action"] = "hmi_overwrite"
+	ev.SourceIP = "10.0.0.202"
+
+	s.HandleEvent(ev)
+	if !cp.hasAlertType("hmi_tamper") {
+		t.Error("expected hmi_tamper alert")
+	}
+}
+
+func TestShield_HandleEvent_OTConfigWipe(t *testing.T) {
+	cp := makeCapturingPipeline()
+	s := startedModuleWithPipeline(t, cp)
+	defer s.Stop()
+
+	ev := core.NewSecurityEvent("test", "ot_wiper", core.SeverityInfo, "config wipe")
+	ev.Details["device_id"] = "scada-001"
+	ev.Details["action"] = "config_wipe"
+	ev.Details["target"] = "historian_database"
+	ev.Details["process_name"] = "malware.exe"
+	ev.SourceIP = "10.0.0.203"
+
+	s.HandleEvent(ev)
+	if !cp.hasAlertType("ot_config_wipe") {
+		t.Error("expected ot_config_wipe alert")
+	}
+}
+
+func TestShield_HandleEvent_GenericICSWiper(t *testing.T) {
+	cp := makeCapturingPipeline()
+	s := startedModuleWithPipeline(t, cp)
+	defer s.Stop()
+
+	ev := core.NewSecurityEvent("test", "ot_wiper", core.SeverityInfo, "wiper")
+	ev.Details["device_id"] = "rtu-001"
+	ev.Details["wiper_type"] = "voltruptor"
+	ev.Details["action"] = "destroy"
+	ev.Details["target"] = "firmware"
+	ev.Details["target_protocol"] = "dnp3"
+	ev.Details["process_name"] = "unknown"
+	ev.SourceIP = "10.0.0.204"
+
+	s.HandleEvent(ev)
+	if !cp.hasAlertType("ics_wiper") {
+		t.Error("expected ics_wiper alert")
+	}
+}
+
+// ===========================================================================
+// 2025-2026: Coordinated Multi-Protocol OT Attack Detection Tests
+// ===========================================================================
+
+func TestShield_HandleEvent_MultiProtocolAttack(t *testing.T) {
+	cp := makeCapturingPipeline()
+	s := startedModuleWithPipeline(t, cp)
+	defer s.Stop()
+
+	ev := core.NewSecurityEvent("test", "ot_coordinated", core.SeverityInfo, "coordinated attack")
+	ev.Details["protocols"] = "modbus,dnp3,opcua"
+	ev.Details["attack_phase"] = "active_exploitation"
+	ev.Details["target_count"] = 5
+	ev.Details["device_id"] = "plc-300"
+	ev.SourceIP = "10.0.0.300"
+
+	s.HandleEvent(ev)
+	if !cp.hasAlertType("multi_protocol_attack") {
+		t.Error("expected multi_protocol_attack alert")
+	}
+}
+
+func TestShield_HandleEvent_OTAttackHandoff(t *testing.T) {
+	cp := makeCapturingPipeline()
+	s := startedModuleWithPipeline(t, cp)
+	defer s.Stop()
+
+	ev := core.NewSecurityEvent("test", "multi_protocol_attack", core.SeverityInfo, "handoff")
+	ev.Details["attack_phase"] = "handoff"
+	ev.Details["device_id"] = "plc-301"
+	ev.Details["threat_group"] = "SYLVANITE"
+	ev.SourceIP = "10.0.0.301"
+
+	s.HandleEvent(ev)
+	if !cp.hasAlertType("ot_attack_handoff") {
+		t.Error("expected ot_attack_handoff alert")
+	}
+}
+
+func TestShield_HandleEvent_MassOTTargeting(t *testing.T) {
+	cp := makeCapturingPipeline()
+	s := startedModuleWithPipeline(t, cp)
+	defer s.Stop()
+
+	ev := core.NewSecurityEvent("test", "ot_coordinated", core.SeverityInfo, "mass targeting")
+	ev.Details["target_count"] = 10
+	ev.Details["attack_phase"] = "reconnaissance"
+	ev.Details["device_id"] = "plc-302"
+	ev.SourceIP = "10.0.0.302"
+
+	s.HandleEvent(ev)
+	if !cp.hasAlertType("mass_ot_targeting") {
+		t.Error("expected mass_ot_targeting alert")
+	}
+}
+
+func TestShield_HandleEvent_OTDestructivePhase(t *testing.T) {
+	cp := makeCapturingPipeline()
+	s := startedModuleWithPipeline(t, cp)
+	defer s.Stop()
+
+	ev := core.NewSecurityEvent("test", "ot_coordinated", core.SeverityInfo, "destructive phase")
+	ev.Details["attack_phase"] = "destructive"
+	ev.Details["target_count"] = 2
+	ev.Details["device_id"] = "plc-303"
+	ev.SourceIP = "10.0.0.303"
+
+	s.HandleEvent(ev)
+	if !cp.hasAlertType("ot_destructive_phase") {
+		t.Error("expected ot_destructive_phase alert")
+	}
+}
+
+// ===========================================================================
+// 2025-2026: New Mitigation Coverage Tests
+// ===========================================================================
+
+func TestGetIoTMitigations_FirmwareImplant(t *testing.T) {
+	for _, alertType := range []string{"bootloader_rootkit", "persistent_firmware_implant", "boot_partition_write", "secure_boot_bypass"} {
+		m := getIoTMitigations(alertType)
+		if len(m) < 3 {
+			t.Errorf("expected at least 3 mitigations for %s, got %d", alertType, len(m))
+		}
+	}
+}
+
+func TestGetIoTMitigations_ICSWiper(t *testing.T) {
+	for _, alertType := range []string{"plc_logic_wipe", "ics_wiper", "ot_config_wipe", "safety_system_tamper", "hmi_tamper"} {
+		m := getIoTMitigations(alertType)
+		if len(m) < 3 {
+			t.Errorf("expected at least 3 mitigations for %s, got %d", alertType, len(m))
+		}
+	}
+}
+
+func TestGetIoTMitigations_CoordinatedAttack(t *testing.T) {
+	for _, alertType := range []string{"multi_protocol_attack", "ot_attack_handoff", "mass_ot_targeting", "ot_destructive_phase"} {
+		m := getIoTMitigations(alertType)
+		if len(m) < 3 {
+			t.Errorf("expected at least 3 mitigations for %s, got %d", alertType, len(m))
+		}
 	}
 }

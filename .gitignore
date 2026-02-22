@@ -36,6 +36,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# Local scripts / tooling
+scripts/
+
 # Temporary
 tmp/
 temp/

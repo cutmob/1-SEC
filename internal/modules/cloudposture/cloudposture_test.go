@@ -442,3 +442,213 @@ func TestManager_HandleEvent_ConfigScan(t *testing.T) {
 
 // Compile-time interface check
 var _ core.Module = (*Manager)(nil)
+
+// ===========================================================================
+// Kubernetes RBAC Tests
+// ===========================================================================
+
+func TestManager_HandleEvent_K8sRBACWildcard(t *testing.T) {
+	cp := makeCapturingPipeline()
+	m := startedModuleWithPipeline(t, cp)
+	defer m.Stop()
+
+	ev := core.NewSecurityEvent("test", "k8s_rbac_change", core.SeverityInfo, "rbac change")
+	ev.Details["namespace"] = "default"
+	ev.Details["role"] = "super-role"
+	ev.Details["verbs"] = "*"
+	ev.Details["resources"] = "pods,secrets"
+	ev.Details["user"] = "admin@example.com"
+
+	m.HandleEvent(ev)
+	if !cp.hasAlertType("k8s_rbac_wildcard") {
+		t.Error("expected k8s_rbac_wildcard alert for wildcard verbs")
+	}
+}
+
+func TestManager_HandleEvent_K8sClusterAdminBinding(t *testing.T) {
+	cp := makeCapturingPipeline()
+	m := startedModuleWithPipeline(t, cp)
+	defer m.Stop()
+
+	ev := core.NewSecurityEvent("test", "k8s_rbac_change", core.SeverityInfo, "rbac change")
+	ev.Details["namespace"] = "kube-system"
+	ev.Details["role"] = "cluster-admin"
+	ev.Details["verbs"] = "get,list"
+	ev.Details["resources"] = "pods"
+	ev.Details["user"] = "dev-user@example.com"
+
+	m.HandleEvent(ev)
+	if !cp.hasAlertType("k8s_cluster_admin_binding") {
+		t.Error("expected k8s_cluster_admin_binding alert")
+	}
+}
+
+func TestManager_HandleEvent_K8sSecretsAccess(t *testing.T) {
+	cp := makeCapturingPipeline()
+	m := startedModuleWithPipeline(t, cp)
+	defer m.Stop()
+
+	ev := core.NewSecurityEvent("test", "k8s_rbac_change", core.SeverityInfo, "rbac change")
+	ev.Details["namespace"] = "production"
+	ev.Details["role"] = "secret-reader"
+	ev.Details["verbs"] = "get,list"
+	ev.Details["resources"] = "secrets"
+	ev.Details["user"] = "ci-bot"
+
+	m.HandleEvent(ev)
+	if !cp.hasAlertType("k8s_secrets_access") {
+		t.Error("expected k8s_secrets_access alert")
+	}
+}
+
+// ===========================================================================
+// Kubernetes Admission Tests
+// ===========================================================================
+
+func TestManager_HandleEvent_K8sPrivilegedContainer(t *testing.T) {
+	cp := makeCapturingPipeline()
+	m := startedModuleWithPipeline(t, cp)
+	defer m.Stop()
+
+	ev := core.NewSecurityEvent("test", "k8s_admission", core.SeverityInfo, "admission")
+	ev.Details["namespace"] = "default"
+	ev.Details["resource"] = "nginx-pod"
+	ev.Details["user"] = "developer"
+	ev.Details["privileged"] = "true"
+
+	m.HandleEvent(ev)
+	if !cp.hasAlertType("k8s_privileged_container") {
+		t.Error("expected k8s_privileged_container alert")
+	}
+}
+
+func TestManager_HandleEvent_K8sHostNamespace(t *testing.T) {
+	cp := makeCapturingPipeline()
+	m := startedModuleWithPipeline(t, cp)
+	defer m.Stop()
+
+	ev := core.NewSecurityEvent("test", "k8s_admission", core.SeverityInfo, "admission")
+	ev.Details["namespace"] = "monitoring"
+	ev.Details["resource"] = "node-exporter"
+	ev.Details["user"] = "ops-team"
+	ev.Details["host_network"] = "true"
+	ev.Details["host_pid"] = "true"
+
+	m.HandleEvent(ev)
+	if !cp.hasAlertType("k8s_host_namespace") {
+		t.Error("expected k8s_host_namespace alert")
+	}
+}
+
+// ===========================================================================
+// Kubernetes Network Policy Tests
+// ===========================================================================
+
+func TestManager_HandleEvent_K8sNetPolDeleted(t *testing.T) {
+	cp := makeCapturingPipeline()
+	m := startedModuleWithPipeline(t, cp)
+	defer m.Stop()
+
+	ev := core.NewSecurityEvent("test", "k8s_network_policy", core.SeverityInfo, "netpol")
+	ev.Details["namespace"] = "production"
+	ev.Details["resource"] = "deny-all-ingress"
+	ev.Details["user"] = "admin"
+	ev.Details["policy_action"] = "deleted"
+
+	m.HandleEvent(ev)
+	if !cp.hasAlertType("k8s_netpol_deleted") {
+		t.Error("expected k8s_netpol_deleted alert")
+	}
+}
+
+// ===========================================================================
+// Container Posture Tests
+// ===========================================================================
+
+func TestManager_HandleEvent_ContainerRunAsRoot(t *testing.T) {
+	cp := makeCapturingPipeline()
+	m := startedModuleWithPipeline(t, cp)
+	defer m.Stop()
+
+	ev := core.NewSecurityEvent("test", "container_config", core.SeverityInfo, "container config")
+	ev.Details["image"] = "myapp:1.0"
+	ev.Details["namespace"] = "production"
+	ev.Details["run_as_root"] = "true"
+	ev.Details["read_only_root_fs"] = "true"
+
+	m.HandleEvent(ev)
+	if !cp.hasAlertType("container_root_user") {
+		t.Error("expected container_root_user alert")
+	}
+}
+
+func TestManager_HandleEvent_ContainerWritableFS(t *testing.T) {
+	cp := makeCapturingPipeline()
+	m := startedModuleWithPipeline(t, cp)
+	defer m.Stop()
+
+	ev := core.NewSecurityEvent("test", "pod_security", core.SeverityInfo, "pod security")
+	ev.Details["image"] = "nginx:latest"
+	ev.Details["namespace"] = "default"
+	ev.Details["run_as_root"] = "false"
+	ev.Details["read_only_root_fs"] = "false"
+
+	m.HandleEvent(ev)
+	if !cp.hasAlertType("container_writable_fs") {
+		t.Error("expected container_writable_fs alert")
+	}
+}
+
+func TestManager_HandleEvent_ContainerDangerousCap(t *testing.T) {
+	cp := makeCapturingPipeline()
+	m := startedModuleWithPipeline(t, cp)
+	defer m.Stop()
+
+	ev := core.NewSecurityEvent("test", "container_config", core.SeverityInfo, "container config")
+	ev.Details["image"] = "myapp:v2.0"
+	ev.Details["namespace"] = "default"
+	ev.Details["run_as_root"] = "false"
+	ev.Details["read_only_root_fs"] = "true"
+	ev.Details["capabilities"] = "NET_ADMIN,SYS_PTRACE"
+
+	m.HandleEvent(ev)
+	if !cp.hasAlertType("container_dangerous_cap") {
+		t.Error("expected container_dangerous_cap alert")
+	}
+}
+
+func TestManager_HandleEvent_ContainerUnpinnedImage(t *testing.T) {
+	cp := makeCapturingPipeline()
+	m := startedModuleWithPipeline(t, cp)
+	defer m.Stop()
+
+	ev := core.NewSecurityEvent("test", "container_config", core.SeverityInfo, "container config")
+	ev.Details["image"] = "nginx:latest"
+	ev.Details["namespace"] = "production"
+	ev.Details["run_as_root"] = "false"
+	ev.Details["read_only_root_fs"] = "true"
+
+	m.HandleEvent(ev)
+	if !cp.hasAlertType("container_unpinned_image") {
+		t.Error("expected container_unpinned_image alert")
+	}
+}
+
+// ===========================================================================
+// Cloud Posture Mitigation Tests for K8s/Container Alert Types
+// ===========================================================================
+
+func TestGetCloudPostureMitigations_K8s(t *testing.T) {
+	k8sTypes := []string{
+		"k8s_rbac_wildcard", "k8s_cluster_admin_binding", "k8s_secrets_access",
+		"k8s_privileged_container", "k8s_host_namespace", "k8s_netpol_deleted",
+		"container_root_user", "container_writable_fs", "container_dangerous_cap",
+		"container_unpinned_image",
+	}
+	for _, alertType := range k8sTypes {
+		m := getCloudPostureMitigations(alertType)
+		if len(m) < 2 {
+			t.Errorf("expected at least 2 mitigations for %s, got %d", alertType, len(m))
+		}
+	}
+}

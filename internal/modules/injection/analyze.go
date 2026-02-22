@@ -119,13 +119,7 @@ func (s *Shield) analyzeEvent(event *core.SecurityEvent) {
 			fmt.Sprintf("Detected %d injection pattern(s) in field %q from IP %s. Categories: %s. Highest severity: %s.",
 				len(detections), fieldName, event.SourceIP, strings.Join(catList, ", "), maxSeverity.String()),
 		)
-		alert.Mitigations = []string{
-			"Block the source IP if repeated attempts are detected",
-			"Review and sanitize the affected input field",
-			"Ensure parameterized queries are used for database operations",
-			"Implement Content Security Policy headers for XSS prevention",
-			"Validate and whitelist allowed URL schemes for SSRF prevention",
-		}
+		alert.Mitigations = getInjectionMitigations(catList)
 
 		if s.pipeline != nil {
 			s.pipeline.Process(alert)
@@ -629,13 +623,94 @@ func (s *Shield) analyzeFileUpload(event *core.SecurityEvent) {
 	)
 	alert.Mitigations = []string{
 		"Block the file upload and quarantine the file",
-		"Verify file content matches declared Content-Type",
-		"Implement server-side file type validation using magic bytes",
-		"Restrict allowed file extensions at the application layer",
+		"Verify file content matches declared Content-Type using magic bytes",
+		"Restrict allowed file extensions and MIME types at the application layer",
 		"Scan uploaded files in a sandboxed environment before processing",
+		"Implement file size limits and content validation",
 	}
 
 	if s.pipeline != nil {
 		s.pipeline.Process(alert)
 	}
+}
+
+// getInjectionMitigations returns context-specific mitigations based on detected categories.
+func getInjectionMitigations(categories []string) []string {
+	mitigationMap := map[string][]string{
+		"sqli": {
+			"Use parameterized queries or prepared statements for all database operations",
+			"Implement input validation with strict type checking",
+			"Apply least-privilege database permissions",
+			"Use an ORM or query builder that auto-parameterizes",
+		},
+		"xss": {
+			"Implement Content Security Policy (CSP) headers",
+			"Use context-aware output encoding (HTML, JS, URL, CSS)",
+			"Sanitize user input with a proven library (e.g., DOMPurify)",
+			"Enable HttpOnly and Secure flags on session cookies",
+		},
+		"cmdi": {
+			"Avoid passing user input to shell commands",
+			"Use language-native APIs instead of shell execution",
+			"Implement strict input validation with allowlists",
+			"Run processes with minimal privileges in sandboxed environments",
+		},
+		"ssrf": {
+			"Validate and allowlist permitted URL schemes and domains",
+			"Block requests to internal/private IP ranges (RFC 1918, link-local)",
+			"Implement network-level egress filtering",
+			"Use a dedicated HTTP client with SSRF protections",
+		},
+		"ldapi": {
+			"Use parameterized LDAP queries",
+			"Validate and escape special LDAP characters in user input",
+			"Implement input length limits for LDAP query parameters",
+		},
+		"template_injection": {
+			"Use logic-less templates or sandboxed template engines",
+			"Never pass user input directly into template expressions",
+			"Implement strict input validation before template rendering",
+		},
+		"nosqli": {
+			"Validate input types — reject objects where strings are expected",
+			"Use query builders that prevent operator injection",
+			"Implement schema validation on all database inputs",
+		},
+		"path_traversal": {
+			"Normalize and validate file paths against a base directory",
+			"Use chroot or containerized file access",
+			"Reject paths containing .. or absolute path components",
+		},
+		"deserialization": {
+			"Avoid deserializing untrusted data",
+			"Use safe serialization formats (JSON) instead of native serialization",
+			"Implement integrity checks on serialized data",
+		},
+		"canary": {
+			"Investigate the source of the canary token trigger",
+			"Review access logs for the affected resource",
+			"Rotate any credentials associated with the triggered canary",
+		},
+	}
+
+	seen := make(map[string]bool)
+	var result []string
+	for _, cat := range categories {
+		if mits, ok := mitigationMap[cat]; ok {
+			for _, m := range mits {
+				if !seen[m] {
+					seen[m] = true
+					result = append(result, m)
+				}
+			}
+		}
+	}
+	if len(result) == 0 {
+		return []string{
+			"Block the source IP if repeated attempts are detected",
+			"Review and sanitize the affected input field",
+			"Implement input validation and output encoding",
+		}
+	}
+	return result
 }

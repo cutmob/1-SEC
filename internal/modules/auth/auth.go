@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +18,9 @@ const ModuleName = "auth_fortress"
 
 // Fortress is the Auth Fortress module providing brute force detection,
 // credential stuffing, session theft, impossible travel, MFA bypass,
-// password spraying, OAuth token abuse, and consent phishing detection.
+// password spraying, OAuth token abuse, consent phishing detection,
+// passkey/FIDO2 downgrade detection, AitM proxy detection, and
+// session token binding verification.
 type Fortress struct {
 	logger       zerolog.Logger
 	bus          *core.EventBus
@@ -29,13 +32,14 @@ type Fortress struct {
 	sessionMon   *SessionMonitor
 	oauthMon     *OAuthMonitor
 	sprayDet     *PasswordSprayDetector
+	aitmDet      *AitMDetector
 }
 
 func New() *Fortress { return &Fortress{} }
 
 func (f *Fortress) Name() string { return ModuleName }
 func (f *Fortress) Description() string {
-	return "Brute force, credential stuffing, session theft, impossible travel, MFA bypass, password spraying, OAuth token abuse, and consent phishing detection"
+	return "Brute force, credential stuffing, session theft, impossible travel, MFA bypass, password spraying, OAuth token abuse, consent phishing, passkey/FIDO2 downgrade, AitM proxy, and session token binding detection"
 }
 func (f *Fortress) EventTypes() []string {
 	return []string{
@@ -47,6 +51,8 @@ func (f *Fortress) EventTypes() []string {
 		"oauth_grant", "oauth_consent", "oauth_token",
 		"token_usage", "api_key_usage",
 		"password_spray", "distributed_auth",
+		"passkey_register", "passkey_auth", "webauthn_ceremony",
+		"auth_downgrade",
 	}
 }
 
@@ -66,6 +72,7 @@ func (f *Fortress) Start(ctx context.Context, bus *core.EventBus, pipeline *core
 	f.sessionMon = NewSessionMonitor()
 	f.oauthMon = NewOAuthMonitor()
 	f.sprayDet = NewPasswordSprayDetector()
+	f.aitmDet = NewAitMDetector()
 
 	go f.oauthMon.CleanupLoop(f.ctx)
 	go f.sprayDet.CleanupLoop(f.ctx)
@@ -102,6 +109,10 @@ func (f *Fortress) HandleEvent(event *core.SecurityEvent) error {
 		f.handleTokenUsage(event)
 	case "password_spray", "distributed_auth":
 		f.handlePasswordSpray(event)
+	case "passkey_register", "passkey_auth", "webauthn_ceremony":
+		f.handlePasskeyEvent(event)
+	case "auth_downgrade":
+		f.handleAuthDowngrade(event)
 	}
 	return nil
 }
@@ -145,6 +156,7 @@ func (f *Fortress) handleLoginSuccess(event *core.SecurityEvent) {
 	ip := event.SourceIP
 	username := getStringDetail(event, "username")
 	sessionID := getStringDetail(event, "session_id")
+	authMethod := getStringDetail(event, "auth_method")
 
 	if f.loginTracker.WasRecentlyBlocked(ip) {
 		f.raiseAlert(event, core.SeverityHigh,
@@ -154,12 +166,37 @@ func (f *Fortress) handleLoginSuccess(event *core.SecurityEvent) {
 			"post_bruteforce_login")
 	}
 
+	// AitM detection: check for proxy indicators on successful login
+	tlsFingerprint := getStringDetail(event, "tls_fingerprint")
+	proxyHeaders := getStringDetail(event, "proxy_headers")
+	loginLatency := getStringDetail(event, "login_latency_ms")
+	aitmResult := f.aitmDet.AnalyzeLogin(ip, username, event.UserAgent, tlsFingerprint, proxyHeaders, loginLatency, authMethod)
+	if aitmResult.Detected {
+		f.raiseAlert(event, core.SeverityCritical,
+			"Adversary-in-the-Middle (AitM) Proxy Detected",
+			fmt.Sprintf("Login for user %q from %s shows AitM proxy indicators: %s. "+
+				"Session tokens may be stolen in real-time. MITRE ATT&CK T1557.",
+				username, ip, aitmResult.Reason),
+			"aitm_proxy_detected")
+	}
+
 	if sessionID != "" {
 		country := getStringDetail(event, "country")
 		if country == "" {
 			country = getStringDetail(event, "country_code")
 		}
 		f.sessionMon.RegisterSession(sessionID, username, ip, country, event.UserAgent)
+	}
+
+	// PTR record validation — CVE-2026-1490 defense
+	hostname := getStringDetail(event, "hostname")
+	if hostname != "" && !f.verifyPTR(ip, hostname) {
+		f.raiseAlert(event, core.SeverityHigh,
+			"PTR Record Spoofing Detected",
+			fmt.Sprintf("Login from IP %s claims hostname %q but reverse DNS does not match. "+
+				"Possible authorization bypass via PTR record spoofing. Ref: CVE-2026-1490.",
+				ip, hostname),
+			"ptr_spoofing")
 	}
 
 	f.loginTracker.ClearFailures(ip, username)
@@ -173,6 +210,27 @@ func (f *Fortress) handleLoginAttempt(event *core.SecurityEvent) {
 			fmt.Sprintf("IP %s attempted login while locked out", ip),
 			"lockout_violation")
 	}
+}
+// verifyPTR performs reverse DNS validation on an IP address and checks whether
+// the claimed hostname matches any PTR record. Detects CVE-2026-1490 style
+// authorization bypass via PTR record spoofing.
+func (f *Fortress) verifyPTR(ip, claimedHostname string) bool {
+	if ip == "" || claimedHostname == "" {
+		return true // nothing to verify
+	}
+	names, err := net.LookupAddr(ip)
+	if err != nil || len(names) == 0 {
+		// No PTR record at all — suspicious but not necessarily spoofing
+		return false
+	}
+	claimed := strings.TrimSuffix(strings.ToLower(claimedHostname), ".")
+	for _, name := range names {
+		ptr := strings.TrimSuffix(strings.ToLower(name), ".")
+		if ptr == claimed {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *Fortress) handleSessionActivity(event *core.SecurityEvent) {
@@ -322,6 +380,91 @@ func (f *Fortress) handlePasswordSpray(event *core.SecurityEvent) {
 	f.sprayDet.RecordFailure(ip, username)
 }
 
+// handlePasskeyEvent detects passkey/FIDO2/WebAuthn security issues.
+// Post-passkey, the attack surface shifts to session hijacking, downgrade
+// attacks, and WebAuthn API hijacking.
+// Ref: DEF CON 33 WebAuthn API hijacking, BleepingComputer FIDO downgrade 2025
+func (f *Fortress) handlePasskeyEvent(event *core.SecurityEvent) {
+	action := getStringDetail(event, "action")
+	method := getStringDetail(event, "method")
+	origin := getStringDetail(event, "origin")
+	ip := event.SourceIP
+	username := getStringDetail(event, "username")
+	attestation := getStringDetail(event, "attestation")
+
+	// Detect passkey registration from suspicious context
+	if action == "register" || event.Type == "passkey_register" {
+		// Multiple passkey registrations from same IP for different users = suspicious
+		f.aitmDet.RecordPasskeyRegistration(ip, username)
+		if f.aitmDet.IsPasskeyRegistrationAnomaly(ip) {
+			f.raiseAlert(event, core.SeverityHigh,
+				"Suspicious Passkey Registration Pattern",
+				fmt.Sprintf("IP %s has registered passkeys for multiple users. "+
+					"This may indicate an attacker registering rogue passkeys via compromised sessions.",
+					ip),
+				"suspicious_passkey_registration")
+		}
+
+		// No attestation = self-attestation, lower trust
+		if attestation == "none" || attestation == "self" {
+			f.raiseAlert(event, core.SeverityLow,
+				"Passkey Registered Without Attestation",
+				fmt.Sprintf("User %q registered a passkey from %s without hardware attestation. "+
+					"Self-attested passkeys provide weaker device binding guarantees.",
+					username, ip),
+				"passkey_no_attestation")
+		}
+	}
+
+	// Detect origin mismatch (WebAuthn API hijacking indicator)
+	expectedOrigin := getStringDetail(event, "expected_origin")
+	if origin != "" && expectedOrigin != "" && origin != expectedOrigin {
+		f.raiseAlert(event, core.SeverityCritical,
+			"WebAuthn Origin Mismatch Detected",
+			fmt.Sprintf("Passkey ceremony for user %q has origin mismatch: expected %q, got %q. "+
+				"This indicates a WebAuthn API hijacking attack. Ref: DEF CON 33.",
+				username, expectedOrigin, origin),
+			"webauthn_origin_mismatch")
+	}
+
+	// Detect downgrade from passkey to weaker method
+	if method != "" && (method == "password" || method == "otp" || method == "sms") {
+		previousMethod := getStringDetail(event, "previous_method")
+		if previousMethod == "passkey" || previousMethod == "fido2" || previousMethod == "webauthn" {
+			f.raiseAlert(event, core.SeverityHigh,
+				"Authentication Downgrade from Passkey",
+				fmt.Sprintf("User %q downgraded from %s to %s. "+
+					"AitM proxies force downgrades by spoofing unsupported user agents. "+
+					"Ref: Silverfort FIDO downgrade research 2025.",
+					username, previousMethod, method),
+				"passkey_downgrade")
+		}
+	}
+}
+
+// handleAuthDowngrade detects forced authentication method downgrades.
+func (f *Fortress) handleAuthDowngrade(event *core.SecurityEvent) {
+	username := getStringDetail(event, "username")
+	fromMethod := getStringDetail(event, "from_method")
+	toMethod := getStringDetail(event, "to_method")
+	reason := getStringDetail(event, "reason")
+	ip := event.SourceIP
+
+	severity := core.SeverityMedium
+	// Downgrade from phishing-resistant to phishable = high severity
+	phishingResistant := map[string]bool{"passkey": true, "fido2": true, "webauthn": true, "hardware_key": true}
+	if phishingResistant[strings.ToLower(fromMethod)] && !phishingResistant[strings.ToLower(toMethod)] {
+		severity = core.SeverityHigh
+	}
+
+	f.raiseAlert(event, severity,
+		"Authentication Method Downgrade",
+		fmt.Sprintf("User %q authentication downgraded from %s to %s (reason: %s) from IP %s. "+
+			"Forced downgrades are a common AitM proxy technique.",
+			username, fromMethod, toMethod, reason, ip),
+		"auth_method_downgrade")
+}
+
 func (f *Fortress) raiseAlert(event *core.SecurityEvent, severity core.Severity, title, description, alertType string) {
 	newEvent := core.NewSecurityEvent(ModuleName, alertType, severity, description)
 	newEvent.SourceIP = event.SourceIP
@@ -332,6 +475,7 @@ func (f *Fortress) raiseAlert(event *core.SecurityEvent, severity core.Severity,
 		_ = f.bus.PublishEvent(newEvent)
 	}
 	alert := core.NewAlert(newEvent, title, description)
+	alert.Mitigations = getAuthMitigations(alertType)
 	if f.pipeline != nil {
 		f.pipeline.Process(alert)
 	}
@@ -848,6 +992,210 @@ func (ps *PasswordSprayDetector) CleanupLoop(ctx context.Context) {
 			}
 			ps.attempts = kept
 			ps.mu.Unlock()
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AitMDetector — Adversary-in-the-Middle proxy detection
+// ---------------------------------------------------------------------------
+
+// AitMDetector identifies AitM/reverse-proxy phishing attacks that intercept
+// session tokens in real-time. These attacks bypass MFA including passkeys by
+// proxying the entire authentication flow.
+// Ref: keepnetlabs.com AitM research 2025, Silverfort FIDO downgrade 2025
+type AitMDetector struct {
+	mu                  sync.Mutex
+	passkeyRegistrations *lru.Cache[string, *passkeyRegRecord]
+	// Known AitM proxy TLS fingerprints and indicators
+	suspiciousFingerprints map[string]bool
+}
+
+type passkeyRegRecord struct {
+	Users    map[string]bool
+	FirstSeen time.Time
+}
+
+type AitMResult struct {
+	Detected bool
+	Reason   string
+}
+
+func NewAitMDetector() *AitMDetector {
+	pCache, _ := lru.New[string, *passkeyRegRecord](50000)
+	return &AitMDetector{
+		passkeyRegistrations: pCache,
+		suspiciousFingerprints: map[string]bool{
+			// Known AitM toolkit fingerprints (Evilginx, Modlishka, Muraena, EvilnoVNC)
+			"evilginx": true, "modlishka": true, "muraena": true,
+			"evilnovnc": true, "caffeine": true, "greatness": true,
+			"tycoon2fa": true, "dadsec": true, "storm-1575": true,
+		},
+	}
+}
+
+func (ad *AitMDetector) AnalyzeLogin(ip, username, userAgent, tlsFingerprint, proxyHeaders, loginLatency, authMethod string) AitMResult {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+
+	result := AitMResult{}
+	indicators := []string{}
+
+	// Check for known AitM proxy TLS fingerprints
+	if tlsFingerprint != "" && ad.suspiciousFingerprints[strings.ToLower(tlsFingerprint)] {
+		indicators = append(indicators, "known AitM proxy TLS fingerprint: "+tlsFingerprint)
+	}
+
+	// Check for proxy header artifacts
+	proxyLower := strings.ToLower(proxyHeaders)
+	if strings.Contains(proxyLower, "x-forwarded-for") && strings.Contains(proxyLower, "x-real-ip") {
+		indicators = append(indicators, "dual proxy headers (X-Forwarded-For + X-Real-IP)")
+	}
+	if strings.Contains(proxyLower, "via:") {
+		indicators = append(indicators, "Via header present indicating proxy")
+	}
+
+	// Abnormal login latency (AitM proxies add measurable latency)
+	if loginLatency != "" {
+		latencyMs := 0
+		fmt.Sscanf(loginLatency, "%d", &latencyMs)
+		if latencyMs > 2000 {
+			indicators = append(indicators, fmt.Sprintf("high login latency: %dms (AitM proxy overhead)", latencyMs))
+		}
+	}
+
+	if len(indicators) >= 2 {
+		result.Detected = true
+		result.Reason = strings.Join(indicators, "; ")
+	}
+
+	return result
+}
+
+func (ad *AitMDetector) RecordPasskeyRegistration(ip, username string) {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+
+	rec, exists := ad.passkeyRegistrations.Get(ip)
+	if !exists || time.Since(rec.FirstSeen) > time.Hour {
+		rec = &passkeyRegRecord{Users: make(map[string]bool), FirstSeen: time.Now()}
+		ad.passkeyRegistrations.Add(ip, rec)
+	}
+	rec.Users[username] = true
+}
+
+func (ad *AitMDetector) IsPasskeyRegistrationAnomaly(ip string) bool {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+
+	rec, exists := ad.passkeyRegistrations.Get(ip)
+	if !exists {
+		return false
+	}
+	return len(rec.Users) >= 3
+}
+
+// ---------------------------------------------------------------------------
+// Contextual Mitigations
+// ---------------------------------------------------------------------------
+
+func getAuthMitigations(alertType string) []string {
+	switch alertType {
+	case "brute_force":
+		return []string{
+			"Implement progressive account lockout with exponential backoff",
+			"Deploy CAPTCHA after repeated failures",
+			"Consider IP-based rate limiting at the WAF/load balancer level",
+		}
+	case "credential_stuffing":
+		return []string{
+			"Deploy credential breach detection (check passwords against known breach databases)",
+			"Require MFA for all accounts, preferably passkeys/FIDO2",
+			"Implement bot detection and device fingerprinting",
+		}
+	case "post_bruteforce_login":
+		return []string{
+			"Force password reset for the compromised account",
+			"Review account activity for unauthorized changes",
+			"Enable MFA if not already active",
+		}
+	case "session_hijack", "session_ua_change":
+		return []string{
+			"Implement session token binding to TLS channel (RFC 8471)",
+			"Use short-lived session tokens with frequent rotation",
+			"Bind sessions to device fingerprint and IP range",
+		}
+	case "impossible_travel":
+		return []string{
+			"Require step-up authentication for geographically anomalous access",
+			"Implement risk-based authentication that considers location history",
+			"Alert the user about access from an unexpected location",
+		}
+	case "mfa_bypass", "mfa_fatigue":
+		return []string{
+			"Migrate from push-based MFA to phishing-resistant methods (passkeys/FIDO2)",
+			"Implement number matching for push notifications",
+			"Rate-limit MFA push notifications per user",
+		}
+	case "consent_phishing", "oauth_token_abuse", "excessive_oauth_scopes":
+		return []string{
+			"Restrict OAuth app registrations to admin-approved apps only",
+			"Implement OAuth scope review and approval workflows",
+			"Monitor for apps requesting dangerous scope combinations",
+		}
+	case "stolen_token", "anomalous_token_activity":
+		return []string{
+			"Implement token binding to prevent replay from different IPs",
+			"Use short-lived tokens with refresh token rotation",
+			"Deploy token revocation on anomaly detection",
+		}
+	case "password_spray":
+		return []string{
+			"Implement smart lockout that locks the password, not the account",
+			"Deploy IP reputation scoring for authentication endpoints",
+			"Require passkeys/FIDO2 to eliminate password-based attacks entirely",
+		}
+	case "aitm_proxy_detected":
+		return []string{
+			"Deploy phishing-resistant authentication (passkeys/FIDO2 with origin binding)",
+			"Implement TLS token binding (RFC 8471) to prevent session token theft",
+			"Monitor for known AitM proxy TLS fingerprints at the network edge",
+			"Enforce Conditional Access policies that block legacy auth protocols",
+		}
+	case "suspicious_passkey_registration":
+		return []string{
+			"Require identity verification before passkey registration",
+			"Limit passkey registrations per IP per time window",
+			"Send out-of-band notification to user on new passkey registration",
+		}
+	case "passkey_no_attestation":
+		return []string{
+			"Consider requiring hardware attestation for high-privilege accounts",
+			"Log attestation level for audit and risk scoring purposes",
+		}
+	case "webauthn_origin_mismatch":
+		return []string{
+			"Reject WebAuthn ceremonies with origin mismatches immediately",
+			"Implement strict origin validation in the relying party",
+			"Alert security team — this is a strong indicator of active attack",
+		}
+	case "passkey_downgrade", "auth_method_downgrade":
+		return []string{
+			"Block authentication downgrades for accounts with passkeys enrolled",
+			"If downgrade is necessary, require additional verification step",
+			"Monitor for user-agent spoofing that triggers downgrade paths",
+		}
+	case "ptr_spoofing":
+		return []string{
+			"Validate PTR records against forward DNS (A/AAAA) before trusting hostname claims",
+			"Do not use reverse DNS for authorization decisions without forward confirmation",
+			"Implement allowlists for trusted hostnames in authentication policies",
+		}
+	default:
+		return []string{
+			"Review authentication logs for suspicious patterns",
+			"Enforce multi-factor authentication",
+			"Monitor for credential compromise indicators",
 		}
 	}
 }

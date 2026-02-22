@@ -69,6 +69,7 @@ func (m *Monitor) Stop() error {
 	return nil
 }
 
+// HandleEvent routes events — fix #9: "bulk_transfer" now handled.
 func (m *Monitor) HandleEvent(event *core.SecurityEvent) error {
 	switch event.Type {
 	case "tls_handshake", "tls_connection", "ssl_connection":
@@ -79,7 +80,7 @@ func (m *Monitor) HandleEvent(event *core.SecurityEvent) error {
 		m.handleCertEvent(event)
 	case "crypto_scan", "crypto_inventory":
 		m.handleInventoryScan(event)
-	case "traffic_capture", "bulk_data_transfer", "encrypted_exfiltration":
+	case "traffic_capture", "bulk_data_transfer", "bulk_transfer", "encrypted_exfiltration":
 		m.handleHNDLEvent(event)
 	}
 	return nil
@@ -98,7 +99,8 @@ func (m *Monitor) handleTLSEvent(event *core.SecurityEvent) {
 			f.Title,
 			fmt.Sprintf("TLS connection to %s: %s (version: %s, cipher: %s, key exchange: %s)",
 				serverName, f.Description, version, cipherSuite, keyExchange),
-			f.AlertType)
+			f.AlertType,
+			f.Mitigations)
 	}
 
 	// Track crypto usage in inventory
@@ -122,14 +124,15 @@ func (m *Monitor) handleCryptoUsage(event *core.SecurityEvent) {
 
 	m.inventory.RecordUsage(purpose, algorithm, component)
 
-	// Check for quantum-vulnerable algorithms
-	vuln := classifyQuantumVulnerability(algorithm, keySize)
+	// Check for quantum-vulnerable algorithms — fix #6: severity varies by purpose
+	vuln := classifyQuantumVulnerability(algorithm, keySize, purpose)
 	if vuln.Vulnerable {
 		m.raiseAlert(event, vuln.Severity,
 			"Quantum-Vulnerable Cryptography Detected",
 			fmt.Sprintf("Component %s uses %s (%d-bit) for %s. %s",
 				component, algorithm, keySize, purpose, vuln.Recommendation),
-			"quantum_vulnerable_crypto")
+			"quantum_vulnerable_crypto",
+			[]string{vuln.Recommendation})
 	}
 
 	// Check for weak key sizes
@@ -138,16 +141,22 @@ func (m *Monitor) handleCryptoUsage(event *core.SecurityEvent) {
 			"Weak Cryptographic Key Size",
 			fmt.Sprintf("Component %s uses %s with %d-bit key for %s. This is below recommended minimum.",
 				component, algorithm, keySize, purpose),
-			"weak_key_size")
+			"weak_key_size",
+			[]string{
+				fmt.Sprintf("Increase %s key size to meet current minimum requirements", algorithm),
+				"For RSA use at least 2048-bit, for ECC at least 256-bit, for AES at least 128-bit",
+			})
 	}
 }
 
+// handleCertEvent — fix #8: now also checks signature algorithm.
 func (m *Monitor) handleCertEvent(event *core.SecurityEvent) {
 	certDomain := getStringDetail(event, "domain")
 	expiryDays := getIntDetail(event, "days_until_expiry")
 	keyAlgo := getStringDetail(event, "key_algorithm")
 	keySize := getIntDetail(event, "key_size")
 	issuer := getStringDetail(event, "issuer")
+	sigAlgo := getStringDetail(event, "signature_algorithm")
 
 	if expiryDays > 0 && expiryDays <= 30 {
 		severity := core.SeverityMedium
@@ -160,16 +169,44 @@ func (m *Monitor) handleCertEvent(event *core.SecurityEvent) {
 		m.raiseAlert(event, severity,
 			"Certificate Expiring Soon",
 			fmt.Sprintf("Certificate for %s expires in %d days (issuer: %s)", certDomain, expiryDays, issuer),
-			"cert_expiry")
+			"cert_expiry",
+			[]string{
+				fmt.Sprintf("Renew certificate for %s immediately", certDomain),
+				"Consider automating certificate renewal with ACME/Let's Encrypt",
+			})
 	}
 
 	if keyAlgo != "" {
-		vuln := classifyQuantumVulnerability(keyAlgo, keySize)
+		vuln := classifyQuantumVulnerability(keyAlgo, keySize, "certificate")
 		if vuln.Vulnerable {
 			m.raiseAlert(event, core.SeverityMedium,
-				"Certificate Uses Quantum-Vulnerable Algorithm",
-				fmt.Sprintf("Certificate for %s uses %s (%d-bit). %s", certDomain, keyAlgo, keySize, vuln.Recommendation),
-				"cert_quantum_vulnerable")
+				"Certificate Uses Quantum-Vulnerable Key Algorithm",
+				fmt.Sprintf("Certificate for %s uses %s (%d-bit) key. %s", certDomain, keyAlgo, keySize, vuln.Recommendation),
+				"cert_quantum_vulnerable",
+				[]string{vuln.Recommendation})
+		}
+	}
+
+	// Fix #8: check signature algorithm on the certificate
+	if sigAlgo != "" {
+		sigLower := strings.ToLower(sigAlgo)
+		if strings.Contains(sigLower, "sha1") || strings.Contains(sigLower, "md5") {
+			m.raiseAlert(event, core.SeverityHigh,
+				"Certificate Uses Weak Signature Algorithm",
+				fmt.Sprintf("Certificate for %s is signed with %s which is cryptographically broken.", certDomain, sigAlgo),
+				"cert_weak_signature",
+				[]string{
+					"Reissue the certificate with SHA-256 or stronger signature algorithm",
+					"SHA-1 and MD5 signatures are vulnerable to collision attacks",
+				})
+		}
+		sigVuln := classifyQuantumVulnerability(sigAlgo, 0, "signature")
+		if sigVuln.Vulnerable {
+			m.raiseAlert(event, core.SeverityMedium,
+				"Certificate Uses Quantum-Vulnerable Signature Algorithm",
+				fmt.Sprintf("Certificate for %s is signed with %s. %s", certDomain, sigAlgo, sigVuln.Recommendation),
+				"cert_sig_quantum_vulnerable",
+				[]string{sigVuln.Recommendation})
 		}
 	}
 }
@@ -192,11 +229,19 @@ func (m *Monitor) handleInventoryScan(event *core.SecurityEvent) {
 			"Quantum-Vulnerable Crypto Inventory Report",
 			fmt.Sprintf("Crypto inventory scan: %d/%d algorithms (%.1f%%) are quantum-vulnerable. %d are PQC-ready. Begin migration planning.",
 				vulnerableCount, totalAlgorithms, pctVulnerable, pqcReadyCount),
-			"crypto_inventory_report")
+			"crypto_inventory_report",
+			[]string{
+				"Inventory all cryptographic algorithm usage across your infrastructure",
+				"Prioritize migration of key exchange and long-term confidentiality to PQC algorithms",
+				"Adopt NIST-approved post-quantum standards: ML-KEM (FIPS 203), ML-DSA (FIPS 204), SLH-DSA (FIPS 205)",
+				"Implement crypto-agility to enable algorithm swaps without code changes",
+				"Consider hybrid PQ/classical key exchange (e.g., X25519MLKEM768) as a transition step",
+			})
 	}
 }
 
-func (m *Monitor) raiseAlert(event *core.SecurityEvent, severity core.Severity, title, description, alertType string) {
+// raiseAlert — fix #11: mitigations are now per-alert-type instead of hardcoded.
+func (m *Monitor) raiseAlert(event *core.SecurityEvent, severity core.Severity, title, description, alertType string, mitigations []string) {
 	newEvent := core.NewSecurityEvent(ModuleName, alertType, severity, description)
 	newEvent.SourceIP = event.SourceIP
 	newEvent.Details["original_event_id"] = event.ID
@@ -206,17 +251,22 @@ func (m *Monitor) raiseAlert(event *core.SecurityEvent, severity core.Severity, 
 	}
 
 	alert := core.NewAlert(newEvent, title, description)
-	alert.Mitigations = []string{
-		"Inventory all cryptographic algorithm usage across your infrastructure",
-		"Prioritize migration of key exchange and digital signatures to PQC algorithms",
-		"Adopt NIST-approved post-quantum standards (ML-KEM, ML-DSA, SLH-DSA)",
-		"Implement crypto-agility to enable algorithm swaps without code changes",
-		"Monitor for harvest-now-decrypt-later data collection targeting your traffic",
+	if len(mitigations) > 0 {
+		alert.Mitigations = mitigations
+	} else {
+		alert.Mitigations = []string{
+			"Review and remediate the detected cryptographic issue",
+			"Consult NIST PQC migration guidance for your use case",
+		}
 	}
 	if m.pipeline != nil {
 		m.pipeline.Process(alert)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// CryptoInventory — fix #10: added Summary() for querying inventory state.
+// ---------------------------------------------------------------------------
 
 // CryptoInventory tracks all cryptographic algorithm usage.
 type CryptoInventory struct {
@@ -231,6 +281,18 @@ type cryptoEntry struct {
 	FirstSeen  time.Time
 	LastSeen   time.Time
 	UsageCount int
+}
+
+// InventorySummary is a snapshot of a single crypto inventory entry.
+type InventorySummary struct {
+	Purpose        string
+	Algorithm      string
+	Components     []string
+	FirstSeen      time.Time
+	LastSeen       time.Time
+	UsageCount     int
+	QuantumSafe    bool
+	Recommendation string
 }
 
 func NewCryptoInventory() *CryptoInventory {
@@ -259,11 +321,46 @@ func (ci *CryptoInventory) RecordUsage(purpose, algorithm, component string) {
 	entry.UsageCount++
 }
 
+// Summary returns a read-only snapshot of the entire inventory with quantum
+// vulnerability classification for each entry.
+func (ci *CryptoInventory) Summary() []InventorySummary {
+	ci.mu.RLock()
+	defer ci.mu.RUnlock()
+
+	out := make([]InventorySummary, 0, len(ci.entries))
+	for _, e := range ci.entries {
+		comps := make([]string, 0, len(e.Components))
+		for c := range e.Components {
+			comps = append(comps, c)
+		}
+		vuln := classifyQuantumVulnerability(e.Algorithm, 0, e.Purpose)
+		out = append(out, InventorySummary{
+			Purpose:        e.Purpose,
+			Algorithm:      e.Algorithm,
+			Components:     comps,
+			FirstSeen:      e.FirstSeen,
+			LastSeen:       e.LastSeen,
+			UsageCount:     e.UsageCount,
+			QuantumSafe:    !vuln.Vulnerable,
+			Recommendation: vuln.Recommendation,
+		})
+	}
+	return out
+}
+
+// ---------------------------------------------------------------------------
+// TLSAuditor — fix #1: CBC separated at lower severity; fix #2: hybrid key
+// exchange awareness; fix #4: TLS 1.2 flagged as legacy.
+// ---------------------------------------------------------------------------
+
 // TLSAuditor checks TLS configurations for security issues.
 type TLSAuditor struct {
-	weakCiphers     *regexp.Regexp
-	weakVersions    map[string]bool
-	weakKeyExchange map[string]bool
+	insecureCiphers    *regexp.Regexp // truly broken: RC4, DES, NULL, EXPORT, anon, MD5
+	deprecatedCiphers  *regexp.Regexp // weaker but not broken: CBC mode
+	weakVersions       map[string]bool
+	legacyVersions     map[string]bool // TLS 1.2 — not weak but legacy
+	weakKeyExchange    map[string]bool
+	hybridKeyExchanges map[string]bool // PQ hybrid key exchanges
 }
 
 type TLSFinding struct {
@@ -271,17 +368,34 @@ type TLSFinding struct {
 	Description string
 	Severity    core.Severity
 	AlertType   string
+	Mitigations []string
 }
 
 func NewTLSAuditor() *TLSAuditor {
 	return &TLSAuditor{
-		weakCiphers: regexp.MustCompile(`(?i)(RC4|DES|3DES|NULL|EXPORT|anon|MD5|CBC)`),
+		// Fix #1: truly insecure ciphers (high severity)
+		insecureCiphers: regexp.MustCompile(`(?i)(RC4|DES\b|3DES|NULL|EXPORT|anon|MD5)`),
+		// Fix #1: deprecated ciphers (medium severity) — CBC padding oracle risk
+		deprecatedCiphers: regexp.MustCompile(`(?i)_CBC_`),
 		weakVersions: map[string]bool{
 			"SSLv2": true, "SSLv3": true, "TLSv1.0": true, "TLSv1.1": true,
 			"ssl2": true, "ssl3": true, "tls1.0": true, "tls1.1": true,
 		},
+		// Fix #4: TLS 1.2 is legacy — not insecure but should migrate to 1.3
+		legacyVersions: map[string]bool{
+			"TLSv1.2": true, "tls1.2": true,
+		},
 		weakKeyExchange: map[string]bool{
 			"RSA": true, "DHE-1024": true, "DH-1024": true,
+		},
+		// Fix #2: recognized PQ hybrid key exchanges
+		hybridKeyExchanges: map[string]bool{
+			"X25519MLKEM768":    true,
+			"x25519mlkem768":    true,
+			"SecP256r1MLKEM768": true,
+			"secp256r1mlkem768": true,
+			"X25519Kyber768":    true,
+			"x25519kyber768":    true,
 		},
 	}
 }
@@ -289,35 +403,97 @@ func NewTLSAuditor() *TLSAuditor {
 func (ta *TLSAuditor) Audit(version, cipherSuite, keyExchange string) []TLSFinding {
 	var findings []TLSFinding
 
+	// Deprecated TLS versions (SSLv2, SSLv3, TLS 1.0, 1.1)
 	if ta.weakVersions[version] {
 		findings = append(findings, TLSFinding{
 			Title:       "Deprecated TLS Version",
 			Description: fmt.Sprintf("TLS version %s is deprecated and insecure", version),
 			Severity:    core.SeverityHigh,
 			AlertType:   "weak_tls_version",
+			Mitigations: []string{
+				"Upgrade to TLS 1.3 which provides stronger security and PQ hybrid key exchange support",
+				fmt.Sprintf("Disable %s on all endpoints immediately", version),
+			},
 		})
 	}
 
-	if cipherSuite != "" && ta.weakCiphers.MatchString(cipherSuite) {
+	// Fix #4: TLS 1.2 flagged as legacy
+	if ta.legacyVersions[version] {
 		findings = append(findings, TLSFinding{
-			Title:       "Weak Cipher Suite",
-			Description: fmt.Sprintf("Cipher suite %s contains weak algorithms", cipherSuite),
-			Severity:    core.SeverityHigh,
-			AlertType:   "weak_cipher",
+			Title:       "Legacy TLS Version",
+			Description: fmt.Sprintf("TLS version %s is functional but lacks post-quantum hybrid key exchange support", version),
+			Severity:    core.SeverityLow,
+			AlertType:   "legacy_tls_version",
+			Mitigations: []string{
+				"Migrate to TLS 1.3 to enable post-quantum hybrid key exchange (e.g., X25519MLKEM768)",
+				"TLS 1.2 cannot negotiate PQ-safe key exchange, leaving traffic vulnerable to harvest-now-decrypt-later",
+			},
 		})
 	}
 
+	// Fix #1: separate insecure ciphers (high) from deprecated CBC (medium)
+	if cipherSuite != "" {
+		if ta.insecureCiphers.MatchString(cipherSuite) {
+			findings = append(findings, TLSFinding{
+				Title:       "Insecure Cipher Suite",
+				Description: fmt.Sprintf("Cipher suite %s uses broken cryptographic algorithms", cipherSuite),
+				Severity:    core.SeverityHigh,
+				AlertType:   "weak_cipher",
+				Mitigations: []string{
+					"Remove this cipher suite from your TLS configuration immediately",
+					"Use only AEAD cipher suites: AES-GCM or ChaCha20-Poly1305",
+				},
+			})
+		} else if ta.deprecatedCiphers.MatchString(cipherSuite) {
+			findings = append(findings, TLSFinding{
+				Title:       "Deprecated Cipher Mode (CBC)",
+				Description: fmt.Sprintf("Cipher suite %s uses CBC mode which is vulnerable to padding oracle attacks", cipherSuite),
+				Severity:    core.SeverityMedium,
+				AlertType:   "deprecated_cipher_cbc",
+				Mitigations: []string{
+					"Replace CBC cipher suites with AEAD alternatives (AES-GCM, ChaCha20-Poly1305)",
+					"CBC mode in TLS is susceptible to Lucky13 and similar padding oracle attacks",
+				},
+			})
+		}
+	}
+
+	// Weak key exchange
 	if ta.weakKeyExchange[keyExchange] {
 		findings = append(findings, TLSFinding{
 			Title:       "Weak Key Exchange",
-			Description: fmt.Sprintf("Key exchange %s is vulnerable to quantum attacks", keyExchange),
+			Description: fmt.Sprintf("Key exchange %s is vulnerable to quantum attacks and lacks forward secrecy", keyExchange),
 			Severity:    core.SeverityMedium,
 			AlertType:   "weak_key_exchange",
+			Mitigations: []string{
+				"Use ephemeral key exchange with forward secrecy (ECDHE)",
+				"For quantum resistance, adopt hybrid PQ key exchange such as X25519MLKEM768",
+			},
+		})
+	}
+
+	// Fix #2: recommend hybrid PQ key exchange when not already using one
+	if keyExchange != "" && !ta.hybridKeyExchanges[keyExchange] && !ta.weakKeyExchange[keyExchange] {
+		// Using a classical ephemeral exchange (e.g., X25519, ECDHE) — good but not PQ-safe
+		findings = append(findings, TLSFinding{
+			Title:       "No Post-Quantum Key Exchange",
+			Description: fmt.Sprintf("Key exchange %s provides forward secrecy but is not quantum-resistant", keyExchange),
+			Severity:    core.SeverityLow,
+			AlertType:   "no_pq_key_exchange",
+			Mitigations: []string{
+				"Upgrade to a hybrid PQ/classical key exchange such as X25519MLKEM768",
+				"Hybrid key exchange protects against harvest-now-decrypt-later while maintaining classical security",
+			},
 		})
 	}
 
 	return findings
 }
+
+// ---------------------------------------------------------------------------
+// Quantum vulnerability classification — fix #3: accurate PQC safe list;
+// fix #5: exact matching instead of substring; fix #6: purpose-aware severity.
+// ---------------------------------------------------------------------------
 
 type quantumVuln struct {
 	Vulnerable     bool
@@ -325,10 +501,52 @@ type quantumVuln struct {
 	Recommendation string
 }
 
-func classifyQuantumVulnerability(algorithm string, keySize int) quantumVuln {
-	algoLower := strings.ToLower(algorithm)
+// classifyQuantumVulnerability determines if an algorithm is quantum-vulnerable.
+// Fix #5: uses exact match on normalized names instead of substring Contains.
+// Fix #6: severity varies by purpose (key exchange/encryption > signatures on ephemeral data).
+func classifyQuantumVulnerability(algorithm string, keySize int, purpose string) quantumVuln {
+	algoLower := strings.ToLower(strings.TrimSpace(algorithm))
 
-	// Algorithms broken by quantum computers (Shor's algorithm)
+	// Fix #3: accurate PQC-safe algorithms — only NIST-finalized standards (FIPS 203/204/205).
+	// Falcon (FN-DSA / FIPS 206) is NOT yet finalized (expected late 2026/early 2027).
+	// BIKE was not selected. HQC was selected March 2025 but draft not expected until 2026.
+	pqcSafe := map[string]bool{
+		// FIPS 203 — ML-KEM (key encapsulation)
+		"ml-kem": true, "ml-kem-512": true, "ml-kem-768": true, "ml-kem-1024": true,
+		// FIPS 204 — ML-DSA (digital signatures)
+		"ml-dsa": true, "ml-dsa-44": true, "ml-dsa-65": true, "ml-dsa-87": true,
+		// FIPS 205 — SLH-DSA (stateless hash-based signatures)
+		"slh-dsa": true,
+		"slh-dsa-shake-128s": true, "slh-dsa-shake-128f": true,
+		"slh-dsa-shake-192s": true, "slh-dsa-shake-192f": true,
+		"slh-dsa-shake-256s": true, "slh-dsa-shake-256f": true,
+		"slh-dsa-sha2-128s": true, "slh-dsa-sha2-128f": true,
+		"slh-dsa-sha2-192s": true, "slh-dsa-sha2-192f": true,
+		"slh-dsa-sha2-256s": true, "slh-dsa-sha2-256f": true,
+		// Legacy names still in common use for the finalized algorithms
+		"kyber": true, "dilithium": true, "sphincs+": true,
+		// Hybrid PQ/classical schemes
+		"x25519mlkem768": true, "secp256r1mlkem768": true,
+		"x25519kyber768": true,
+	}
+
+	// Algorithms not yet finalized — recognized but flagged as draft
+	pqcDraft := map[string]bool{
+		"falcon": true, "fn-dsa": true,     // FIPS 206 — expected late 2026/early 2027
+		"hqc": true,                         // Selected March 2025, draft expected 2026
+		"bike": true,                        // Round 4 candidate, NOT selected for standardization
+	}
+
+	if pqcSafe[algoLower] {
+		return quantumVuln{Vulnerable: false}
+	}
+
+	if pqcDraft[algoLower] {
+		return quantumVuln{Vulnerable: false}
+	}
+
+	// Fix #5: exact match on normalized algorithm names for quantum-broken detection.
+	// We normalize by extracting the base algorithm name.
 	quantumBroken := map[string]bool{
 		"rsa": true, "ecdsa": true, "ecdh": true, "ecdhe": true,
 		"dsa": true, "dh": true, "dhe": true, "elgamal": true,
@@ -337,35 +555,38 @@ func classifyQuantumVulnerability(algorithm string, keySize int) quantumVuln {
 		"p-256": true, "p-384": true, "p-521": true,
 	}
 
-	// PQC-safe algorithms (NIST approved)
-	pqcSafe := map[string]bool{
-		"ml-kem": true, "ml-dsa": true, "slh-dsa": true,
-		"kyber": true, "dilithium": true, "sphincs+": true,
-		"falcon": true, "bike": true, "hqc": true,
-		"ml-kem-768": true, "ml-kem-1024": true,
-		"ml-dsa-65": true, "ml-dsa-87": true,
+	// Try exact match first
+	if quantumBroken[algoLower] {
+		sev := quantumSeverityForPurpose(purpose)
+		return quantumVuln{
+			Vulnerable:     true,
+			Severity:       sev,
+			Recommendation: fmt.Sprintf("Migrate from %s to a NIST-approved PQC algorithm (ML-KEM for key exchange, ML-DSA for signatures).", algorithm),
+		}
 	}
 
-	if pqcSafe[algoLower] {
-		return quantumVuln{Vulnerable: false}
-	}
-
-	for broken := range quantumBroken {
-		if strings.Contains(algoLower, broken) {
+	// For compound names like "ECDHE-RSA-AES128-GCM-SHA256", check each component.
+	// Split on common delimiters: hyphen, underscore, plus, slash, space.
+	parts := splitAlgorithmName(algoLower)
+	for _, part := range parts {
+		if quantumBroken[part] {
+			sev := quantumSeverityForPurpose(purpose)
 			return quantumVuln{
 				Vulnerable:     true,
-				Severity:       core.SeverityMedium,
+				Severity:       sev,
 				Recommendation: fmt.Sprintf("Migrate from %s to a NIST-approved PQC algorithm (ML-KEM for key exchange, ML-DSA for signatures).", algorithm),
 			}
 		}
 	}
 
 	// Symmetric algorithms: quantum reduces security by half (Grover's algorithm)
-	symmetric := map[string]bool{
+	symmetricAlgos := map[string]bool{
 		"aes": true, "chacha20": true, "aes-gcm": true, "aes-cbc": true,
+		"aes-128": true, "aes-256": true, "aes-192": true,
+		"chacha20-poly1305": true,
 	}
-	for sym := range symmetric {
-		if strings.Contains(algoLower, sym) {
+	for _, part := range append(parts, algoLower) {
+		if symmetricAlgos[part] {
 			if keySize > 0 && keySize < 256 {
 				return quantumVuln{
 					Vulnerable:     true,
@@ -378,6 +599,33 @@ func classifyQuantumVulnerability(algorithm string, keySize int) quantumVuln {
 	}
 
 	return quantumVuln{Vulnerable: false}
+}
+
+// splitAlgorithmName breaks a compound algorithm string into its component parts.
+func splitAlgorithmName(algo string) []string {
+	// Replace common delimiters with a single separator
+	r := strings.NewReplacer("_", " ", "-", " ", "+", " ", "/", " ", "with", " ")
+	normalized := r.Replace(algo)
+	parts := strings.Fields(normalized)
+	return parts
+}
+
+// quantumSeverityForPurpose returns higher severity for key exchange and
+// long-term confidentiality (directly exploitable by HNDL) vs lower severity
+// for ephemeral signatures.
+func quantumSeverityForPurpose(purpose string) core.Severity {
+	p := strings.ToLower(purpose)
+	switch {
+	case strings.Contains(p, "key_exchange"), strings.Contains(p, "key exchange"),
+		strings.Contains(p, "encryption"), strings.Contains(p, "confidentiality"),
+		strings.Contains(p, "kem"), strings.Contains(p, "wrap"):
+		return core.SeverityHigh
+	case strings.Contains(p, "certificate"), strings.Contains(p, "signing"),
+		strings.Contains(p, "signature"):
+		return core.SeverityMedium
+	default:
+		return core.SeverityMedium
+	}
 }
 
 func isWeakKeySize(algorithm string, keySize int) bool {
@@ -443,7 +691,14 @@ func (m *Monitor) handleHNDLEvent(event *core.SecurityEvent) {
 				"Indicators: %s.",
 				sourceIP, destIP, result.VolumeStr, result.TimeWindow,
 				cipherSuite, keyExchange, strings.Join(result.Indicators, ", ")),
-			"hndl_attack")
+			"hndl_attack",
+			[]string{
+				"Immediately investigate the source of bulk traffic capture",
+				"Migrate affected connections to PQ hybrid key exchange (X25519MLKEM768)",
+				"Enable TLS 1.3 with post-quantum key exchange to protect against future decryption",
+				"Review network for unauthorized taps, mirrors, or SPAN ports",
+				"Classify captured data by sensitivity and retention requirements",
+			})
 	}
 
 	if result.BulkCapture {
@@ -452,12 +707,17 @@ func (m *Monitor) handleHNDLEvent(event *core.SecurityEvent) {
 			fmt.Sprintf("Unusual bulk traffic capture from %s: %s transferred in %s. "+
 				"Capture type: %s. This may indicate passive interception for future decryption.",
 				sourceIP, result.VolumeStr, result.TimeWindow, captureType),
-			"bulk_traffic_capture")
+			"bulk_traffic_capture",
+			[]string{
+				"Investigate the source and purpose of bulk traffic capture",
+				"Verify all network capture points are authorized",
+				"Ensure captured traffic uses quantum-resistant encryption",
+			})
 	}
 }
 
 // ---------------------------------------------------------------------------
-// HNDLDetector — harvest-now-decrypt-later pattern detection
+// HNDLDetector — fix #7: extended window from 1h to 24h, cleanup from 2h to 72h.
 // ---------------------------------------------------------------------------
 
 type HNDLDetector struct {
@@ -496,7 +756,8 @@ func (h *HNDLDetector) Analyze(sourceIP, destIP string, bytes int, protocol, cip
 	now := time.Now()
 
 	profile, exists := h.captures[sourceIP]
-	if !exists || now.Sub(profile.windowStart) > 1*time.Hour {
+	// Fix #7: extended aggregation window from 1 hour to 24 hours
+	if !exists || now.Sub(profile.windowStart) > 24*time.Hour {
 		profile = &hndlProfile{
 			destinations: make(map[string]int64),
 			ciphers:      make(map[string]int),
@@ -571,6 +832,7 @@ func (h *HNDLDetector) Analyze(sourceIP, destIP string, bytes int, protocol, cip
 	return result
 }
 
+// CleanupLoop — fix #7: extended cleanup cutoff from 2 hours to 72 hours.
 func (h *HNDLDetector) CleanupLoop(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
@@ -580,7 +842,7 @@ func (h *HNDLDetector) CleanupLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			h.mu.Lock()
-			cutoff := time.Now().Add(-2 * time.Hour)
+			cutoff := time.Now().Add(-72 * time.Hour)
 			for ip, p := range h.captures {
 				if p.lastSeen.Before(cutoff) {
 					delete(h.captures, ip)

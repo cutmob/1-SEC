@@ -552,6 +552,7 @@ func (w *Watcher) raiseAlert(event *core.SecurityEvent, severity core.Severity, 
 		_ = w.bus.PublishEvent(newEvent)
 	}
 	alert := core.NewAlert(newEvent, title, description)
+	alert.Mitigations = getRuntimeMitigations(alertType)
 	if w.pipeline != nil {
 		w.pipeline.Process(alert)
 	}
@@ -1022,4 +1023,86 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// getRuntimeMitigations returns context-specific mitigations based on alert type.
+func getRuntimeMitigations(alertType string) []string {
+	switch alertType {
+	case "file_integrity_violation":
+		return []string{
+			"Investigate the file change — compare against known-good baseline",
+			"Restore the file from a verified backup if tampering is confirmed",
+			"Implement file integrity monitoring with real-time alerting",
+			"Review access logs for the modified file",
+		}
+	case "lolbin_execution":
+		return []string{
+			"Investigate the LOLBin usage — verify if it's legitimate administrative activity",
+			"Implement application whitelisting to restrict LOLBin execution",
+			"Monitor parent-child process relationships for suspicious chains",
+			"Block unnecessary LOLBins via AppLocker or WDAC policies",
+		}
+	case "suspicious_process":
+		return []string{
+			"Investigate the process and its parent for malicious activity",
+			"Check the process binary hash against threat intelligence",
+			"Isolate the host if compromise is confirmed",
+			"Review process execution logs for related suspicious activity",
+		}
+	case "reverse_shell":
+		return []string{
+			"Immediately isolate the affected host from the network",
+			"Kill the reverse shell process and investigate the entry point",
+			"Check for persistence mechanisms installed by the attacker",
+			"Rotate all credentials accessible from the compromised host",
+		}
+	case "privilege_escalation":
+		return []string{
+			"Investigate the privilege escalation attempt",
+			"Patch the vulnerability used for escalation",
+			"Implement least-privilege access controls",
+			"Deploy endpoint detection and response (EDR)",
+		}
+	case "container_escape":
+		return []string{
+			"Investigate the container escape attempt immediately",
+			"Update container runtime to the latest patched version",
+			"Implement seccomp profiles and AppArmor/SELinux policies",
+			"Restrict container capabilities to the minimum required",
+		}
+	case "memory_injection":
+		return []string{
+			"Investigate the target process for compromise",
+			"Implement memory protection policies (DEP, ASLR, CFG)",
+			"Deploy endpoint detection with memory scanning capabilities",
+			"Block known injection techniques via security policies",
+		}
+	case "persistence_mechanism":
+		return []string{
+			"Remove the persistence mechanism immediately",
+			"Investigate how the persistence was established",
+			"Monitor common persistence locations (startup, services, cron, registry)",
+			"Implement change detection on persistence-related system files",
+		}
+	case "firmware_tampering":
+		return []string{
+			"Verify firmware integrity against vendor-provided hashes",
+			"Reflash firmware from a known-good source",
+			"Implement Secure Boot and firmware integrity monitoring",
+			"Investigate the attack vector used for firmware modification",
+		}
+	case "fileless_attack", "fileless_execution":
+		return []string{
+			"Investigate the fileless execution chain (PowerShell, WMI, .NET)",
+			"Implement script block logging and constrained language mode",
+			"Deploy AMSI-aware endpoint protection",
+			"Block unnecessary scripting engines via application control policies",
+		}
+	default:
+		return []string{
+			"Investigate the runtime event for security implications",
+			"Implement endpoint detection and response (EDR)",
+			"Review system logs for related suspicious activity",
+		}
+	}
 }

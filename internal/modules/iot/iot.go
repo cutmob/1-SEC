@@ -50,6 +50,10 @@ func (s *Shield) EventTypes() []string {
 		"firmware_update", "firmware_check",
 		"ot_command", "scada_command", "plc_command",
 		"network_flow", "iot_network",
+		// 2025-2026: persistent firmware implants, ICS wiper malware, coordinated OT attacks
+		"firmware_boot", "firmware_flash",
+		"ot_wiper", "ics_destructive",
+		"ot_coordinated", "multi_protocol_attack",
 	}
 }
 
@@ -97,6 +101,15 @@ func (s *Shield) HandleEvent(event *core.SecurityEvent) error {
 		s.handleOTCommand(event)
 	case "network_flow", "iot_network":
 		s.handleNetworkFlow(event)
+	// 2025-2026: persistent firmware implants (HiatusRAT-X, bootloader rootkits)
+	case "firmware_boot", "firmware_flash":
+		s.handleFirmwareImplant(event)
+	// 2025-2026: ICS-specific wiper/destructive malware (VoltRuptor-style)
+	case "ot_wiper", "ics_destructive":
+		s.handleICSWiper(event)
+	// 2025-2026: coordinated multi-protocol OT attacks
+	case "ot_coordinated", "multi_protocol_attack":
+		s.handleCoordinatedOTAttack(event)
 	}
 	return nil
 }
@@ -303,6 +316,191 @@ func (s *Shield) handleNetworkFlow(event *core.SecurityEvent) {
 	}
 }
 
+// handleFirmwareImplant detects persistent firmware implants and bootloader rootkits.
+// 2025-2026 threat: HiatusRAT-X style attacks that rewrite U-Boot environments,
+// survive factory resets, and persist across firmware updates.
+// References: CISA advisories on persistent flash implants, CVE-2025-3052 Secure Boot bypass.
+func (s *Shield) handleFirmwareImplant(event *core.SecurityEvent) {
+	deviceID := getStringDetail(event, "device_id")
+	implantType := strings.ToLower(getStringDetail(event, "implant_type"))
+	bootloader := getStringDetail(event, "bootloader")
+	persistenceMethod := getStringDetail(event, "persistence_method")
+	surviveReset := getStringDetail(event, "survives_factory_reset")
+	hash := getStringDetail(event, "firmware_hash")
+	expectedHash := getStringDetail(event, "expected_hash")
+
+	// Secure Boot bypass detection (check specific implant types first)
+	if implantType == "secure_boot_bypass" {
+		s.raiseAlert(event, core.SeverityCritical,
+			"Secure Boot Bypass Detected",
+			fmt.Sprintf("Device %s: Secure Boot has been bypassed. Bootloader: %s. Attackers can execute unsigned code at the highest privilege level.",
+				deviceID, bootloader),
+			"secure_boot_bypass")
+		return
+	}
+
+	// Flash write to boot partition outside maintenance window
+	if implantType == "flash_write" || implantType == "boot_partition_write" {
+		s.raiseAlert(event, core.SeverityCritical,
+			"Suspicious Boot Partition Write",
+			fmt.Sprintf("Device %s: unexpected write to boot partition (type: %s). This may indicate firmware implant installation.",
+				deviceID, implantType),
+			"boot_partition_write")
+		return
+	}
+
+	// Persistent flash implant detection (survives factory reset)
+	if strings.EqualFold(surviveReset, "true") || strings.EqualFold(surviveReset, "yes") {
+		s.raiseAlert(event, core.SeverityCritical,
+			"Persistent Firmware Implant Detected",
+			fmt.Sprintf("Device %s has a firmware implant that survives factory reset. Type: %s, Persistence: %s. This indicates a deep-level compromise requiring hardware-level remediation.",
+				deviceID, implantType, persistenceMethod),
+			"persistent_firmware_implant")
+		return
+	}
+
+	// Bootloader modification detection
+	if bootloader != "" {
+		bootloaderLower := strings.ToLower(bootloader)
+		suspiciousBootloaders := []string{"modified", "custom", "unsigned", "tampered", "unknown"}
+		for _, sb := range suspiciousBootloaders {
+			if strings.Contains(bootloaderLower, sb) {
+				s.raiseAlert(event, core.SeverityCritical,
+					"Bootloader Rootkit Detected",
+					fmt.Sprintf("Device %s has a %s bootloader (%s). Bootloader rootkits can survive factory resets and firmware updates. Persistence: %s",
+						deviceID, sb, bootloader, persistenceMethod),
+					"bootloader_rootkit")
+				return
+			}
+		}
+	}
+
+	// Hash mismatch on boot-time firmware check
+	if hash != "" && expectedHash != "" && hash != expectedHash {
+		s.raiseAlert(event, core.SeverityCritical,
+			"Boot-Time Firmware Integrity Violation",
+			fmt.Sprintf("Device %s firmware hash mismatch at boot. Expected: %s, Got: %s. Firmware may contain a persistent implant.",
+				deviceID, truncate(expectedHash, 16), truncate(hash, 16)),
+			"firmware_integrity")
+	}
+}
+
+// handleICSWiper detects ICS-specific destructive/wiper malware.
+// 2025-2026 threat: VoltRuptor-style multi-protocol wiper malware targeting
+// critical infrastructure with anti-forensics capabilities.
+// References: ENISA 2025 Threat Landscape, Dragos 2026 OT report (PYROXENE wiper deployments).
+func (s *Shield) handleICSWiper(event *core.SecurityEvent) {
+	deviceID := getStringDetail(event, "device_id")
+	wiperType := getStringDetail(event, "wiper_type")
+	targetProtocol := strings.ToLower(getStringDetail(event, "target_protocol"))
+	action := strings.ToLower(getStringDetail(event, "action"))
+	target := getStringDetail(event, "target")
+	processName := getStringDetail(event, "process_name")
+
+	// PLC logic wipe / ladder logic destruction
+	if strings.Contains(action, "logic_wipe") || strings.Contains(action, "ladder_delete") ||
+		strings.Contains(action, "program_erase") {
+		s.raiseAlert(event, core.SeverityCritical,
+			"PLC Logic Wipe Detected [ICS-CERT]",
+			fmt.Sprintf("Destructive action on device %s: PLC logic being wiped (action: %s, target: %s, protocol: %s). This can cause immediate physical process disruption.",
+				deviceID, action, target, targetProtocol),
+			"plc_logic_wipe")
+		return
+	}
+
+	// Safety system tampering
+	if strings.Contains(target, "safety") || strings.Contains(target, "sis") ||
+		strings.Contains(target, "emergency_shutdown") {
+		s.raiseAlert(event, core.SeverityCritical,
+			"Safety System Tampering Detected",
+			fmt.Sprintf("Destructive action targeting safety system on device %s: %s (target: %s). Disabling safety systems can lead to physical harm.",
+				deviceID, action, target),
+			"safety_system_tamper")
+		return
+	}
+
+	// HMI defacement / operator display manipulation
+	if strings.Contains(action, "hmi_overwrite") || strings.Contains(action, "display_tamper") {
+		s.raiseAlert(event, core.SeverityCritical,
+			"HMI Display Tampering Detected",
+			fmt.Sprintf("HMI/operator display on device %s is being tampered with (action: %s). Operators may see false readings while physical process is compromised.",
+				deviceID, action),
+			"hmi_tamper")
+		return
+	}
+
+	// Configuration wipe (historian, SCADA server configs)
+	if strings.Contains(action, "config_wipe") || strings.Contains(action, "config_destroy") {
+		s.raiseAlert(event, core.SeverityCritical,
+			"OT Configuration Destruction Detected",
+			fmt.Sprintf("Configuration destruction on device %s: %s (target: %s, process: %s). Recovery may require manual reconfiguration of industrial systems.",
+				deviceID, action, target, processName),
+			"ot_config_wipe")
+		return
+	}
+
+	// Generic ICS wiper activity
+	s.raiseAlert(event, core.SeverityCritical,
+		"ICS Destructive Malware Detected",
+		fmt.Sprintf("Destructive activity on OT device %s. Type: %s, Action: %s, Target: %s, Protocol: %s, Process: %s. Immediate isolation recommended.",
+			deviceID, wiperType, action, target, targetProtocol, processName),
+		"ics_wiper")
+}
+
+// handleCoordinatedOTAttack detects coordinated multi-protocol attacks on OT environments.
+// 2025-2026 threat: Dragos identified threat groups (SYLVANITE, PYROXENE, AZURITE) using
+// coordinated attacks spanning multiple industrial protocols simultaneously.
+// References: Dragos 2026 Year in Review, ENISA 2025 Threat Landscape.
+func (s *Shield) handleCoordinatedOTAttack(event *core.SecurityEvent) {
+	protocols := getStringDetail(event, "protocols")
+	attackPhase := strings.ToLower(getStringDetail(event, "attack_phase"))
+	targetCount := getIntDetail(event, "target_count")
+	deviceID := getStringDetail(event, "device_id")
+	threatGroup := getStringDetail(event, "threat_group")
+
+	// Multi-protocol simultaneous attack
+	if protocols != "" {
+		protoList := strings.Split(protocols, ",")
+		if len(protoList) >= 2 {
+			s.raiseAlert(event, core.SeverityCritical,
+				"Coordinated Multi-Protocol OT Attack",
+				fmt.Sprintf("Coordinated attack spanning %d protocols (%s) detected. Device: %s, Phase: %s. Multi-protocol attacks indicate sophisticated threat actor with OT expertise.",
+					len(protoList), protocols, deviceID, attackPhase),
+				"multi_protocol_attack")
+		}
+	}
+
+	// Handoff pattern detection (one group gains access, another operates)
+	if attackPhase == "handoff" || attackPhase == "ot_handoff" {
+		desc := fmt.Sprintf("OT attack handoff detected on device %s. Initial access actor handing off to OT-specialized operator.", deviceID)
+		if threatGroup != "" {
+			desc += fmt.Sprintf(" Attributed to: %s.", threatGroup)
+		}
+		s.raiseAlert(event, core.SeverityCritical,
+			"OT Attack Handoff Detected",
+			desc,
+			"ot_attack_handoff")
+	}
+
+	// Mass targeting (multiple devices simultaneously)
+	if targetCount > 3 {
+		s.raiseAlert(event, core.SeverityCritical,
+			"Mass OT Device Targeting Detected",
+			fmt.Sprintf("Coordinated attack targeting %d OT devices simultaneously. Phase: %s. This indicates a planned destructive campaign against industrial infrastructure.",
+				targetCount, attackPhase),
+			"mass_ot_targeting")
+	}
+
+	// Reconnaissance-to-attack transition
+	if attackPhase == "active_exploitation" || attackPhase == "destructive" {
+		s.raiseAlert(event, core.SeverityCritical,
+			"OT Attack Entered Destructive Phase",
+			fmt.Sprintf("OT attack on device %s has entered %s phase. Targets: %d. Immediate physical process isolation may be required.",
+				deviceID, attackPhase, targetCount),
+			"ot_destructive_phase")
+	}
+}
+
 func (s *Shield) raiseAlert(event *core.SecurityEvent, severity core.Severity, title, description, alertType string) {
 	newEvent := core.NewSecurityEvent(ModuleName, alertType, severity, description)
 	newEvent.SourceIP = event.SourceIP
@@ -342,6 +540,35 @@ func getIoTMitigations(alertType string) []string {
 	case "protocol_anomaly", "unusual_protocol":
 		return append(base, "Baseline normal protocol usage per device type",
 			"Block unauthorized protocols at the network level")
+	// 2025-2026: persistent firmware implant mitigations
+	case "bootloader_rootkit", "persistent_firmware_implant", "boot_partition_write", "secure_boot_bypass":
+		return append(base, "Enable and enforce Secure Boot on all devices",
+			"Use signed firmware with hardware root of trust",
+			"Monitor boot partition writes outside maintenance windows",
+			"Maintain golden images for PLCs, drives, and controllers",
+			"Consider hardware replacement for devices with persistent implants")
+	// 2025-2026: ICS wiper/destructive malware mitigations
+	case "plc_logic_wipe", "ics_wiper", "ot_config_wipe":
+		return append(base, "Maintain offline backups of all PLC programs and configurations",
+			"Implement PLC logic change detection and alerting",
+			"Restrict programming access to designated engineering workstations",
+			"Test restore procedures for industrial control systems regularly")
+	case "safety_system_tamper":
+		return append(base, "Isolate safety instrumented systems (SIS) on dedicated networks",
+			"Implement hardware-enforced safety interlocks where possible",
+			"Monitor all access to safety system controllers",
+			"Maintain independent safety system backups")
+	case "hmi_tamper":
+		return append(base, "Implement independent process variable verification",
+			"Cross-check HMI readings against field instrument data",
+			"Restrict HMI configuration access to authorized operators")
+	// 2025-2026: coordinated OT attack mitigations
+	case "multi_protocol_attack", "ot_attack_handoff", "mass_ot_targeting", "ot_destructive_phase":
+		return append(base, "Implement network segmentation between protocol zones",
+			"Baseline Modbus/EtherNet-IP/OPC-UA traffic and alert on anomalies",
+			"Use time-boxed vendor access with MFA and session recording",
+			"Maintain SBOMs for all OT devices and monitor for supply chain compromise",
+			"Prepare physical process isolation procedures for coordinated attacks")
 	default:
 		return append(base, "Isolate suspicious devices from the network",
 			"Review device logs and network captures for forensic analysis")

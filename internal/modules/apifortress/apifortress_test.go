@@ -772,3 +772,201 @@ func TestGetIntDetail(t *testing.T) {
 
 // Suppress unused import
 var _ = time.Second
+
+// ─── Security Misconfiguration (API8:2023) ───────────────────────────────────
+
+func TestSecurityMisconfig_CORSWildcardWithCredentials(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := core.NewSecurityEvent("test", "http_response", core.SeverityInfo, "response")
+	ev.Details["path"] = "/api/users"
+	ev.Details["method"] = "GET"
+	ev.Details["cors_origin"] = "*"
+	ev.Details["cors_credentials"] = "true"
+	ev.SourceIP = "10.0.0.1"
+	f.HandleEvent(ev)
+
+	if !cp.hasAlertType("security_misconfiguration") {
+		t.Error("expected security_misconfiguration alert for CORS wildcard with credentials")
+	}
+}
+
+func TestSecurityMisconfig_VerboseError_StackTrace(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := core.NewSecurityEvent("test", "http_response", core.SeverityInfo, "response")
+	ev.Details["path"] = "/api/users"
+	ev.Details["method"] = "POST"
+	ev.Details["error_body"] = "Error: NullPointerException\n\tat com.example.UserService.getUser(UserService.java:42)"
+	ev.SourceIP = "10.0.0.1"
+	f.HandleEvent(ev)
+
+	if !cp.hasAlertType("security_misconfiguration") {
+		t.Error("expected security_misconfiguration alert for verbose stack trace")
+	}
+}
+
+func TestSecurityMisconfig_DebugEndpoint(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := core.NewSecurityEvent("test", "http_response", core.SeverityInfo, "response")
+	ev.Details["path"] = "/actuator/env"
+	ev.Details["method"] = "GET"
+	ev.SourceIP = "10.0.0.1"
+	f.HandleEvent(ev)
+
+	if !cp.hasAlertType("security_misconfiguration") {
+		t.Error("expected security_misconfiguration alert for debug endpoint")
+	}
+}
+
+func TestSecurityMisconfig_MissingHeaders(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := core.NewSecurityEvent("test", "http_response", core.SeverityInfo, "response")
+	ev.Details["path"] = "/api/data"
+	ev.Details["method"] = "GET"
+	ev.Details["response_headers"] = "Content-Type: application/json\nCache-Control: no-cache"
+	ev.SourceIP = "10.0.0.1"
+	f.HandleEvent(ev)
+
+	if !cp.hasAlertType("security_misconfiguration") {
+		t.Error("expected security_misconfiguration alert for missing security headers")
+	}
+}
+
+func TestSecurityMisconfig_CleanResponse_NoAlert(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := core.NewSecurityEvent("test", "api_config", core.SeverityInfo, "config")
+	ev.Details["path"] = "/api/users"
+	ev.Details["method"] = "GET"
+	ev.Details["cors_origin"] = "https://example.com"
+	ev.Details["cors_credentials"] = "true"
+	ev.SourceIP = "10.0.0.1"
+	f.HandleEvent(ev)
+
+	if cp.hasAlertType("security_misconfiguration") {
+		t.Error("expected no security_misconfiguration alert for properly configured CORS")
+	}
+}
+
+// ─── Unsafe Consumption of APIs (API10:2023) ─────────────────────────────────
+
+func TestUnsafeConsumption_InjectionInUpstream(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := core.NewSecurityEvent("test", "api_upstream_response", core.SeverityInfo, "upstream")
+	ev.Details["upstream_url"] = "https://third-party-api.com/data"
+	ev.Details["response_body"] = `{"name": "<script>alert('xss')</script>", "value": "test"}`
+	ev.Details["validated"] = "false"
+	ev.SourceIP = "10.0.0.1"
+	f.HandleEvent(ev)
+
+	if !cp.hasAlertType("unsafe_api_consumption") {
+		t.Error("expected unsafe_api_consumption alert for injection in upstream response")
+	}
+}
+
+func TestUnsafeConsumption_NoTLS(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := core.NewSecurityEvent("test", "api_upstream_response", core.SeverityInfo, "upstream")
+	ev.Details["upstream_url"] = "http://insecure-api.com/data"
+	ev.Details["tls"] = "false"
+	ev.SourceIP = "10.0.0.1"
+	f.HandleEvent(ev)
+
+	if !cp.hasAlertType("unsafe_api_consumption") {
+		t.Error("expected unsafe_api_consumption alert for no TLS")
+	}
+}
+
+func TestUnsafeConsumption_ExcessiveRedirects(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := core.NewSecurityEvent("test", "api_upstream_response", core.SeverityInfo, "upstream")
+	ev.Details["upstream_url"] = "https://api.example.com/data"
+	ev.Details["redirect_count"] = 10
+	ev.SourceIP = "10.0.0.1"
+	f.HandleEvent(ev)
+
+	if !cp.hasAlertType("unsafe_api_consumption") {
+		t.Error("expected unsafe_api_consumption alert for excessive redirects")
+	}
+}
+
+func TestUnsafeConsumption_ErrorResponseConsumed(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := core.NewSecurityEvent("test", "api_upstream_response", core.SeverityInfo, "upstream")
+	ev.Details["upstream_url"] = "https://api.example.com/data"
+	ev.Details["status_code"] = 500
+	ev.Details["validated"] = "false"
+	ev.SourceIP = "10.0.0.1"
+	f.HandleEvent(ev)
+
+	if !cp.hasAlertType("unsafe_api_consumption") {
+		t.Error("expected unsafe_api_consumption alert for consuming error response")
+	}
+}
+
+func TestUnsafeConsumption_ValidatedResponse_NoAlert(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := core.NewSecurityEvent("test", "api_upstream_response", core.SeverityInfo, "upstream")
+	ev.Details["upstream_url"] = "https://api.example.com/data"
+	ev.Details["response_body"] = `{"name": "safe data"}`
+	ev.Details["validated"] = "true"
+	ev.Details["tls"] = "true"
+	ev.SourceIP = "10.0.0.1"
+	f.HandleEvent(ev)
+
+	if cp.hasAlertType("unsafe_api_consumption") {
+		t.Error("expected no alert for validated upstream response")
+	}
+}
+
+func TestUnsafeConsumption_EmptyURL_NoAlert(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := core.NewSecurityEvent("test", "api_upstream_response", core.SeverityInfo, "upstream")
+	ev.SourceIP = "10.0.0.1"
+	f.HandleEvent(ev)
+
+	if cp.alertCount() > 0 {
+		t.Error("expected no alert for empty upstream URL")
+	}
+}
+
+// ─── Updated Mitigations Coverage ────────────────────────────────────────────
+
+func TestGetAPIMitigations_NewTypes(t *testing.T) {
+	newTypes := []string{
+		"api_rate_limit", "shadow_api", "schema_violation",
+		"error_rate_spike", "response_size_anomaly",
+		"jwt_none_algorithm", "jwt_weak_algorithm",
+		"security_misconfiguration", "unsafe_api_consumption",
+	}
+	for _, at := range newTypes {
+		m := getAPIMitigations(at)
+		if len(m) == 0 {
+			t.Errorf("getAPIMitigations(%q) returned empty slice", at)
+		}
+		// Verify they're not the generic fallback
+		if len(m) == 3 && m[0] == "Review API security posture against OWASP API Top 10" {
+			t.Errorf("getAPIMitigations(%q) returned generic fallback instead of specific mitigations", at)
+		}
+	}
+}

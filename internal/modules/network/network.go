@@ -430,6 +430,7 @@ func (g *Guardian) raiseAlert(event *core.SecurityEvent, severity core.Severity,
 		_ = g.bus.PublishEvent(newEvent)
 	}
 	alert := core.NewAlert(newEvent, title, description)
+	alert.Mitigations = getNetworkMitigations(alertType)
 	if g.pipeline != nil {
 		g.pipeline.Process(alert)
 	}
@@ -1494,4 +1495,115 @@ func getStringDetail(event *core.SecurityEvent, key string) string {
 		return val
 	}
 	return ""
+}
+
+// getNetworkMitigations returns context-specific mitigations based on alert type.
+func getNetworkMitigations(alertType string) []string {
+	switch alertType {
+	case "ip_auto_blocked", "malicious_ip":
+		return []string{
+			"Block the IP at the firewall/WAF level",
+			"Investigate all traffic from this IP for compromise indicators",
+			"Update threat intelligence feeds with the malicious IP",
+		}
+	case "rate_limit_exceeded":
+		return []string{
+			"Implement progressive rate limiting with increasing backoff",
+			"Consider temporary IP blocking for persistent violators",
+			"Review rate limit thresholds for the affected endpoint",
+		}
+	case "geo_fence_violation":
+		return []string{
+			"Verify the geo-fence policy is correctly configured",
+			"Investigate if the request is from a VPN or proxy",
+			"Block the request and log for security review",
+		}
+	case "ddos_detected":
+		return []string{
+			"Activate DDoS mitigation services (CDN, scrubbing center)",
+			"Implement traffic shaping and connection rate limiting",
+			"Enable SYN cookies and connection timeouts",
+			"Coordinate with upstream ISP for traffic filtering",
+		}
+	case "dns_tunneling":
+		return []string{
+			"Block the tunneling domain at the DNS resolver",
+			"Implement DNS query length and frequency limits",
+			"Monitor for encoded payloads in DNS queries",
+			"Investigate the source host for malware",
+		}
+	case "dga_detected":
+		return []string{
+			"Block the DGA domain and investigate the source host",
+			"Implement DNS sinkholing for suspected DGA domains",
+			"Scan the source host for malware infection",
+		}
+	case "dns_exfiltration":
+		return []string{
+			"Block DNS queries to the exfiltration domain",
+			"Implement DNS query monitoring and anomaly detection",
+			"Investigate the source host for data theft malware",
+		}
+	case "c2_beaconing":
+		return []string{
+			"Isolate the beaconing host immediately",
+			"Block the C2 server IP/domain at the firewall",
+			"Perform forensic analysis on the compromised host",
+			"Check for lateral movement from the compromised host",
+		}
+	case "covert_channel":
+		return []string{
+			"Investigate the covert channel endpoints",
+			"Implement deep packet inspection for protocol anomalies",
+			"Block non-standard protocol usage on standard ports",
+		}
+	case "suspicious_port":
+		return []string{
+			"Investigate the purpose of the non-standard port usage",
+			"Implement egress filtering to block unauthorized outbound connections",
+			"Review firewall rules for overly permissive port access",
+		}
+	case "pass_the_hash", "pass_the_ticket", "golden_ticket", "dcsync":
+		return []string{
+			"Reset credentials for the affected accounts immediately",
+			"Implement Credential Guard and Protected Users group",
+			"Enable NTLM auditing and restrict NTLM authentication",
+			"Reset the KRBTGT account password twice for Golden Ticket attacks",
+			"Implement privileged access workstations (PAWs)",
+		}
+	case "kerberoasting":
+		return []string{
+			"Use strong, long passwords for service accounts (25+ characters)",
+			"Implement Group Managed Service Accounts (gMSA)",
+			"Monitor for unusual TGS ticket requests with RC4 encryption",
+			"Rotate service account passwords regularly",
+		}
+	case "lateral_movement":
+		return []string{
+			"Isolate the source host and investigate for compromise",
+			"Implement network segmentation to limit lateral movement",
+			"Enable host-based firewalls to restrict inter-host communication",
+			"Deploy endpoint detection and response (EDR) on all hosts",
+		}
+	case "horizontal_scan", "vertical_scan", "stealth_scan":
+		return []string{
+			"Block the scanning IP at the firewall",
+			"Investigate the scanner for reconnaissance activity",
+			"Implement network intrusion detection/prevention systems",
+			"Review exposed services and close unnecessary ports",
+		}
+	case "amplification_attack":
+		return []string{
+			"Implement BCP38/BCP84 source address validation",
+			"Disable or restrict open DNS resolvers, NTP, and memcached",
+			"Rate limit responses to prevent amplification",
+			"Coordinate with upstream providers for traffic scrubbing",
+		}
+	default:
+		return []string{
+			"Investigate the network event for security implications",
+			"Review firewall and IDS/IPS rules",
+			"Monitor for related suspicious activity",
+		}
+	}
 }
