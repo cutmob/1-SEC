@@ -1,3 +1,24 @@
+1-SEC Dual License
+===================
+
+1-SEC is dual-licensed:
+
+1. Open Source -- AGPLv3 (see below). The core engine and all modules are
+   free to use, modify, and self-host under the GNU Affero General Public
+   License v3.
+
+2. Commercial License -- available for organizations that need to use 1-SEC
+   without AGPLv3 obligations (e.g., embedding in proprietary products,
+   reselling, or offering as a managed service without source disclosure).
+   Contact support@driftrail.com for details.
+
+You may not rebrand, resell, or offer 1-SEC as a competing commercial
+product or managed service without a commercial license.
+
+Copyright (c) 1-SEC Authors. All rights reserved.
+
+-------------------------------------------------------------------------------
+
                     GNU AFFERO GENERAL PUBLIC LICENSE
                        Version 3, 19 November 2007
 
