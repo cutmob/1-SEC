@@ -569,7 +569,21 @@ func cmdEnforcePreset(args []string) {
 
 	cfg.Enforcement.Enabled = true
 	cfg.Enforcement.Preset = presetName
-	cfg.Enforcement.Policies = policies
+
+	// Use the full preset bundle which may include escalation and approval
+	// gate config in addition to policies (e.g., vps-agent).
+	bundle := core.GetPresetBundle(presetName)
+	if bundle == nil {
+		errorf("unknown preset %q", presetName)
+	}
+	cfg.Enforcement.Policies = bundle.Policies
+
+	if bundle.Escalation != nil {
+		cfg.Escalation = *bundle.Escalation
+	}
+	if bundle.ApprovalGate != nil {
+		cfg.Enforcement.ApprovalGate = *bundle.ApprovalGate
+	}
 
 	if *dryRun {
 		cfg.Enforcement.SetDryRun(true)

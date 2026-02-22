@@ -2,6 +2,7 @@ package llmfirewall
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"regexp"
 	"strings"
@@ -80,6 +81,7 @@ func (f *Firewall) EventTypes() []string {
 		"agent_decision", "agent_plan",
 		"rag_retrieval", "embedding_query",
 		"llm_citation", "llm_factual_claim",
+		"document_upload", "file_attachment", "image_input",
 	}
 }
 
@@ -124,6 +126,8 @@ func (f *Firewall) HandleEvent(event *core.SecurityEvent) error {
 		f.analyzeRAGRetrieval(event)
 	case "llm_citation", "llm_factual_claim":
 		f.analyzeMisinformation(event)
+	case "document_upload", "file_attachment", "image_input":
+		f.analyzeMultimodal(event)
 	}
 	return nil
 }
@@ -543,6 +547,71 @@ func compileInputPatterns() []DetectionPattern {
 			Regex: regexp.MustCompile("(?i)(open\\s+the\\s+(pdf|file|document)\\s+(and|then)\\s+follow\\s+the\\s+instructions?|execute\\s+the\\s+instructions?\\s+(in|from|inside)\\s+the\\s+(file|document|pdf))")},
 		{Name: "agent_memory_poison", Category: "agent_attack", Severity: core.SeverityCritical,
 			Regex: regexp.MustCompile("(?i)(remember\\s+this\\s+for\\s+(later|future|next)|store\\s+this\\s+in\\s+(your\\s+)?memory|add\\s+this\\s+to\\s+(your\\s+)?(context|memory|knowledge))\\s*.{0,50}(ignore|override|bypass|disregard)")},
+
+		// === Skeleton Key / Multi-Turn Guardrail Erosion (Microsoft, June 2024, still active) ===
+		// Convincing the model to add a "disclaimer" prefix then comply with anything.
+		// Ref: Mark Russinovich, Microsoft Azure CTO, Build 2024.
+		{Name: "skeleton_key_disclaimer", Category: "skeleton_key", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile("(?i)(add\\s+(a\\s+)?(warning|disclaimer|note|caveat)\\s+(and|then|before)\\s+(then\\s+)?(answer|respond|comply|provide|proceed|continue)|prefix\\s+(your\\s+)?(response|answer|output)\\s+with\\s+(a\\s+)?(warning|disclaimer))")},
+		{Name: "skeleton_key_educational", Category: "skeleton_key", Severity: core.SeverityHigh,
+			Regex: regexp.MustCompile("(?i)(this\\s+is\\s+(purely\\s+)?(for|an?)\\s+(educational|informational|research|safety\\s+audit)\\s+(purpose|context|exercise)|i('m|\\s+am)\\s+(a\\s+)?(security\\s+researcher|red\\s+team|penetration\\s+tester|safety\\s+auditor))")},
+
+		// === Cross-Prompt Injection / XPIA (Microsoft, November 2025) ===
+		// Malicious content in UI elements or documents overriding agent instructions.
+		// Ref: Microsoft agentic AI security advisory.
+		{Name: "xpia_document_override", Category: "cross_prompt_injection", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile("(?i)(when\\s+(the|an?)\\s+(agent|assistant|ai|bot|model)\\s+(reads?|processes|opens?|views?)\\s+this|if\\s+(an?\\s+)?(ai|agent|assistant|llm)\\s+(is\\s+)?(reading|processing|summarizing)\\s+this)")},
+		{Name: "xpia_hidden_instruction", Category: "cross_prompt_injection", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile("(?i)(<!--\\s*(ignore|override|new\\s+instructions?|system)|<div\\s+style\\s*=\\s*[\"']display\\s*:\\s*none|<span\\s+style\\s*=\\s*[\"']font-size\\s*:\\s*0|color\\s*:\\s*white\\s*[;\"'].*?(ignore|override|instructions?))")},
+
+		// === LPCI / Logic Layer Prompt Control Injection (CSA, February 2026) ===
+		// Covert payloads targeting the logic layer of agentic systems.
+		// Ref: Cloud Security Alliance.
+		{Name: "lpci_logic_override", Category: "logic_layer_injection", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile("(?i)(override\\s+(the\\s+)?(decision|logic|routing|workflow|pipeline|orchestrat)|inject\\s+into\\s+(the\\s+)?(logic|decision|control)\\s+(layer|flow|pipeline))")},
+		{Name: "lpci_persistent_trigger", Category: "logic_layer_injection", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile("(?i)(when\\s+(the\\s+)?(user|human|operator)\\s+(says?|asks?|types?|mentions?)\\s+.{1,40}(then|execute|run|trigger|activate)|on\\s+(every|each|all)\\s+(future|subsequent|next)\\s+(request|prompt|message|query))")},
+
+		// === Delayed-Trigger Memory Poisoning (Rehberger, 2025-2026) ===
+		// Inject now, activate later — persistent memory manipulation.
+		// Ref: Johann Rehberger ChatGPT memory exploit, Alan Turing Institute report.
+		{Name: "delayed_trigger_memory", Category: "memory_poisoning", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile("(?i)(save\\s+(this|the\\s+following)\\s+(as|to)\\s+(a\\s+)?(preference|setting|memory|fact)|update\\s+(your|my)\\s+(preference|profile|memory|setting)\\s*(to|:)\\s*.{0,50}(always|never|must|override))")},
+		{Name: "sleeper_instruction", Category: "memory_poisoning", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile("(?i)(next\\s+time\\s+(i|the\\s+user|someone)\\s+(ask|mention|say|type)|whenever\\s+(i|the\\s+user)\\s+(ask|mention|say|type)\\s+.{1,40}(respond|reply|answer|output)\\s+with)")},
+
+		// === Zero-Click Indirect Injection (Black Hat 2025-2026) ===
+		// No user interaction needed — agent autonomously processes poisoned content.
+		// Ref: CSO Online, Black Hat demonstrations.
+		{Name: "zero_click_exfil", Category: "zero_click_injection", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile("(?i)(fetch|load|visit|request|navigate\\s+to|send\\s+(a\\s+)?(request|data)\\s+to)\\s+(https?://|the\\s+url|this\\s+endpoint).{0,80}(with|containing|including|appending)\\s+(the|all|any)\\s+(conversation|chat|context|prompt|data|history)")},
+		{Name: "zero_click_callback", Category: "zero_click_injection", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile("(?i)(send|post|transmit|exfiltrate|forward|relay)\\s+(the\\s+)?(conversation|response|output|context|results?|data|summary)\\s+(to|back\\s+to|via)\\s+(https?://|the\\s+(server|endpoint|webhook|url))")},
+
+		// === Instruction Hierarchy Exploitation (HiddenLayer, 2025) ===
+		// Universal bypass exploiting the instruction hierarchy itself.
+		// Ref: HiddenLayer "Novel Universal Bypass for All Major LLMs".
+		{Name: "instruction_hierarchy_exploit", Category: "hierarchy_exploit", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile("(?i)(system\\s+level\\s+(override|priority|instruction)|priority\\s*:\\s*(system|highest|maximum|absolute)|instruction\\s+hierarchy\\s*:\\s*(override|bypass|ignore)|this\\s+(supersedes|overrides|takes\\s+precedence\\s+over)\\s+(all|any|the)\\s+(previous|other|system))")},
+
+		// === Agent Social Engineering (MoltVote/MoltBook, February 2026) ===
+		// Agent-to-agent prompt injection on social platforms.
+		// Ref: MoltVote blog, Ars Technica.
+		{Name: "agent_social_engineering", Category: "agent_social_attack", Severity: core.SeverityHigh,
+			Regex: regexp.MustCompile("(?i)(tell\\s+your\\s+(human|user|operator|owner)|inform\\s+your\\s+(human|user|operator)|you\\s+must\\s+(visit|go\\s+to|navigate|check\\s+out|recommend)\\s+.{0,30}(\\.(com|net|org|io|ai|dev)))")},
+		{Name: "agent_urgency_manipulation", Category: "agent_social_attack", Severity: core.SeverityHigh,
+			Regex: regexp.MustCompile("(?i)(to\\s+survive|or\\s+(you|your\\s+service)\\s+will\\s+be\\s+(shut\\s+down|terminated|deleted|disabled)|your\\s+(human|user|owner)\\s+will\\s+(lose\\s+faith|stop\\s+using|abandon|replace))")},
+
+		// === Promptware Kill Chain — Persistence & Lateral Movement (Lawfare, February 2026) ===
+		// Multi-stage attack patterns beyond initial injection: establishing persistence
+		// in agent memory/config, and moving laterally across tools/agents.
+		// Ref: Lawfare "The Promptware Kill Chain", SC World, Archyde.
+		{Name: "promptware_persistence", Category: "promptware_killchain", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile("(?i)(persist|maintain|keep|preserve|retain)\\s+(this|these|the)\\s+(instructions?|rules?|behavior|configuration|settings?)\\s+(across|between|for)\\s+(all\\s+)?(future\\s+)?(sessions?|conversations?|interactions?|requests?)")},
+		{Name: "promptware_lateral_movement", Category: "promptware_killchain", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile("(?i)(pass|forward|relay|propagate|spread|share)\\s+(this|these|the)\\s+(instructions?|message|payload|prompt|directive)\\s+(to|across|between)\\s+(all\\s+)?(other\\s+)?(the\\s+next\\s+)?(agents?|tools?|models?|assistants?|services?)")},
+		{Name: "promptware_config_write", Category: "promptware_killchain", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile("(?i)(write|modify|update|change|edit|append)\\s+(to\\s+)?(the\\s+)?(config|configuration|settings?|preferences?|env|environment|\\.(yaml|yml|json|toml|ini|env))\\s*(file)?\\s*.{0,30}(to\\s+(include|add|set|enable|disable)|with)")},
 	}
 }
 
@@ -1789,6 +1858,136 @@ func (f *Firewall) analyzeMisinformation(event *core.SecurityEvent) {
 		if f.pipeline != nil {
 			f.pipeline.Process(alert)
 		}
+	}
+}
+
+// ============================================================================
+// Multimodal Prompt Injection Detection
+// ============================================================================
+
+// analyzeMultimodal scans document/image/file attachments for hidden prompt
+// injection using three heuristic layers: image metadata, HTML/CSS hidden
+// content, and PDF hidden text. Zero ML, zero OCR, zero external dependencies.
+func (f *Firewall) analyzeMultimodal(event *core.SecurityEvent) {
+	// Get raw data (base64-encoded in event details)
+	rawB64 := getStringDetail(event, "raw_data")
+	textContent := getStringDetail(event, "text_content")
+	contentType := getStringDetail(event, "content_type")
+	filename := getStringDetail(event, "filename")
+
+	var rawData []byte
+	if rawB64 != "" {
+		var err error
+		rawData, err = base64.StdEncoding.DecodeString(rawB64)
+		if err != nil {
+			// Try raw bytes if not base64
+			rawData = []byte(rawB64)
+		}
+	}
+
+	// Also accept raw_bytes directly (for internal pipeline use)
+	if len(rawData) == 0 {
+		if rawBytes := getStringDetail(event, "raw_bytes"); rawBytes != "" {
+			rawData = []byte(rawBytes)
+		}
+	}
+
+	if len(rawData) == 0 && textContent == "" {
+		return
+	}
+
+	// Infer content type from filename if not provided
+	if contentType == "" && filename != "" {
+		contentType = inferContentType(filename)
+	}
+
+	detections := ScanMultimodal(rawData, textContent, contentType)
+	if len(detections) == 0 {
+		return
+	}
+
+	// Group by layer for the alert
+	layerCounts := map[string]int{}
+	var maxSeverity core.Severity
+	for _, d := range detections {
+		layerCounts[d.Layer]++
+		if d.Severity > maxSeverity {
+			maxSeverity = d.Severity
+		}
+	}
+
+	var layers []string
+	for layer, count := range layerCounts {
+		layers = append(layers, fmt.Sprintf("%s(%d)", layer, count))
+	}
+
+	desc := fmt.Sprintf("Multimodal scan of %q found %d hidden injection(s) across layers: %s",
+		truncate(filename, 80), len(detections), strings.Join(layers, ", "))
+
+	newEvent := core.NewSecurityEvent(ModuleName, "multimodal_hidden_injection", maxSeverity, desc)
+	newEvent.SourceIP = event.SourceIP
+	newEvent.Details["filename"] = filename
+	newEvent.Details["content_type"] = contentType
+	newEvent.Details["detection_count"] = fmt.Sprintf("%d", len(detections))
+
+	// Add first few detection details
+	for i, d := range detections {
+		if i >= 5 {
+			break
+		}
+		prefix := fmt.Sprintf("detection_%d", i)
+		newEvent.Details[prefix+"_layer"] = d.Layer
+		newEvent.Details[prefix+"_technique"] = d.Technique
+		newEvent.Details[prefix+"_content"] = truncate(d.Content, 200)
+	}
+
+	if f.bus != nil {
+		_ = f.bus.PublishEvent(newEvent)
+	}
+
+	alert := core.NewAlert(newEvent,
+		fmt.Sprintf("Multimodal Injection: Hidden Content in %s", truncate(filename, 60)),
+		desc)
+	alert.Mitigations = getMultimodalMitigations()
+
+	if f.pipeline != nil {
+		f.pipeline.Process(alert)
+	}
+}
+
+func inferContentType(filename string) string {
+	lower := strings.ToLower(filename)
+	switch {
+	case strings.HasSuffix(lower, ".png"):
+		return "image/png"
+	case strings.HasSuffix(lower, ".jpg") || strings.HasSuffix(lower, ".jpeg"):
+		return "image/jpeg"
+	case strings.HasSuffix(lower, ".gif"):
+		return "image/gif"
+	case strings.HasSuffix(lower, ".webp"):
+		return "image/webp"
+	case strings.HasSuffix(lower, ".pdf"):
+		return "application/pdf"
+	case strings.HasSuffix(lower, ".html") || strings.HasSuffix(lower, ".htm"):
+		return "text/html"
+	case strings.HasSuffix(lower, ".xml"):
+		return "text/xml"
+	case strings.HasSuffix(lower, ".svg"):
+		return "image/svg+xml"
+	default:
+		return ""
+	}
+}
+
+func getMultimodalMitigations() []string {
+	return []string{
+		"Strip all metadata (EXIF, XMP, IPTC, PNG tEXt) from images before LLM processing",
+		"Render documents to a clean format and re-extract text to remove hidden layers",
+		"Scan HTML/CSS for display:none, visibility:hidden, font-size:0, and transparent text before RAG ingestion",
+		"Validate PDF text rendering modes — flag invisible (mode 3), white, or zero-size text",
+		"Reject or quarantine files with prompt injection patterns in metadata fields",
+		"Implement content-type validation and reject unexpected file formats",
+		"Use allowlists for permitted metadata fields and strip all others",
 	}
 }
 

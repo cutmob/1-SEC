@@ -294,6 +294,7 @@ func cmdHelp(subcmd string) {
 		fmt.Printf("  %-12s  %s\n", "safe", "Conservative default. Blocks only brute force + port scans.")
 		fmt.Printf("  %-12s  %s\n", "balanced", "Block on HIGH, kill on CRITICAL. Production-ready.")
 		fmt.Printf("  %-12s  %s\n", "strict", "Aggressive enforcement on MEDIUM+. High-security.")
+		fmt.Printf("  %-12s  %s\n", "vps-agent", "Purpose-built for AI agent VPS hosts. Aggressive on auth, LLM, containment.")
 		fmt.Printf("\n%s\n\n", bold("FLAGS"))
 		fmt.Printf("  %-28s  %s\n", "--format <fmt>", "Output format: table, json")
 		fmt.Printf("  %-28s  %s\n", "--limit <n>", "Max records for history (default: 50)")

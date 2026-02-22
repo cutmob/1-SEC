@@ -44,6 +44,8 @@ func TestGetNotificationTemplate(t *testing.T) {
 		{"teams", "teams"},
 		{"msteams", "teams"},
 		{"discord", "discord"},
+		{"telegram", "telegram"},
+		{"tg", "telegram"},
 		{"generic", "generic"},
 		{"", "generic"},
 	}
@@ -66,8 +68,8 @@ func TestGetNotificationTemplate(t *testing.T) {
 
 func TestValidTemplateNames(t *testing.T) {
 	names := ValidTemplateNames()
-	if len(names) != 5 {
-		t.Errorf("expected 5 template names, got %d", len(names))
+	if len(names) != 6 {
+		t.Errorf("expected 6 template names, got %d", len(names))
 	}
 }
 
@@ -162,6 +164,34 @@ func TestGenericTemplate(t *testing.T) {
 	}
 	if payload["source"] != "1sec-response-engine" {
 		t.Errorf("expected source=1sec-response-engine, got %v", payload["source"])
+	}
+}
+
+func TestTelegramTemplate(t *testing.T) {
+	alert := makeTestAlert()
+	rule := ResponseRule{
+		Action: ActionWebhook,
+		Params: map[string]string{
+			"url":     "https://api.telegram.org/bot123:ABC/sendMessage",
+			"chat_id": "-1001234567890",
+		},
+	}
+	tmpl := &TelegramTemplate{}
+
+	payload := tmpl.Format(alert, rule)
+
+	if payload["chat_id"] != "-1001234567890" {
+		t.Errorf("expected chat_id, got %v", payload["chat_id"])
+	}
+	if payload["parse_mode"] != "HTML" {
+		t.Errorf("expected parse_mode=HTML, got %v", payload["parse_mode"])
+	}
+	text, ok := payload["text"].(string)
+	if !ok || text == "" {
+		t.Error("expected non-empty text field")
+	}
+	if len(text) < 20 {
+		t.Errorf("text too short: %q", text)
 	}
 }
 

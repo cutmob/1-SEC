@@ -1,5 +1,7 @@
 package core
 
+import "time"
+
 // ---------------------------------------------------------------------------
 // response_presets.go — built-in enforcement presets: lax, balanced, strict
 //
@@ -44,6 +46,41 @@ func GetPresetPolicies(preset string) map[string]ResponsePolicyYAML {
 // ValidPresets returns the list of valid preset names.
 func ValidPresets() []string {
 	return []string{PresetLax, PresetSafe, PresetBalanced, PresetStrict, PresetVPSAgent}
+}
+
+// ---------------------------------------------------------------------------
+// PresetBundle — full preset configuration including policies, escalation,
+// and approval gate settings. Only presets that need non-default escalation
+// or approval gate configs return a non-nil bundle.
+// ---------------------------------------------------------------------------
+
+// PresetBundle carries the full configuration for a preset beyond just policies.
+type PresetBundle struct {
+	Policies     map[string]ResponsePolicyYAML
+	Escalation   *EscalationConfig
+	ApprovalGate *ApprovalGateConfig
+}
+
+// GetPresetBundle returns the full preset bundle (policies + escalation +
+// approval gate). Returns nil if the preset name is unknown. For presets
+// that don't customize escalation/approval, those fields are nil (use defaults).
+func GetPresetBundle(preset string) *PresetBundle {
+	policies := GetPresetPolicies(preset)
+	if policies == nil {
+		return nil
+	}
+
+	bundle := &PresetBundle{Policies: policies}
+
+	switch preset {
+	case PresetVPSAgent:
+		esc := VPSAgentEscalationConfig()
+		bundle.Escalation = &esc
+		ag := VPSAgentApprovalGateConfig()
+		bundle.ApprovalGate = &ag
+	}
+
+	return bundle
 }
 
 // ---------------------------------------------------------------------------
@@ -563,7 +600,7 @@ func vpsAgentPreset() map[string]ResponsePolicyYAML {
 		"ai_containment": {
 			Enabled: true, MinSeverity: "MEDIUM", CooldownSeconds: 15, MaxActionsPerMin: 40,
 			Actions: []ResponseRuleYAML{
-				{Action: "kill_process", MinSeverity: "MEDIUM", Description: "Kill agent process violating containment policy"},
+				{Action: "kill_process", MinSeverity: "MEDIUM", SkipApproval: true, Description: "Kill agent process violating containment policy"},
 				{Action: "block_ip", MinSeverity: "HIGH", Description: "Block shadow AI service or unauthorized endpoint", Params: map[string]string{"duration": "8h"}},
 				{Action: "webhook", MinSeverity: "MEDIUM", Description: "Notify on agent containment breach", Params: map[string]string{"url": ""}},
 			},
@@ -575,8 +612,8 @@ func vpsAgentPreset() map[string]ResponsePolicyYAML {
 		"runtime_watcher": {
 			Enabled: true, MinSeverity: "MEDIUM", CooldownSeconds: 15, MaxActionsPerMin: 60,
 			Actions: []ResponseRuleYAML{
-				{Action: "kill_process", MinSeverity: "MEDIUM", Description: "Kill process tampering with agent memory or config"},
-				{Action: "quarantine_file", MinSeverity: "MEDIUM", Description: "Quarantine modified agent files (SOUL.md, MEMORY.md, .env)"},
+				{Action: "kill_process", MinSeverity: "MEDIUM", SkipApproval: true, Description: "Kill process tampering with agent memory or config"},
+				{Action: "quarantine_file", MinSeverity: "MEDIUM", SkipApproval: true, Description: "Quarantine modified agent files (SOUL.md, MEMORY.md, .env)"},
 				{Action: "block_ip", MinSeverity: "HIGH", Description: "Block source of file tampering attack", Params: map[string]string{"duration": "4h"}},
 				{Action: "webhook", MinSeverity: "MEDIUM", Description: "Notify on runtime file integrity violation", Params: map[string]string{"url": ""}},
 			},
@@ -588,8 +625,8 @@ func vpsAgentPreset() map[string]ResponsePolicyYAML {
 		"supply_chain": {
 			Enabled: true, MinSeverity: "MEDIUM", CooldownSeconds: 30, MaxActionsPerMin: 30,
 			Actions: []ResponseRuleYAML{
-				{Action: "quarantine_file", MinSeverity: "MEDIUM", Description: "Quarantine suspicious skill or plugin files"},
-				{Action: "kill_process", MinSeverity: "HIGH", Description: "Kill process spawned by malicious skill"},
+				{Action: "quarantine_file", MinSeverity: "MEDIUM", SkipApproval: true, Description: "Quarantine suspicious skill or plugin files"},
+				{Action: "kill_process", MinSeverity: "HIGH", SkipApproval: true, Description: "Kill process spawned by malicious skill"},
 				{Action: "block_ip", MinSeverity: "HIGH", Description: "Block C2 IP from malicious skill payload", Params: map[string]string{"duration": "24h"}},
 				{Action: "webhook", MinSeverity: "MEDIUM", Description: "Notify on supply chain threat", Params: map[string]string{"url": ""}},
 			},
@@ -646,8 +683,8 @@ func vpsAgentPreset() map[string]ResponsePolicyYAML {
 		"ransomware": {
 			Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 30, MaxActionsPerMin: 20,
 			Actions: []ResponseRuleYAML{
-				{Action: "kill_process", MinSeverity: "HIGH", Description: "Kill ransomware process"},
-				{Action: "quarantine_file", MinSeverity: "HIGH", Description: "Quarantine files being encrypted"},
+				{Action: "kill_process", MinSeverity: "HIGH", SkipApproval: true, Description: "Kill ransomware process"},
+				{Action: "quarantine_file", MinSeverity: "HIGH", SkipApproval: true, Description: "Quarantine files being encrypted"},
 				{Action: "webhook", MinSeverity: "HIGH", Description: "Notify on ransomware activity", Params: map[string]string{"url": ""}},
 			},
 		},
@@ -658,8 +695,8 @@ func vpsAgentPreset() map[string]ResponsePolicyYAML {
 		"data_poisoning": {
 			Enabled: true, MinSeverity: "MEDIUM", CooldownSeconds: 60, MaxActionsPerMin: 20,
 			Actions: []ResponseRuleYAML{
-				{Action: "quarantine_file", MinSeverity: "MEDIUM", Description: "Quarantine poisoned agent memory files"},
-				{Action: "kill_process", MinSeverity: "HIGH", Description: "Kill process injecting poisoned data"},
+				{Action: "quarantine_file", MinSeverity: "MEDIUM", SkipApproval: true, Description: "Quarantine poisoned agent memory files"},
+				{Action: "kill_process", MinSeverity: "HIGH", SkipApproval: true, Description: "Kill process injecting poisoned data"},
 				{Action: "webhook", MinSeverity: "MEDIUM", Description: "Notify on data/memory poisoning", Params: map[string]string{"url": ""}},
 			},
 		},
@@ -709,5 +746,55 @@ func vpsAgentPreset() map[string]ResponsePolicyYAML {
 				{Action: "webhook", MinSeverity: "HIGH", Description: "Notify on any high-severity alert", Params: map[string]string{"url": ""}},
 			},
 		},
+	}
+}
+
+// ---------------------------------------------------------------------------
+// VPS-Agent Escalation Config — aggressive timeouts for autonomous hosts.
+//
+// AI agent VPS instances typically have no human SOC team watching in real
+// time. Escalation timers are more important here, not less — if a CRITICAL
+// alert sits unacknowledged, the host is likely under active attack with
+// nobody watching.
+//
+// Timeouts are shorter than defaults:
+//   CRITICAL: 3 min (default 5 min)  — re-notify up to 5 times
+//   HIGH:     10 min (default 15 min) — escalate to CRITICAL, 3 times
+//   MEDIUM:   20 min (default 30 min) — escalate to HIGH, 2 times
+// ---------------------------------------------------------------------------
+
+// VPSAgentEscalationConfig returns escalation settings tuned for autonomous
+// AI agent hosts where no human SOC team is actively monitoring.
+func VPSAgentEscalationConfig() EscalationConfig {
+	return EscalationConfig{
+		Enabled: true,
+		Timeouts: map[string]EscalationTimer{
+			"CRITICAL": {Timeout: 3 * time.Minute, EscalateTo: "CRITICAL", ReNotify: true, MaxEscalations: 5},
+			"HIGH":     {Timeout: 10 * time.Minute, EscalateTo: "CRITICAL", ReNotify: true, MaxEscalations: 3},
+			"MEDIUM":   {Timeout: 20 * time.Minute, EscalateTo: "HIGH", ReNotify: true, MaxEscalations: 2},
+		},
+	}
+}
+
+// ---------------------------------------------------------------------------
+// VPS-Agent Approval Gate Config — disabled by default.
+//
+// Autonomous agent hosts can't wait for human approval on destructive actions.
+// The critical modules already have SkipApproval: true on kill_process and
+// quarantine_file rules. The gate is disabled entirely so no action is held.
+//
+// Operators who want a human-in-the-loop for lower-priority actions can
+// re-enable the gate with a short TTL and auto-approve above CRITICAL.
+// ---------------------------------------------------------------------------
+
+// VPSAgentApprovalGateConfig returns approval gate settings for autonomous
+// AI agent hosts — disabled by default since there's no human to approve.
+func VPSAgentApprovalGateConfig() ApprovalGateConfig {
+	return ApprovalGateConfig{
+		Enabled:          false,
+		RequireApproval:  []string{}, // nothing requires approval
+		AutoApproveAbove: "HIGH",     // if re-enabled, auto-approve HIGH+
+		TTL:              5 * time.Minute,
+		MaxPending:       50,
 	}
 }

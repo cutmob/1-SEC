@@ -39,6 +39,8 @@ func GetNotificationTemplate(name string) NotificationTemplate {
 		return &TeamsTemplate{}
 	case "discord":
 		return &DiscordTemplate{}
+	case "telegram", "tg":
+		return &TelegramTemplate{}
 	case "generic", "":
 		return &GenericTemplate{}
 	default:
@@ -48,7 +50,7 @@ func GetNotificationTemplate(name string) NotificationTemplate {
 
 // ValidTemplateNames returns all supported template names.
 func ValidTemplateNames() []string {
-	return []string{"generic", "pagerduty", "slack", "teams", "discord"}
+	return []string{"generic", "pagerduty", "slack", "teams", "discord", "telegram"}
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +262,58 @@ func (t *DiscordTemplate) Format(alert *Alert, rule ResponseRule) map[string]int
 				"timestamp":   alert.Timestamp.Format(time.RFC3339),
 			},
 		},
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Telegram Bot API (sendMessage with HTML parse_mode)
+// ---------------------------------------------------------------------------
+
+type TelegramTemplate struct{}
+
+func (t *TelegramTemplate) Name() string { return "telegram" }
+
+func (t *TelegramTemplate) Format(alert *Alert, rule ResponseRule) map[string]interface{} {
+	chatID := rule.Params["chat_id"]
+	emoji := "⚠️"
+	switch alert.Severity {
+	case SeverityCritical:
+		emoji = "🚨"
+	case SeverityHigh:
+		emoji = "🔴"
+	case SeverityMedium:
+		emoji = "🟠"
+	default:
+		emoji = "🔵"
+	}
+
+	sourceIP, _ := alert.Metadata["source_ip"].(string)
+	lines := []string{
+		fmt.Sprintf("%s <b>1SEC Alert: %s</b>", emoji, alert.Title),
+		"",
+		fmt.Sprintf("<b>Severity:</b> %s", alert.Severity.String()),
+		fmt.Sprintf("<b>Module:</b> %s", alert.Module),
+	}
+	if sourceIP != "" {
+		lines = append(lines, fmt.Sprintf("<b>Source IP:</b> <code>%s</code>", sourceIP))
+	}
+	lines = append(lines, "")
+	lines = append(lines, truncate(alert.Description, 400))
+	lines = append(lines, "")
+	lines = append(lines, fmt.Sprintf("<i>Alert %s · %s</i>", alert.ID[:12], alert.Timestamp.Format(time.RFC3339)))
+
+	text := ""
+	for i, line := range lines {
+		if i > 0 {
+			text += "\n"
+		}
+		text += line
+	}
+
+	return map[string]interface{}{
+		"chat_id":    chatID,
+		"text":       text,
+		"parse_mode": "HTML",
 	}
 }
 
