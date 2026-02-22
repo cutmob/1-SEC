@@ -104,6 +104,10 @@ func main() {
 		cmdCollect(args)
 	case "archive":
 		cmdArchive(args)
+	case "setup":
+		cmdSetup(args)
+	case "doctor":
+		cmdDoctor(args)
 	default:
 		fmt.Fprintf(os.Stderr, red("error: ")+"unknown command %q\n\n", subcmd)
 		if s := suggest(subcmd); s != "" {

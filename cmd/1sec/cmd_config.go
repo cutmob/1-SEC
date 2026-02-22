@@ -20,6 +20,10 @@ func cmdConfig(args []string) {
 		cmdConfigSet(args[1:])
 		return
 	}
+	if len(args) > 0 && args[0] == "set-key" {
+		cmdConfigSetKey(args[1:])
+		return
+	}
 
 	fs := flag.NewFlagSet("config", flag.ExitOnError)
 	configPath := fs.String("config", "configs/default.yaml", "Config file path")

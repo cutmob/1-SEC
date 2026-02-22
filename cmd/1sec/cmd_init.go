@@ -5,10 +5,12 @@ package main
 // ---------------------------------------------------------------------------
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 func cmdInit(args []string) {
@@ -16,6 +18,7 @@ func cmdInit(args []string) {
 	output := fs.String("output", "1sec.yaml", "Output file path")
 	minimal := fs.Bool("minimal", false, "Generate minimal config")
 	force := fs.Bool("force", false, "Overwrite existing file")
+	withAI := fs.Bool("ai", false, "Prompt for Gemini API key after generating config")
 	fs.Parse(args)
 
 	if !*force {
@@ -43,7 +46,27 @@ func cmdInit(args []string) {
 	}
 
 	fmt.Fprintf(os.Stdout, "%s Configuration written to %s\n", green("✓"), *output)
+
+	if *withAI {
+		fmt.Fprintf(os.Stdout, "\n")
+		reader := bufio.NewReader(os.Stdin)
+		fmt.Fprintf(os.Stdout, "  Enter Gemini API key (get one at %s):\n  > ", cyan("https://aistudio.google.com/apikey"))
+		key := strings.TrimSpace(readLine(reader))
+		if key != "" && len(key) >= 10 {
+			if err := writeAIKeyToConfig(*output, key); err != nil {
+				fmt.Fprintf(os.Stderr, "%s Could not save key: %v\n", red("✗"), err)
+				fmt.Fprintf(os.Stdout, "%s Set via env instead: export GEMINI_API_KEY=%s\n", dim("▸"), key)
+			} else {
+				fmt.Fprintf(os.Stdout, "%s Gemini API key saved\n", green("✓"))
+			}
+		} else if key != "" {
+			fmt.Fprintf(os.Stdout, "%s Key too short — skipped. Set later with: 1sec config set-key <key>\n", yellow("!"))
+		}
+		fmt.Println()
+	}
+
 	fmt.Fprintf(os.Stdout, "%s Run '1sec up --config %s' to start\n", dim("▸"), *output)
+	fmt.Fprintf(os.Stdout, "%s Or run '1sec setup' for guided configuration\n", dim("▸"))
 }
 
 func minimalConfig() string {
