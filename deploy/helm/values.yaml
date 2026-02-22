@@ -81,7 +81,6 @@ config: ""
 #   server:
 #     port: 1780
 #     cors_origins:
-#       - "https://1-sec.netlify.app"
 #       - "https://1-sec.dev"
 #   modules:
 #     ai_analysis_engine:
@@ -140,7 +139,7 @@ readinessProbe:
 
 startupProbe:
   httpGet:
-    path: /health
+    path: /api/v1/status
     port: api
   initialDelaySeconds: 2
   periodSeconds: 5

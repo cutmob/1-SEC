@@ -265,6 +265,16 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Cloud.APIURL = envURL
 	}
 
+	// Load Rust engine toggle from environment (ONESEC_RUST_ENGINE=true|false)
+	if envRust := os.Getenv("ONESEC_RUST_ENGINE"); envRust != "" {
+		cfg.RustEngine.Enabled = strings.EqualFold(envRust, "true") || envRust == "1"
+	}
+
+	// Load log level from environment (ONESEC_LOG_LEVEL=debug|info|warn|error)
+	if envLog := os.Getenv("ONESEC_LOG_LEVEL"); envLog != "" {
+		cfg.Logging.Level = strings.ToLower(strings.TrimSpace(envLog))
+	}
+
 	return cfg, nil
 }
 
