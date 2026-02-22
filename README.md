@@ -15,7 +15,7 @@
   <p>
     <a href="https://1-sec.dev">Website</a> ·
     <a href="https://1-sec.dev/docs">Docs</a> ·
-    <a href="https://1-sec.dev/pricing">Pricing</a> ·
+    <a href="https://1-sec.dev/pricing">Enterprise</a> ·
     <a href="https://1-sec.dev/dashboard">Dashboard</a>
   </p>
 </div>

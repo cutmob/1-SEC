@@ -60,11 +60,12 @@ type ResponsePolicy struct {
 
 // ResponseRule maps an alert condition to a specific action.
 type ResponseRule struct {
-	Action      ActionType        `json:"action" yaml:"action"`
-	MinSeverity Severity          `json:"min_severity" yaml:"min_severity"`
-	Params      map[string]string `json:"params,omitempty" yaml:"params"`
-	DryRun      bool              `json:"dry_run" yaml:"dry_run"`
-	Description string            `json:"description,omitempty" yaml:"description"`
+	Action       ActionType        `json:"action" yaml:"action"`
+	MinSeverity  Severity          `json:"min_severity" yaml:"min_severity"`
+	Params       map[string]string `json:"params,omitempty" yaml:"params"`
+	DryRun       bool              `json:"dry_run" yaml:"dry_run"`
+	SkipApproval bool              `json:"skip_approval,omitempty" yaml:"skip_approval"` // bypass approval gate
+	Description  string            `json:"description,omitempty" yaml:"description"`
 }
 
 // ResponseRecord is the audit log entry for an executed (or skipped) action.
@@ -232,11 +233,12 @@ func (re *ResponseEngine) loadPolicies() {
 		actions := make([]ResponseRule, 0, len(yamlPolicy.Actions))
 		for _, ya := range yamlPolicy.Actions {
 			actions = append(actions, ResponseRule{
-				Action:      ActionType(ya.Action),
-				MinSeverity: ParseSeverity(ya.MinSeverity),
-				Params:      ya.Params,
-				DryRun:      ya.DryRun,
-				Description: ya.Description,
+				Action:       ActionType(ya.Action),
+				MinSeverity:  ParseSeverity(ya.MinSeverity),
+				Params:       ya.Params,
+				DryRun:       ya.DryRun,
+				SkipApproval: ya.SkipApproval,
+				Description:  ya.Description,
 			})
 		}
 		p := &ResponsePolicy{
@@ -361,7 +363,7 @@ func (re *ResponseEngine) handleAlert(alert *Alert) {
 		}
 
 		// Check if this action requires human approval before execution
-		if re.ApprovalGate != nil && re.ApprovalGate.RequiresApproval(rule.Action) {
+		if re.ApprovalGate != nil && re.ApprovalGate.RequiresApprovalForRule(rule.Action, alert.Severity, rule.SkipApproval) {
 			approvalID := re.ApprovalGate.Submit(alert, rule, target)
 			re.logger.Warn().
 				Str("alert_id", alert.ID).

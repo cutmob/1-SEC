@@ -38,11 +38,13 @@ type CloudCommand struct {
 	Result         string `json:"result,omitempty"`
 	Error          string `json:"error,omitempty"`
 	// Command-specific fields
-	ApprovalID string `json:"approvalId,omitempty"`
-	RecordID   string `json:"recordId,omitempty"`
-	DryRun     *bool  `json:"dryRun,omitempty"`
-	Module     string `json:"module,omitempty"`
-	Enabled    *bool  `json:"enabled,omitempty"`
+	ApprovalID       string   `json:"approvalId,omitempty"`
+	RecordID         string   `json:"recordId,omitempty"`
+	DryRun           *bool    `json:"dryRun,omitempty"`
+	Module           string   `json:"module,omitempty"`
+	Enabled          *bool    `json:"enabled,omitempty"`
+	AutoApproveAbove *string  `json:"autoApproveAbove,omitempty"`
+	RequireApproval  []string `json:"requireApproval,omitempty"`
 }
 
 // CloudCommandsResponse is the shape returned by GET /api/v1/commands?status=pending.
@@ -230,6 +232,8 @@ func (cp *CommandPoller) executeCommand(cmd CloudCommand) (string, error) {
 		return cp.executeSetDryRun(cmd)
 	case "set_policy":
 		return cp.executeSetPolicy(cmd)
+	case "set_approval_config":
+		return cp.executeSetApprovalConfig(cmd)
 	default:
 		return "", fmt.Errorf("unknown command type: %s", cmd.Type)
 	}
@@ -360,4 +364,57 @@ func (cp *CommandPoller) executeSetPolicy(cmd CloudCommand) (string, error) {
 	}
 
 	return "", fmt.Errorf("no policy found for module: %s", module)
+}
+
+func (cp *CommandPoller) executeSetApprovalConfig(cmd CloudCommand) (string, error) {
+	cfg := cp.engine.Config.Enforcement
+	if cfg == nil {
+		return "", fmt.Errorf("enforcement not configured")
+	}
+
+	if !cfg.ApprovalGate.Enabled {
+		return "", fmt.Errorf("approval gate not enabled")
+	}
+
+	changes := make([]string, 0, 2)
+
+	if cmd.AutoApproveAbove != nil {
+		validSeverities := map[string]bool{"": true, "LOW": true, "MEDIUM": true, "HIGH": true, "CRITICAL": true}
+		val := strings.ToUpper(*cmd.AutoApproveAbove)
+		if !validSeverities[val] {
+			return "", fmt.Errorf("invalid auto_approve_above value: %s", *cmd.AutoApproveAbove)
+		}
+		cfg.ApprovalGate.AutoApproveAbove = val
+		if val == "" {
+			changes = append(changes, "auto_approve_above disabled")
+		} else {
+			changes = append(changes, "auto_approve_above set to "+val)
+		}
+	}
+
+	if cmd.RequireApproval != nil {
+		validActions := map[string]bool{
+			"block_ip": true, "kill_process": true, "quarantine_file": true,
+			"drop_connection": true, "disable_user": true, "webhook": true,
+			"command": true, "log_only": true,
+		}
+		for _, a := range cmd.RequireApproval {
+			if !validActions[a] {
+				return "", fmt.Errorf("unknown action in require_approval: %s", a)
+			}
+		}
+		cfg.ApprovalGate.RequireApproval = cmd.RequireApproval
+		changes = append(changes, fmt.Sprintf("require_approval updated (%d actions)", len(cmd.RequireApproval)))
+	}
+
+	if len(changes) == 0 {
+		return "", fmt.Errorf("no changes specified (provide autoApproveAbove or requireApproval)")
+	}
+
+	cp.logger.Warn().
+		Strs("changes", changes).
+		Str("issued_by", cmd.IssuedBy).
+		Msg("approval gate config updated via dashboard command")
+
+	return fmt.Sprintf("approval config updated: %s", strings.Join(changes, ", ")), nil
 }

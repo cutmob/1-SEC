@@ -52,9 +52,11 @@ func NewServer(engine *core.Engine) *Server {
 	mux.HandleFunc("/api/v1/enforce/approvals/stats", s.handleEnforceApprovalsStats)
 	mux.HandleFunc("/api/v1/enforce/webhooks/stats", s.handleEnforceWebhookStats)
 	mux.HandleFunc("/api/v1/enforce/webhooks/dead-letters", s.handleEnforceWebhookDeadLetters)
+	mux.HandleFunc("/api/v1/enforce/config", s.handleEnforceConfig)
 	mux.HandleFunc("/api/v1/metrics", s.handleMetrics)
 	mux.HandleFunc("/api/v1/event-schemas", s.handleEventSchemas)
 	mux.HandleFunc("/api/v1/archive/status", s.handleArchiveStatus)
+	mux.HandleFunc("/api/v1/escalation/status", s.handleEscalationStatus)
 	mux.HandleFunc("/health", s.handleHealth)
 
 	// ── Mutating endpoints (require write scope) ────────────────────
@@ -244,7 +246,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"version":       "1.0.0",
 		"status":        "running",
-		"bus_connected": s.engine.Bus.IsConnected(),
+		"uptime_secs":   int64(s.engine.Uptime().Seconds()),
+		"bus_connected": s.engine.Bus != nil && s.engine.Bus.IsConnected(),
 		"modules_total": s.engine.Registry.Count(),
 		"alerts_total":  s.engine.Pipeline.Count(),
 		"rust_engine":   rustEngineStatus,
@@ -602,7 +605,12 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	busMetrics := s.engine.Bus.GetMetrics()
+	var busMetrics map[string]int64
+	if s.engine.Bus != nil {
+		busMetrics = s.engine.Bus.GetMetrics()
+	} else {
+		busMetrics = map[string]int64{}
+	}
 	routingMetrics := s.engine.Registry.GetMetrics()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -658,6 +666,24 @@ func (s *Server) handleArchiveStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.engine.Archiver.Status())
 }
 
+// handleEscalationStatus returns escalation manager state.
+func (s *Server) handleEscalationStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	if s.engine.Escalation == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"enabled": false,
+			"status":  "disabled",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, s.engine.Escalation.Stats())
+}
+
 // ---------------------------------------------------------------------------
 // Middleware
 // ---------------------------------------------------------------------------
@@ -676,6 +702,12 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 		"code":    code,
 		"status":  status,
 	})
+}
+
+// decodeJSONBody reads and decodes a JSON request body with a 64KB limit.
+func decodeJSONBody(r *http.Request, dst interface{}) error {
+	limited := io.LimitReader(r.Body, 1<<16)
+	return json.NewDecoder(limited).Decode(dst)
 }
 
 // mutatingPaths lists URL path prefixes that require write-scope API keys.
@@ -697,6 +729,10 @@ var mutatingPaths = map[string]bool{
 func isMutatingPath(path, method string) bool {
 	// DELETE and PATCH on alerts are mutating
 	if strings.HasPrefix(path, "/api/v1/alerts/") && (method == http.MethodDelete || method == http.MethodPatch) {
+		return true
+	}
+	// POST to enforce/config is mutating, GET is not
+	if path == "/api/v1/enforce/config" && method == http.MethodPost {
 		return true
 	}
 	for prefix := range mutatingPaths {

@@ -226,6 +226,14 @@ func inferModule(matches []RustPatternMatch) string {
 		"credential_attack": "auth_fortress",
 		"prompt_injection":  "llm_firewall",
 		"canary_token":      "supply_chain",
+		// Agentic web access categories (2026)
+		"markdown_injection":    "ai_containment",
+		"agent_web_recon":       "ai_containment",
+		"agent_payment_fraud":   "ai_containment",
+		"x402_abuse":            "ai_containment",
+		"llms_txt_poisoning":    "data_poisoning",
+		"web_content_tampering": "data_poisoning",
+		"agent_delegation":      "ai_containment",
 	}
 
 	// Use the highest-severity match's category to pick the module

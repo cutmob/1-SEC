@@ -237,3 +237,175 @@ func TestApprovalGate_History(t *testing.T) {
 		t.Errorf("expected 2 history entries, got %d", len(history))
 	}
 }
+
+// ─── RequiresApprovalForRule tests ───────────────────────────────────────────
+
+func TestApprovalGate_RequiresApprovalForRule_SkipApproval(t *testing.T) {
+	logger := zerolog.Nop()
+	cfg := DefaultApprovalGateConfig()
+	cfg.Enabled = true
+
+	ag := NewApprovalGate(logger, cfg)
+	defer ag.Stop()
+
+	// kill_process normally requires approval
+	if !ag.RequiresApprovalForRule(ActionKillProcess, SeverityHigh, false) {
+		t.Error("expected kill_process to require approval without skip flag")
+	}
+
+	// With skip_approval=true, it should bypass
+	if ag.RequiresApprovalForRule(ActionKillProcess, SeverityHigh, true) {
+		t.Error("expected kill_process to skip approval with skip_approval=true")
+	}
+}
+
+func TestApprovalGate_RequiresApprovalForRule_AutoApproveAbove(t *testing.T) {
+	logger := zerolog.Nop()
+	cfg := ApprovalGateConfig{
+		Enabled:          true,
+		RequireApproval:  []string{"kill_process", "quarantine_file"},
+		AutoApproveAbove: "CRITICAL",
+		TTL:              30 * time.Minute,
+		MaxPending:       100,
+	}
+
+	ag := NewApprovalGate(logger, cfg)
+	defer ag.Stop()
+
+	// CRITICAL severity should auto-approve (bypass gate)
+	if ag.RequiresApprovalForRule(ActionKillProcess, SeverityCritical, false) {
+		t.Error("expected CRITICAL to auto-approve when threshold is CRITICAL")
+	}
+
+	// HIGH severity should still require approval
+	if !ag.RequiresApprovalForRule(ActionKillProcess, SeverityHigh, false) {
+		t.Error("expected HIGH to still require approval when threshold is CRITICAL")
+	}
+
+	// MEDIUM should still require approval
+	if !ag.RequiresApprovalForRule(ActionQuarantineFile, SeverityMedium, false) {
+		t.Error("expected MEDIUM to still require approval when threshold is CRITICAL")
+	}
+}
+
+func TestApprovalGate_RequiresApprovalForRule_AutoApproveHigh(t *testing.T) {
+	logger := zerolog.Nop()
+	cfg := ApprovalGateConfig{
+		Enabled:          true,
+		RequireApproval:  []string{"kill_process"},
+		AutoApproveAbove: "HIGH",
+		TTL:              30 * time.Minute,
+		MaxPending:       100,
+	}
+
+	ag := NewApprovalGate(logger, cfg)
+	defer ag.Stop()
+
+	// CRITICAL >= HIGH, should auto-approve
+	if ag.RequiresApprovalForRule(ActionKillProcess, SeverityCritical, false) {
+		t.Error("expected CRITICAL to auto-approve when threshold is HIGH")
+	}
+
+	// HIGH >= HIGH, should auto-approve
+	if ag.RequiresApprovalForRule(ActionKillProcess, SeverityHigh, false) {
+		t.Error("expected HIGH to auto-approve when threshold is HIGH")
+	}
+
+	// MEDIUM < HIGH, should still require approval
+	if !ag.RequiresApprovalForRule(ActionKillProcess, SeverityMedium, false) {
+		t.Error("expected MEDIUM to require approval when threshold is HIGH")
+	}
+}
+
+func TestApprovalGate_RequiresApprovalForRule_EmptyAutoApprove(t *testing.T) {
+	logger := zerolog.Nop()
+	cfg := ApprovalGateConfig{
+		Enabled:          true,
+		RequireApproval:  []string{"kill_process"},
+		AutoApproveAbove: "", // disabled
+		TTL:              30 * time.Minute,
+		MaxPending:       100,
+	}
+
+	ag := NewApprovalGate(logger, cfg)
+	defer ag.Stop()
+
+	// Even CRITICAL should require approval when auto_approve_above is empty
+	if !ag.RequiresApprovalForRule(ActionKillProcess, SeverityCritical, false) {
+		t.Error("expected CRITICAL to require approval when auto_approve_above is empty")
+	}
+}
+
+func TestApprovalGate_RequiresApprovalForRule_Disabled(t *testing.T) {
+	logger := zerolog.Nop()
+	cfg := ApprovalGateConfig{
+		Enabled:          false,
+		RequireApproval:  []string{"kill_process"},
+		AutoApproveAbove: "HIGH",
+	}
+
+	ag := NewApprovalGate(logger, cfg)
+	defer ag.Stop()
+
+	// Gate disabled — nothing requires approval
+	if ag.RequiresApprovalForRule(ActionKillProcess, SeverityLow, false) {
+		t.Error("expected no approval required when gate is disabled")
+	}
+}
+
+func TestApprovalGate_RequiresApprovalForRule_ActionNotInList(t *testing.T) {
+	logger := zerolog.Nop()
+	cfg := ApprovalGateConfig{
+		Enabled:          true,
+		RequireApproval:  []string{"kill_process"},
+		AutoApproveAbove: "CRITICAL",
+		TTL:              30 * time.Minute,
+		MaxPending:       100,
+	}
+
+	ag := NewApprovalGate(logger, cfg)
+	defer ag.Stop()
+
+	// webhook is not in require_approval list
+	if ag.RequiresApprovalForRule(ActionWebhook, SeverityLow, false) {
+		t.Error("expected webhook to not require approval (not in list)")
+	}
+}
+
+func TestApprovalGate_RequiresApprovalForRule_SkipOverridesAutoApprove(t *testing.T) {
+	logger := zerolog.Nop()
+	cfg := ApprovalGateConfig{
+		Enabled:          true,
+		RequireApproval:  []string{"kill_process"},
+		AutoApproveAbove: "", // no auto-approve
+		TTL:              30 * time.Minute,
+		MaxPending:       100,
+	}
+
+	ag := NewApprovalGate(logger, cfg)
+	defer ag.Stop()
+
+	// LOW severity, no auto-approve, but skip_approval=true should bypass
+	if ag.RequiresApprovalForRule(ActionKillProcess, SeverityLow, true) {
+		t.Error("expected skip_approval to bypass even without auto_approve_above")
+	}
+}
+
+func TestApprovalGate_Stats_IncludesAutoApproveAbove(t *testing.T) {
+	logger := zerolog.Nop()
+	cfg := ApprovalGateConfig{
+		Enabled:          true,
+		RequireApproval:  []string{"kill_process"},
+		AutoApproveAbove: "HIGH",
+		TTL:              30 * time.Minute,
+		MaxPending:       100,
+	}
+
+	ag := NewApprovalGate(logger, cfg)
+	defer ag.Stop()
+
+	stats := ag.Stats()
+	if stats["auto_approve_above"] != "HIGH" {
+		t.Errorf("expected auto_approve_above=HIGH in stats, got %v", stats["auto_approve_above"])
+	}
+}

@@ -29,6 +29,7 @@ type Guard struct {
 	dataTracker  *DataIntegrityTracker
 	ragVerifier  *RAGVerifier
 	driftMonitor *ModelDriftMonitor
+	webContentTracker *WebContentIntegrityTracker
 }
 
 func New() *Guard { return &Guard{} }
@@ -41,10 +42,12 @@ func (g *Guard) EventTypes() []string {
 		"inference_result", "model_inference", "prediction",
 		"model_update", "model_deploy", "weight_change",
 		"model_download", "model_registry",
+		// Agentic web content integrity (2026)
+		"llms_txt_fetch", "markdown_endpoint_fetch",
 	}
 }
 func (g *Guard) Description() string {
-	return "Training data integrity validation, RAG source verification, adversarial input detection, and model weight drift monitoring"
+	return "Training data integrity validation, RAG source verification, adversarial input detection, model weight drift monitoring, and agentic web content integrity (llms.txt / markdown endpoint poisoning detection)"
 }
 
 func (g *Guard) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
@@ -57,8 +60,9 @@ func (g *Guard) Start(ctx context.Context, bus *core.EventBus, pipeline *core.Al
 	g.dataTracker = NewDataIntegrityTracker()
 	g.ragVerifier = NewRAGVerifier()
 	g.driftMonitor = NewModelDriftMonitor()
+	g.webContentTracker = NewWebContentIntegrityTracker()
 
-	g.logger.Info().Msg("data poisoning guard started")
+	g.logger.Info().Msg("data poisoning guard started (+ agentic web content integrity)")
 	return nil
 }
 
@@ -81,6 +85,8 @@ func (g *Guard) HandleEvent(event *core.SecurityEvent) error {
 		g.handleModelUpdate(event)
 	case "model_download", "model_registry":
 		g.handleModelSupplyChain(event)
+	case "llms_txt_fetch", "markdown_endpoint_fetch":
+		g.handleWebContentIntegrity(event)
 	}
 	return nil
 }
@@ -575,6 +581,154 @@ func (g *Guard) handleModelSupplyChain(event *core.SecurityEvent) {
 }
 
 // ===========================================================================
+// Agentic Web Content Integrity (2026)
+// ===========================================================================
+
+// handleWebContentIntegrity tracks content hashes from llms.txt and markdown
+// endpoints over time, detecting sudden changes that could indicate site
+// compromise or content poisoning targeting AI agents.
+func (g *Guard) handleWebContentIntegrity(event *core.SecurityEvent) {
+	domain := getStringDetail(event, "domain")
+	contentHash := getStringDetail(event, "content_hash")
+	url := getStringDetail(event, "url")
+	contentLength := getIntDetail(event, "content_length")
+	agentID := getStringDetail(event, "agent_id")
+
+	if domain == "" || contentHash == "" {
+		return
+	}
+
+	result := g.webContentTracker.RecordContent(domain, url, contentHash, contentLength)
+
+	if result.ContentChanged {
+		severity := core.SeverityHigh
+		if result.ChangePercent > 50 {
+			severity = core.SeverityCritical
+		}
+		g.raiseAlert(event, severity,
+			"llms.txt / Markdown Endpoint Content Changed",
+			fmt.Sprintf("Content at %s (domain: %s) changed. Previous hash: %s, current: %s. "+
+				"Size change: %d → %d bytes (%.1f%% delta). Agent: %s. "+
+				"Sudden content changes on llms.txt or markdown endpoints may indicate "+
+				"site compromise or targeted content poisoning for AI agents.",
+				truncate(url, 100), domain,
+				truncate(result.PreviousHash, 16), truncate(contentHash, 16),
+				result.PreviousSize, contentLength, result.ChangePercent, agentID),
+			"web_content_changed")
+	}
+
+	if result.RapidChanges {
+		g.raiseAlert(event, core.SeverityHigh,
+			"Rapid Content Changes on Agent-Facing Endpoint",
+			fmt.Sprintf("Content at domain %s has changed %d times in %s. "+
+				"Frequent content mutations on llms.txt/markdown endpoints are suspicious "+
+				"and may indicate an active content poisoning campaign.",
+				domain, result.ChangeCount, result.Window),
+			"web_content_rapid_changes")
+	}
+
+	if result.NewDomain {
+		g.raiseAlert(event, core.SeverityLow,
+			"First llms.txt / Markdown Fetch from New Domain",
+			fmt.Sprintf("Agent %s fetched content from new domain %s (%s). "+
+				"Content hash: %s, size: %d bytes. Baseline established for integrity tracking.",
+				agentID, domain, truncate(url, 100), truncate(contentHash, 16), contentLength),
+			"web_content_new_domain")
+	}
+}
+
+// WebContentIntegrityTracker tracks content hashes per domain over time.
+type WebContentIntegrityTracker struct {
+	mu      sync.RWMutex
+	domains map[string]*webContentRecord
+}
+
+type webContentRecord struct {
+	LastHash     string
+	LastSize     int
+	ChangeCount  int
+	ChangeWindow time.Time
+	FirstSeen    time.Time
+	FetchCount   int
+}
+
+type WebContentResult struct {
+	ContentChanged bool
+	RapidChanges   bool
+	NewDomain      bool
+	PreviousHash   string
+	PreviousSize   int
+	ChangePercent  float64
+	ChangeCount    int
+	Window         string
+}
+
+func NewWebContentIntegrityTracker() *WebContentIntegrityTracker {
+	return &WebContentIntegrityTracker{
+		domains: make(map[string]*webContentRecord),
+	}
+}
+
+func (wt *WebContentIntegrityTracker) RecordContent(domain, url, contentHash string, contentLength int) WebContentResult {
+	wt.mu.Lock()
+	defer wt.mu.Unlock()
+
+	result := WebContentResult{}
+	now := time.Now()
+
+	rec, exists := wt.domains[domain]
+	if !exists {
+		wt.domains[domain] = &webContentRecord{
+			LastHash:     contentHash,
+			LastSize:     contentLength,
+			ChangeWindow: now,
+			FirstSeen:    now,
+			FetchCount:   1,
+		}
+		result.NewDomain = true
+		return result
+	}
+
+	rec.FetchCount++
+
+	// Reset change window
+	if now.Sub(rec.ChangeWindow) > time.Hour {
+		rec.ChangeCount = 0
+		rec.ChangeWindow = now
+	}
+
+	// Check for content change
+	if rec.LastHash != "" && contentHash != "" && rec.LastHash != contentHash {
+		result.ContentChanged = true
+		result.PreviousHash = rec.LastHash
+		result.PreviousSize = rec.LastSize
+
+		// Calculate size change percentage
+		if rec.LastSize > 0 {
+			delta := float64(contentLength - rec.LastSize)
+			if delta < 0 {
+				delta = -delta
+			}
+			result.ChangePercent = (delta / float64(rec.LastSize)) * 100
+		}
+
+		rec.ChangeCount++
+		rec.LastHash = contentHash
+		rec.LastSize = contentLength
+	}
+
+	result.ChangeCount = rec.ChangeCount
+	result.Window = now.Sub(rec.ChangeWindow).Round(time.Second).String()
+
+	// Rapid changes: more than 3 content changes in an hour
+	if rec.ChangeCount > 3 {
+		result.RapidChanges = true
+	}
+
+	return result
+}
+
+// ===========================================================================
 // Contextual Mitigations
 // ===========================================================================
 
@@ -651,6 +805,26 @@ func getDataPoisoningMitigations(alertType string) []string {
 			"Block download of models with suspicious name patterns",
 			"Report suspicious models to the registry maintainers",
 			"Implement model name validation against known-good patterns",
+		}
+	case "web_content_changed":
+		return []string{
+			"Investigate the content change — compare previous and current versions",
+			"Verify the domain has not been compromised (check DNS, TLS cert, WHOIS)",
+			"Quarantine the changed content until verified by a human operator",
+			"Implement content signing for llms.txt endpoints to detect tampering",
+		}
+	case "web_content_rapid_changes":
+		return []string{
+			"Temporarily block agent access to the rapidly-changing endpoint",
+			"Investigate whether the domain is under active attack",
+			"Implement content change rate limits in the agent's fetch pipeline",
+			"Alert the site owner about suspicious content mutation patterns",
+		}
+	case "web_content_new_domain":
+		return []string{
+			"Verify the new domain is legitimate and authorized for agent access",
+			"Establish content baseline and monitor for future changes",
+			"Add the domain to the agent's authorized domain list if appropriate",
 		}
 	default:
 		return []string{

@@ -43,6 +43,13 @@ func TestDefaultConfig_Values(t *testing.T) {
 	if cfg.RustEngine.MinScore != 0.1 {
 		t.Errorf("RustEngine.MinScore = %v, want 0.1", cfg.RustEngine.MinScore)
 	}
+	// Escalation should be disabled by default
+	if cfg.Escalation.Enabled {
+		t.Error("Escalation should be disabled by default")
+	}
+	if len(cfg.Escalation.Timeouts) == 0 {
+		t.Error("Escalation should have default timeouts even when disabled")
+	}
 }
 
 func TestDefaultConfig_ModulesPresent(t *testing.T) {

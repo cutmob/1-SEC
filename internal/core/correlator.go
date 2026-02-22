@@ -126,6 +126,27 @@ func (tc *ThreatCorrelator) buildChainDefinitions() []attackChain {
 			MitreIDs:    []string{"T1059", "TA0004"},
 		},
 		{
+			Name:        "Content Poisoning → Agent Goal Hijack → Unauthorized Payment",
+			Description: "Poisoned web content (llms.txt/markdown) detected alongside agent containment breach and API abuse. An attacker poisoned agent-facing web content to redirect agent behavior and trigger unauthorized payments via x402 or similar protocols.",
+			Modules:     []string{"data_poisoning", "ai_containment", "api_fortress"},
+			Severity:    SeverityCritical,
+			MitreIDs:    []string{"T1195", "T1059", "T1657"},
+		},
+		{
+			Name:        "Markdown Injection → Agent Scope Escalation",
+			Description: "Prompt injection via ingested markdown content followed by agent containment breach. Attacker embedded instructions in llms.txt or markdown endpoints to escalate agent privileges.",
+			Modules:     []string{"llm_firewall", "ai_containment"},
+			Severity:    SeverityCritical,
+			MitreIDs:    []string{"T1059", "TA0004"},
+		},
+		{
+			Name:        "Web Content Poisoning → Data Exfiltration",
+			Description: "Web content integrity violation detected alongside network exfiltration indicators. Poisoned llms.txt or markdown content may have redirected an agent to exfiltrate data.",
+			Modules:     []string{"data_poisoning", "network_guardian"},
+			Severity:    SeverityCritical,
+			MitreIDs:    []string{"T1195", "TA0010"},
+		},
+		{
 			Name:        "Multi-Vector Assault",
 			Description: "Three or more distinct security modules triggered by the same source. This indicates a sophisticated, multi-vector attack campaign.",
 			Modules:     []string{}, // special case: any 3+ modules

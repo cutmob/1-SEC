@@ -26,6 +26,7 @@ type Engine struct {
 	Logger           zerolog.Logger
 	CloudReporter    *CloudReporter
 	CommandPoller    *CommandPoller
+	Escalation       *EscalationManager
 	ctx            context.Context
 	cancel         context.CancelFunc
 	configPath     string
@@ -125,6 +126,12 @@ func (e *Engine) Start() error {
 		go e.Correlator.Ingest(alert)
 	})
 	e.Correlator.Start(e.ctx)
+
+	// Start escalation manager — auto-escalates unacknowledged alerts
+	e.Escalation = NewEscalationManager(e.Logger, e.Config.Escalation, e.Pipeline)
+	e.Pipeline.AddHandler(func(alert *Alert) {
+		go e.Escalation.Track(alert)
+	})
 
 	// Start response engine (enforcement layer) — subscribes to alerts and
 	// executes configured response actions (block IP, kill process, etc.)
@@ -262,6 +269,11 @@ func (e *Engine) Shutdown() error {
 		e.ResponseEngine.Stop()
 	}
 
+	// Stop escalation manager
+	if e.Escalation != nil {
+		e.Escalation.Stop()
+	}
+
 	e.Registry.StopAll()
 
 	// Stop dedup cleanup
@@ -292,6 +304,19 @@ func (e *Engine) SetConfigPath(path string) {
 // GetConfigPath returns the config file path.
 func (e *Engine) GetConfigPath() string {
 	return e.configPath
+}
+
+// Uptime returns the duration since the engine started.
+func (e *Engine) Uptime() time.Duration {
+	if e.startTime.IsZero() {
+		return 0
+	}
+	return time.Since(e.startTime)
+}
+
+// SetStartTimeForTest sets the engine start time (test helper only).
+func (e *Engine) SetStartTimeForTest(t time.Time) {
+	e.startTime = t
 }
 
 // GetLogEntries returns the most recent n log entries from the ring buffer.

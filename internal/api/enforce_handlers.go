@@ -569,3 +569,149 @@ func (s *Server) handleEnforceWebhookRetry(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": "dead letter not found or queue full"})
 	}
 }
+
+// handleEnforceConfig returns the full enforcement configuration for remote
+// dashboards. GET returns current config; POST updates approval gate settings.
+func (s *Server) handleEnforceConfig(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleEnforceConfigGet(w, r)
+	case http.MethodPost:
+		s.handleEnforceConfigPost(w, r)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+	}
+}
+
+func (s *Server) handleEnforceConfigGet(w http.ResponseWriter, r *http.Request) {
+	cfg := s.engine.Config.Enforcement
+	if cfg == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"enabled": false,
+			"message": "enforcement not configured",
+		})
+		return
+	}
+
+	// Build per-module policy summary
+	re := s.engine.ResponseEngine
+	policySummary := make([]map[string]interface{}, 0)
+	if re != nil {
+		for module, policy := range re.GetPolicies() {
+			actions := make([]map[string]interface{}, 0, len(policy.Actions))
+			for _, a := range policy.Actions {
+				actions = append(actions, map[string]interface{}{
+					"action":        string(a.Action),
+					"min_severity":  a.MinSeverity.String(),
+					"dry_run":       a.DryRun,
+					"skip_approval": a.SkipApproval,
+					"description":   a.Description,
+				})
+			}
+			policySummary = append(policySummary, map[string]interface{}{
+				"module":             module,
+				"enabled":            policy.Enabled,
+				"min_severity":       policy.MinSeverity.String(),
+				"dry_run":            policy.DryRun,
+				"cooldown_seconds":   int(policy.Cooldown.Seconds()),
+				"max_actions_per_min": policy.MaxActionsPerMin,
+				"allow_list":         policy.AllowList,
+				"actions":            actions,
+			})
+		}
+	}
+
+	// Approval gate config
+	approvalGate := map[string]interface{}{
+		"enabled":            false,
+		"require_approval":   []string{},
+		"auto_approve_above": "",
+	}
+	if cfg.ApprovalGate.Enabled {
+		approvalGate["enabled"] = true
+		approvalGate["require_approval"] = cfg.ApprovalGate.RequireApproval
+		approvalGate["auto_approve_above"] = cfg.ApprovalGate.AutoApproveAbove
+		approvalGate["ttl_seconds"] = int(cfg.ApprovalGate.TTL.Seconds())
+		approvalGate["max_pending"] = cfg.ApprovalGate.MaxPending
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"enabled":           cfg.Enabled,
+		"dry_run":           cfg.GetDryRun(),
+		"preset":            cfg.Preset,
+		"global_allow_list": cfg.GlobalAllowList,
+		"approval_gate":     approvalGate,
+		"policies":          policySummary,
+		"valid_presets":     core.ValidPresets(),
+		"valid_actions":     []string{"block_ip", "kill_process", "quarantine_file", "drop_connection", "disable_user", "webhook", "command", "log_only"},
+	})
+}
+
+func (s *Server) handleEnforceConfigPost(w http.ResponseWriter, r *http.Request) {
+	cfg := s.engine.Config.Enforcement
+	if cfg == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "enforcement not configured"})
+		return
+	}
+
+	var body struct {
+		DryRun           *bool    `json:"dry_run,omitempty"`
+		AutoApproveAbove *string  `json:"auto_approve_above,omitempty"`
+		RequireApproval  []string `json:"require_approval,omitempty"`
+	}
+	if err := decodeJSONBody(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	changes := make([]string, 0)
+
+	if body.DryRun != nil {
+		cfg.SetDryRun(*body.DryRun)
+		if *body.DryRun {
+			changes = append(changes, "dry_run enabled")
+		} else {
+			changes = append(changes, "dry_run disabled")
+		}
+	}
+
+	if body.AutoApproveAbove != nil {
+		validSeverities := map[string]bool{"": true, "LOW": true, "MEDIUM": true, "HIGH": true, "CRITICAL": true}
+		val := strings.ToUpper(*body.AutoApproveAbove)
+		if !validSeverities[val] {
+			writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"error": "invalid auto_approve_above — use LOW, MEDIUM, HIGH, CRITICAL, or empty to disable",
+			})
+			return
+		}
+		cfg.ApprovalGate.AutoApproveAbove = val
+		if val == "" {
+			changes = append(changes, "auto_approve_above disabled")
+		} else {
+			changes = append(changes, "auto_approve_above set to "+val)
+		}
+	}
+
+	if body.RequireApproval != nil {
+		validActions := map[string]bool{
+			"block_ip": true, "kill_process": true, "quarantine_file": true,
+			"drop_connection": true, "disable_user": true, "webhook": true,
+			"command": true, "log_only": true,
+		}
+		for _, a := range body.RequireApproval {
+			if !validActions[a] {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+					"error": "unknown action in require_approval: " + a,
+				})
+				return
+			}
+		}
+		cfg.ApprovalGate.RequireApproval = body.RequireApproval
+		changes = append(changes, "require_approval updated")
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "updated",
+		"changes": changes,
+	})
+}

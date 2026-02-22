@@ -28,6 +28,7 @@ import (
 type ApprovalGateConfig struct {
 	Enabled          bool          `yaml:"enabled" json:"enabled"`
 	RequireApproval  []string      `yaml:"require_approval" json:"require_approval"` // action types
+	AutoApproveAbove string        `yaml:"auto_approve_above,omitempty" json:"auto_approve_above,omitempty"` // severity threshold: auto-approve at or above this level
 	TTL              time.Duration `yaml:"ttl" json:"ttl"`
 	MaxPending       int           `yaml:"max_pending" json:"max_pending"`
 }
@@ -110,6 +111,8 @@ func (ag *ApprovalGate) SetNotifyFunc(fn func(pa *PendingApproval)) {
 }
 
 // RequiresApproval checks if an action type needs human approval.
+// It considers the global require list, per-rule skip_approval flag,
+// and the auto_approve_above severity threshold.
 func (ag *ApprovalGate) RequiresApproval(action ActionType) bool {
 	if !ag.cfg.Enabled {
 		return false
@@ -120,6 +123,41 @@ func (ag *ApprovalGate) RequiresApproval(action ActionType) bool {
 		}
 	}
 	return false
+}
+
+// RequiresApprovalForRule is the full decision: considers the rule's
+// SkipApproval flag and the severity-based auto-approve threshold.
+func (ag *ApprovalGate) RequiresApprovalForRule(action ActionType, severity Severity, skipApproval bool) bool {
+	if !ag.cfg.Enabled {
+		return false
+	}
+
+	// Per-rule skip_approval overrides the gate entirely
+	if skipApproval {
+		return false
+	}
+
+	// Check if this action type is in the require list at all
+	found := false
+	for _, a := range ag.cfg.RequireApproval {
+		if a == string(action) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return false
+	}
+
+	// Severity-based auto-approve: if alert severity >= threshold, skip approval
+	if ag.cfg.AutoApproveAbove != "" {
+		threshold := ParseSeverity(ag.cfg.AutoApproveAbove)
+		if severity >= threshold {
+			return false
+		}
+	}
+
+	return true
 }
 
 // Submit holds an action for approval. Returns the pending approval ID.
@@ -287,14 +325,15 @@ func (ag *ApprovalGate) Stats() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"enabled":           ag.cfg.Enabled,
-		"pending_count":     len(ag.pending),
-		"max_pending":       ag.cfg.MaxPending,
-		"ttl_seconds":       ag.cfg.TTL.Seconds(),
-		"require_approval":  ag.cfg.RequireApproval,
-		"total_approved":    approved,
-		"total_rejected":    rejected,
-		"total_expired":     expired,
+		"enabled":            ag.cfg.Enabled,
+		"pending_count":      len(ag.pending),
+		"max_pending":        ag.cfg.MaxPending,
+		"ttl_seconds":        ag.cfg.TTL.Seconds(),
+		"require_approval":   ag.cfg.RequireApproval,
+		"auto_approve_above": ag.cfg.AutoApproveAbove,
+		"total_approved":     approved,
+		"total_rejected":     rejected,
+		"total_expired":      expired,
 	}
 }
 

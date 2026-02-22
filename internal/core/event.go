@@ -259,6 +259,14 @@ func CanonicalEventSchemas() []EventSchema {
 		{Type: "ai_api_call", Category: "ai_containment", RequiredKeys: []string{"endpoint"}, OptionalKeys: []string{"model", "user", "authorized"}, Description: "AI API call for shadow AI detection"},
 		{Type: "agent_spawn", Category: "ai_containment", RequiredKeys: []string{"agent_id"}, OptionalKeys: []string{"parent_id", "capabilities"}, Description: "AI agent spawned"},
 
+		// ── Agentic Web Access ──────────────────────────────────────────
+		{Type: "agent_web_fetch", Category: "agentic_web", RequiredKeys: []string{"agent_id", "url"}, OptionalKeys: []string{"method", "accept_header", "response_content_type", "status_code", "content_hash", "domain", "response_size"}, Description: "AI agent fetching web content (HTML, markdown, llms.txt)"},
+		{Type: "agent_markdown_ingest", Category: "agentic_web", RequiredKeys: []string{"agent_id", "content"}, OptionalKeys: []string{"source_url", "domain", "content_hash", "content_length", "endpoint_type"}, Description: "AI agent ingesting markdown content from llms.txt or Accept: text/markdown endpoints"},
+		{Type: "agent_payment", Category: "agentic_web", RequiredKeys: []string{"agent_id", "amount", "recipient"}, OptionalKeys: []string{"currency", "protocol", "merchant_id", "network", "delegated_by", "spending_limit", "wallet_id"}, Description: "AI agent initiating a payment (x402, crypto, or other)"},
+		{Type: "agent_identity_delegation", Category: "agentic_web", RequiredKeys: []string{"agent_id", "delegated_by"}, OptionalKeys: []string{"scopes", "expires_at", "delegation_chain", "attestation"}, Description: "AI agent acting on behalf of a human via delegation"},
+		{Type: "x402_payment", Category: "agentic_web", RequiredKeys: []string{"amount", "recipient"}, OptionalKeys: []string{"agent_id", "currency", "network", "status_code", "merchant_id", "wallet_id"}, Description: "HTTP 402 payment protocol transaction"},
+		{Type: "llms_txt_access", Category: "agentic_web", RequiredKeys: []string{"domain"}, OptionalKeys: []string{"agent_id", "endpoint_url", "content_hash", "response_size"}, Description: "Access to a site's llms.txt or llms-full.txt endpoint"},
+
 		// ── Data Poisoning ──────────────────────────────────────────────
 		{Type: "training_update", Category: "data_poisoning", RequiredKeys: []string{"dataset_id"}, OptionalKeys: []string{"hash", "change_percent", "record_count", "source"}, Description: "Training data update"},
 		{Type: "dataset_update", Category: "data_poisoning", RequiredKeys: []string{"dataset_id"}, OptionalKeys: []string{"hash", "change_percent", "record_count"}, Description: "Dataset update"},

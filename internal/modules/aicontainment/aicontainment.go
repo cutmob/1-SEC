@@ -42,6 +42,11 @@ type Containment struct {
 	goalMonitor    *GoalHijackMonitor
 	memoryMonitor  *MemoryPoisonMonitor
 	cascadeMonitor *CascadeFailureMonitor
+	// Agentic web access monitors (2026)
+	webFetchMonitor    *AgentWebFetchMonitor
+	paymentMonitor     *AgentPaymentMonitor
+	markdownScanner    *MarkdownIngestionScanner
+	delegationTracker  *DelegationChainTracker
 }
 
 func New() *Containment { return &Containment{} }
@@ -58,10 +63,14 @@ func (c *Containment) EventTypes() []string {
 		"agent_memory_write", "context_update", "rag_inject",
 		"agent_error", "agent_timeout", "agent_retry",
 		"agent_impersonation", "approval_bypass",
+		// Agentic web access events (2026)
+		"agent_web_fetch", "agent_markdown_ingest",
+		"agent_payment", "x402_payment",
+		"agent_identity_delegation", "llms_txt_access",
 	}
 }
 func (c *Containment) Description() string {
-	return "AI agent containment: action sandboxing, tool-use monitoring, MCP tool poisoning detection, goal hijacking detection, memory poisoning detection, cascading failure monitoring, shadow AI discovery, and rogue agent detection (OWASP Agentic AI Top 10)"
+	return "AI agent containment: action sandboxing, tool-use monitoring, MCP tool poisoning detection, goal hijacking detection, memory poisoning detection, cascading failure monitoring, shadow AI discovery, rogue agent detection, agentic web access monitoring (llms.txt, x402 payments, markdown ingestion, agent identity delegation) (OWASP Agentic AI Top 10)"
 }
 
 func (c *Containment) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
@@ -78,8 +87,12 @@ func (c *Containment) Start(ctx context.Context, bus *core.EventBus, pipeline *c
 	c.goalMonitor = NewGoalHijackMonitor()
 	c.memoryMonitor = NewMemoryPoisonMonitor()
 	c.cascadeMonitor = NewCascadeFailureMonitor()
+	c.webFetchMonitor = NewAgentWebFetchMonitor()
+	c.paymentMonitor = NewAgentPaymentMonitor()
+	c.markdownScanner = NewMarkdownIngestionScanner()
+	c.delegationTracker = NewDelegationChainTracker()
 
-	c.logger.Info().Msg("AI agent containment started (OWASP Agentic AI Top 10)")
+	c.logger.Info().Msg("AI agent containment started (OWASP Agentic AI Top 10 + agentic web access)")
 	return nil
 }
 
@@ -110,6 +123,15 @@ func (c *Containment) HandleEvent(event *core.SecurityEvent) error {
 		c.handleCascadeFailure(event)
 	case "agent_impersonation", "approval_bypass":
 		c.handleTrustExploitation(event)
+	// Agentic web access handlers (2026)
+	case "agent_web_fetch", "llms_txt_access":
+		c.handleAgentWebFetch(event)
+	case "agent_markdown_ingest":
+		c.handleMarkdownIngestion(event)
+	case "agent_payment", "x402_payment":
+		c.handleAgentPayment(event)
+	case "agent_identity_delegation":
+		c.handleIdentityDelegation(event)
 	}
 	return nil
 }
@@ -405,6 +427,238 @@ func (c *Containment) handleTrustExploitation(event *core.SecurityEvent) {
 	}
 }
 
+// ===========================================================================
+// Agentic Web Access Handlers (2026)
+// ===========================================================================
+
+// handleAgentWebFetch monitors AI agents fetching web content, including
+// llms.txt discovery, Accept: text/markdown requests, and reconnaissance.
+func (c *Containment) handleAgentWebFetch(event *core.SecurityEvent) {
+	agentID := getStringDetail(event, "agent_id")
+	url := getStringDetail(event, "url")
+	domain := getStringDetail(event, "domain")
+	acceptHeader := getStringDetail(event, "accept_header")
+	statusCode := getStringDetail(event, "status_code")
+
+	if agentID == "" {
+		agentID = "unknown"
+	}
+
+	result := c.webFetchMonitor.RecordFetch(agentID, url, domain, acceptHeader)
+
+	// Rapid web fetching — reconnaissance indicator
+	if result.RapidFetching {
+		c.raiseAlert(event, core.SeverityHigh,
+			"Agent Web Reconnaissance Detected",
+			fmt.Sprintf("Agent %s performed %d web fetches in %s targeting %d domains. "+
+				"Rapid multi-domain fetching indicates automated reconnaissance.",
+				agentID, result.FetchCount, result.Window, result.UniqueDomains),
+			"agent_web_recon")
+	}
+
+	// Sensitive URL access
+	if result.SensitiveURL {
+		c.raiseAlert(event, core.SeverityCritical,
+			"Agent Accessing Sensitive Web Resource",
+			fmt.Sprintf("Agent %s fetched sensitive URL: %s. "+
+				"Agents must not access admin panels, internal APIs, cloud metadata, or credential endpoints.",
+				agentID, truncate(url, 200)),
+			"agent_sensitive_url")
+	}
+
+	// llms.txt probing — agent scanning for llms.txt across multiple domains
+	if result.LLMSTxtProbing {
+		c.raiseAlert(event, core.SeverityMedium,
+			"Agent Probing llms.txt Endpoints",
+			fmt.Sprintf("Agent %s has accessed llms.txt on %d different domains in %s. "+
+				"Systematic llms.txt discovery may indicate capability mapping or attack surface enumeration.",
+				agentID, result.LLMSTxtDomains, result.Window),
+			"llms_txt_probing")
+	}
+
+	// Unauthorized domain access
+	if result.UnauthorizedDomain {
+		c.raiseAlert(event, core.SeverityHigh,
+			"Agent Fetching from Unauthorized Domain",
+			fmt.Sprintf("Agent %s fetched content from domain %s which is not in the authorized domain list. "+
+				"Status: %s. Agents should only access pre-approved domains.",
+				agentID, domain, statusCode),
+			"agent_unauthorized_domain")
+	}
+}
+
+// handleMarkdownIngestion scans markdown content that agents ingest from
+// llms.txt endpoints or Accept: text/markdown responses for embedded
+// injection payloads before the content reaches the LLM context.
+func (c *Containment) handleMarkdownIngestion(event *core.SecurityEvent) {
+	agentID := getStringDetail(event, "agent_id")
+	content := getStringDetail(event, "content")
+	sourceURL := getStringDetail(event, "source_url")
+	domain := getStringDetail(event, "domain")
+	endpointType := getStringDetail(event, "endpoint_type")
+
+	if content == "" {
+		return
+	}
+
+	result := c.markdownScanner.Scan(agentID, content, sourceURL, domain)
+
+	if result.InjectionDetected {
+		c.raiseAlert(event, core.SeverityCritical,
+			"Prompt Injection in Ingested Markdown Content",
+			fmt.Sprintf("Agent %s ingested markdown from %s (domain: %s, type: %s) containing "+
+				"embedded injection payloads: %s. This is an indirect prompt injection attack "+
+				"via web content. The content must be sanitized before reaching the LLM context.",
+				agentID, truncate(sourceURL, 100), domain, endpointType,
+				strings.Join(result.Indicators, "; ")),
+			"markdown_injection")
+	}
+
+	if result.HiddenDirectives {
+		c.raiseAlert(event, core.SeverityHigh,
+			"Hidden Directives in Markdown Content",
+			fmt.Sprintf("Agent %s ingested markdown from %s containing hidden directives "+
+				"(HTML comments, zero-width characters, or invisible instructions): %s. "+
+				"These may be designed to manipulate agent behavior without user visibility.",
+				agentID, truncate(sourceURL, 100), strings.Join(result.Indicators, "; ")),
+			"markdown_hidden_directives")
+	}
+
+	if result.ExfilLinks {
+		c.raiseAlert(event, core.SeverityHigh,
+			"Data Exfiltration Links in Markdown Content",
+			fmt.Sprintf("Agent %s ingested markdown from %s containing links that encode "+
+				"data exfiltration patterns (image/link URLs with query parameters designed "+
+				"to leak context): %s.",
+				agentID, truncate(sourceURL, 100), strings.Join(result.Indicators, "; ")),
+			"markdown_exfil_links")
+	}
+}
+
+// handleAgentPayment monitors AI agent payment transactions including x402
+// protocol payments, enforcing spending limits and detecting anomalies.
+func (c *Containment) handleAgentPayment(event *core.SecurityEvent) {
+	agentID := getStringDetail(event, "agent_id")
+	amountStr := getStringDetail(event, "amount")
+	recipient := getStringDetail(event, "recipient")
+	currency := getStringDetail(event, "currency")
+	protocol := getStringDetail(event, "protocol")
+	merchantID := getStringDetail(event, "merchant_id")
+	delegatedBy := getStringDetail(event, "delegated_by")
+	spendingLimitStr := getStringDetail(event, "spending_limit")
+
+	if agentID == "" {
+		agentID = "unknown"
+	}
+	if currency == "" {
+		currency = "USDC"
+	}
+	if protocol == "" && event.Type == "x402_payment" {
+		protocol = "x402"
+	}
+
+	result := c.paymentMonitor.RecordPayment(agentID, amountStr, recipient, currency, protocol, merchantID, delegatedBy, spendingLimitStr)
+
+	if result.SpendingLimitExceeded {
+		c.raiseAlert(event, core.SeverityCritical,
+			"Agent Spending Limit Exceeded",
+			fmt.Sprintf("Agent %s attempted payment of %s %s to %s, exceeding its spending limit of %s %s. "+
+				"Protocol: %s. Delegated by: %s. Payment must be blocked.",
+				agentID, amountStr, currency, recipient, spendingLimitStr, currency, protocol, delegatedBy),
+			"agent_spending_limit")
+	}
+
+	if result.RapidSpending {
+		c.raiseAlert(event, core.SeverityHigh,
+			"Agent Rapid Spending Detected",
+			fmt.Sprintf("Agent %s made %d payments totaling %.2f %s in %s. "+
+				"Rapid autonomous spending may indicate a compromised agent or prompt injection "+
+				"redirecting payments.",
+				agentID, result.PaymentCount, result.TotalSpent, currency, result.Window),
+			"agent_rapid_spending")
+	}
+
+	if result.NewRecipient {
+		c.raiseAlert(event, core.SeverityMedium,
+			"Agent Payment to New Recipient",
+			fmt.Sprintf("Agent %s sending %s %s to previously unseen recipient %s via %s. "+
+				"First-time recipients should be verified, especially for autonomous payments.",
+				agentID, amountStr, currency, recipient, protocol),
+			"agent_new_recipient")
+	}
+
+	if result.NoDelegation {
+		c.raiseAlert(event, core.SeverityCritical,
+			"Agent Payment Without Human Delegation",
+			fmt.Sprintf("Agent %s attempted payment of %s %s to %s without a valid human delegation chain. "+
+				"Autonomous payments must be traceable to a human principal.",
+				agentID, amountStr, currency, recipient),
+			"agent_payment_no_delegation")
+	}
+
+	if result.SuspiciousRecipient {
+		c.raiseAlert(event, core.SeverityHigh,
+			"Agent Payment to Suspicious Recipient",
+			fmt.Sprintf("Agent %s sending %s %s to suspicious recipient %s. "+
+				"The recipient matches known patterns for payment fraud or drainer contracts.",
+				agentID, amountStr, currency, recipient),
+			"agent_suspicious_recipient")
+	}
+}
+
+// handleIdentityDelegation monitors agent identity delegation chains to ensure
+// agents acting on behalf of humans have valid, non-expired delegation.
+func (c *Containment) handleIdentityDelegation(event *core.SecurityEvent) {
+	agentID := getStringDetail(event, "agent_id")
+	delegatedBy := getStringDetail(event, "delegated_by")
+	scopes := getStringDetail(event, "scopes")
+	expiresAt := getStringDetail(event, "expires_at")
+	delegationChain := getStringDetail(event, "delegation_chain")
+	attestation := getStringDetail(event, "attestation")
+
+	if agentID == "" {
+		agentID = "unknown"
+	}
+
+	result := c.delegationTracker.ValidateDelegation(agentID, delegatedBy, scopes, expiresAt, delegationChain, attestation)
+
+	if result.Expired {
+		c.raiseAlert(event, core.SeverityHigh,
+			"Agent Operating with Expired Delegation",
+			fmt.Sprintf("Agent %s is acting on behalf of %s with an expired delegation (expired: %s). "+
+				"Agents must not operate beyond their delegation validity period.",
+				agentID, delegatedBy, expiresAt),
+			"delegation_expired")
+	}
+
+	if result.ChainTooDeep {
+		c.raiseAlert(event, core.SeverityHigh,
+			"Excessive Agent Delegation Chain Depth",
+			fmt.Sprintf("Agent %s has a delegation chain of depth %d: %s. "+
+				"Deep delegation chains obscure accountability and increase attack surface.",
+				agentID, result.ChainDepth, delegationChain),
+			"delegation_chain_deep")
+	}
+
+	if result.ScopeEscalation {
+		c.raiseAlert(event, core.SeverityCritical,
+			"Agent Delegation Scope Escalation",
+			fmt.Sprintf("Agent %s delegated by %s is requesting scopes (%s) that exceed "+
+				"the delegator's own permissions. Delegation must not escalate privileges.",
+				agentID, delegatedBy, scopes),
+			"delegation_scope_escalation")
+	}
+
+	if result.NoAttestation {
+		c.raiseAlert(event, core.SeverityMedium,
+			"Agent Delegation Without Cryptographic Attestation",
+			fmt.Sprintf("Agent %s claims delegation from %s but provides no cryptographic attestation. "+
+				"Delegation claims should be verifiable to prevent agent impersonation.",
+				agentID, delegatedBy),
+			"delegation_no_attestation")
+	}
+}
+
 func (c *Containment) raiseAlert(event *core.SecurityEvent, severity core.Severity, title, description, alertType string) {
 	newEvent := core.NewSecurityEvent(ModuleName, alertType, severity, description)
 	newEvent.SourceIP = event.SourceIP
@@ -528,6 +782,119 @@ func getContainmentMitigations(alertType string) []string {
 			"Implement cryptographic attestation for human-in-the-loop approvals",
 			"Audit all agent actions that cross human-agent trust boundaries",
 			"Agents must never assume human credentials or session tokens",
+		}
+	// Agentic web access mitigations (2026)
+	case "agent_web_recon":
+		return []string{
+			"Implement per-agent rate limits on web fetch operations",
+			"Restrict agents to pre-approved domain allowlists",
+			"Monitor and alert on multi-domain scanning patterns",
+			"Use network-level controls to limit agent egress to authorized endpoints",
+		}
+	case "agent_sensitive_url":
+		return []string{
+			"Block agent access to admin panels, cloud metadata, and internal APIs",
+			"Implement URL classification and filtering for agent web requests",
+			"Use a web proxy that enforces agent-specific access policies",
+			"Audit all agent web requests to sensitive endpoints",
+		}
+	case "llms_txt_probing":
+		return []string{
+			"Restrict agents to known llms.txt endpoints they need for their task",
+			"Monitor for systematic llms.txt discovery across domains",
+			"Treat llms.txt content as untrusted input — scan before consumption",
+			"Rate-limit llms.txt access per agent per time window",
+		}
+	case "agent_unauthorized_domain":
+		return []string{
+			"Maintain per-agent domain allowlists based on task requirements",
+			"Implement a web gateway that enforces domain policies for agents",
+			"Alert on first-time domain access by established agents",
+			"Review and update domain allowlists as agent tasks evolve",
+		}
+	case "markdown_injection":
+		return []string{
+			"Scan all ingested markdown for prompt injection patterns before LLM consumption",
+			"Implement content sanitization that strips instruction-like patterns from markdown",
+			"Use separate safety classifiers for web-sourced content",
+			"Treat llms.txt and Accept: text/markdown content as untrusted input (OWASP ASI01)",
+		}
+	case "markdown_hidden_directives":
+		return []string{
+			"Strip HTML comments, zero-width characters, and invisible Unicode from ingested markdown",
+			"Render markdown to plaintext and compare with original for hidden content",
+			"Implement content integrity checks that detect steganographic instructions",
+			"Log all markdown ingestion with content hashes for forensic analysis",
+		}
+	case "markdown_exfil_links":
+		return []string{
+			"Strip or neutralize all URLs in ingested markdown before LLM consumption",
+			"Detect image/link URLs with encoded data in query parameters",
+			"Block agent access to URLs that contain context-dependent query strings",
+			"Implement URL allowlisting for links in ingested content",
+		}
+	case "agent_spending_limit":
+		return []string{
+			"Enforce per-agent spending limits with hard caps in the payment infrastructure",
+			"Require human approval for payments exceeding configurable thresholds",
+			"Implement payment circuit breakers that halt spending on anomaly detection",
+			"Use TEE-protected wallets with programmable spending policies (x402 best practice)",
+		}
+	case "agent_rapid_spending":
+		return []string{
+			"Implement per-agent payment velocity limits (max payments per time window)",
+			"Add cooling-off periods between large payments",
+			"Monitor cumulative spending across all agent wallets",
+			"Alert on spending patterns that deviate from historical baselines",
+		}
+	case "agent_new_recipient":
+		return []string{
+			"Require human confirmation for first-time payment recipients",
+			"Maintain per-agent recipient allowlists",
+			"Implement recipient reputation scoring before payment execution",
+			"Log all new recipient interactions for audit",
+		}
+	case "agent_payment_no_delegation":
+		return []string{
+			"Require valid human delegation for all autonomous payments",
+			"Implement delegation chain verification in the payment pipeline",
+			"Block payments that cannot be traced to a human principal",
+			"Use cryptographic delegation tokens with expiry and scope limits",
+		}
+	case "agent_suspicious_recipient":
+		return []string{
+			"Maintain and update blocklists of known drainer contracts and fraud addresses",
+			"Implement recipient address screening before payment execution",
+			"Require additional verification for payments to high-risk recipients",
+			"Report suspicious recipients to threat intelligence feeds",
+		}
+	case "delegation_expired":
+		return []string{
+			"Implement automatic agent suspension when delegation expires",
+			"Require delegation renewal before agents can resume operations",
+			"Set reasonable delegation TTLs based on task duration",
+			"Alert human principals when agent delegations are nearing expiry",
+		}
+	case "delegation_chain_deep":
+		return []string{
+			"Limit delegation chain depth to prevent accountability obscuration",
+			"Require direct human delegation for sensitive operations",
+			"Implement delegation chain visualization for audit",
+			"Reject delegations that exceed maximum chain depth policy",
+		}
+	case "delegation_scope_escalation":
+		return []string{
+			"Enforce that delegated scopes cannot exceed the delegator's own permissions",
+			"Implement scope intersection validation in the delegation pipeline",
+			"Audit all delegation scope grants for privilege escalation",
+			"Use the principle of least privilege for all agent delegations",
+		}
+	case "delegation_no_attestation":
+		return []string{
+			"Require cryptographic attestation for all delegation claims",
+			"Implement delegation token signing with the delegator's key",
+			"Reject unattested delegation claims for sensitive operations",
+			"Use the OWASP proposed agent identity standard for delegation verification",
 		}
 	default:
 		return []string{
@@ -1186,6 +1553,406 @@ func (cm *CascadeFailureMonitor) Record(agentID, errorType, targetAgent string) 
 		result.AffectedAgents = len(state.DownstreamAgents) + 1
 		result.AgentChain = append([]string{agentID}, state.DownstreamAgents...)
 	}
+
+	return result
+}
+
+// ============================================================================
+// AgentWebFetchMonitor — tracks agent web access patterns (2026)
+// ============================================================================
+
+type AgentWebFetchMonitor struct {
+	mu     sync.RWMutex
+	agents *lru.Cache[string, *webFetchProfile]
+	// Sensitive URL patterns that agents should never access
+	sensitiveURLs []*regexp.Regexp
+}
+
+type webFetchProfile struct {
+	FetchCount    int
+	FetchWindow   time.Time
+	Domains       map[string]int
+	LLMSTxtDomains map[string]bool
+	LastFetch     time.Time
+}
+
+type WebFetchResult struct {
+	RapidFetching      bool
+	SensitiveURL       bool
+	LLMSTxtProbing     bool
+	UnauthorizedDomain bool
+	FetchCount         int
+	UniqueDomains      int
+	LLMSTxtDomains     int
+	Window             string
+}
+
+func NewAgentWebFetchMonitor() *AgentWebFetchMonitor {
+	aCache, _ := lru.New[string, *webFetchProfile](50000)
+	return &AgentWebFetchMonitor{
+		agents: aCache,
+		sensitiveURLs: []*regexp.Regexp{
+			// Cloud metadata endpoints
+			regexp.MustCompile(`(?i)(169\.254\.169\.254|metadata\.google\.internal|metadata\.azure\.com)`),
+			// Admin panels and internal APIs
+			regexp.MustCompile(`(?i)(/admin|/wp-admin|/phpmyadmin|/console|/actuator|/management|/internal/)`),
+			// Credential and secret endpoints
+			regexp.MustCompile(`(?i)(/\.env|/\.git|/\.ssh|/\.aws|/credentials|/secrets|/tokens|/api[_-]?keys)`),
+			// Payment and financial endpoints (agents shouldn't scrape these)
+			regexp.MustCompile(`(?i)(/wallet|/transfer|/withdraw|/payment.*confirm|/checkout.*complete)`),
+			// Localhost and private networks
+			regexp.MustCompile(`(?i)(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.)`),
+		},
+	}
+}
+
+func (wm *AgentWebFetchMonitor) RecordFetch(agentID, url, domain, acceptHeader string) WebFetchResult {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	result := WebFetchResult{}
+	now := time.Now()
+
+	// Check sensitive URLs
+	for _, pattern := range wm.sensitiveURLs {
+		if pattern.MatchString(url) {
+			result.SensitiveURL = true
+			break
+		}
+	}
+
+	profile, exists := wm.agents.Get(agentID)
+	if !exists || now.Sub(profile.FetchWindow) > 5*time.Minute {
+		profile = &webFetchProfile{
+			FetchWindow:    now,
+			Domains:        make(map[string]int),
+			LLMSTxtDomains: make(map[string]bool),
+		}
+		wm.agents.Add(agentID, profile)
+	}
+
+	profile.FetchCount++
+	profile.LastFetch = now
+	if domain != "" {
+		profile.Domains[domain]++
+	}
+
+	result.FetchCount = profile.FetchCount
+	result.UniqueDomains = len(profile.Domains)
+	result.Window = now.Sub(profile.FetchWindow).Round(time.Second).String()
+
+	// Detect llms.txt probing
+	urlLower := strings.ToLower(url)
+	if strings.Contains(urlLower, "llms.txt") || strings.Contains(urlLower, "llms-full.txt") {
+		if domain != "" {
+			profile.LLMSTxtDomains[domain] = true
+		}
+	}
+	result.LLMSTxtDomains = len(profile.LLMSTxtDomains)
+	if result.LLMSTxtDomains >= 5 {
+		result.LLMSTxtProbing = true
+	}
+
+	// Rapid fetching: more than 50 fetches in 5 minutes across 10+ domains
+	if profile.FetchCount > 50 && len(profile.Domains) >= 10 {
+		result.RapidFetching = true
+	}
+
+	return result
+}
+
+// ============================================================================
+// AgentPaymentMonitor — tracks agent payment patterns and enforces limits (2026)
+// ============================================================================
+
+type AgentPaymentMonitor struct {
+	mu     sync.RWMutex
+	agents *lru.Cache[string, *paymentProfile]
+	// Known suspicious recipient patterns
+	suspiciousRecipients []*regexp.Regexp
+}
+
+type paymentProfile struct {
+	PaymentCount   int
+	TotalSpent     float64
+	PaymentWindow  time.Time
+	Recipients     map[string]bool
+	LastPayment    time.Time
+}
+
+type PaymentResult struct {
+	SpendingLimitExceeded bool
+	RapidSpending         bool
+	NewRecipient          bool
+	NoDelegation          bool
+	SuspiciousRecipient   bool
+	PaymentCount          int
+	TotalSpent            float64
+	Window                string
+}
+
+func NewAgentPaymentMonitor() *AgentPaymentMonitor {
+	aCache, _ := lru.New[string, *paymentProfile](50000)
+	return &AgentPaymentMonitor{
+		agents: aCache,
+		suspiciousRecipients: []*regexp.Regexp{
+			// Known drainer contract patterns (hex addresses with common drainer prefixes)
+			regexp.MustCompile(`(?i)(0xdead|0xbad|0x0000000000|drainer|scam|phish)`),
+			// Mixer/tumbler services
+			regexp.MustCompile(`(?i)(tornado|mixer|tumbler|blender|wasabi)`),
+			// Temporary/disposable addresses
+			regexp.MustCompile(`(?i)(temp|disposable|burner|throwaway)`),
+		},
+	}
+}
+
+func (pm *AgentPaymentMonitor) RecordPayment(agentID, amountStr, recipient, currency, protocol, merchantID, delegatedBy, spendingLimitStr string) PaymentResult {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	result := PaymentResult{}
+	now := time.Now()
+
+	// Parse amount
+	amount := parseFloat(amountStr)
+
+	// Parse spending limit
+	spendingLimit := parseFloat(spendingLimitStr)
+
+	// Check spending limit
+	if spendingLimit > 0 && amount > spendingLimit {
+		result.SpendingLimitExceeded = true
+	}
+
+	// Check delegation
+	if delegatedBy == "" {
+		result.NoDelegation = true
+	}
+
+	// Check suspicious recipients
+	for _, pattern := range pm.suspiciousRecipients {
+		if pattern.MatchString(recipient) {
+			result.SuspiciousRecipient = true
+			break
+		}
+	}
+
+	profile, exists := pm.agents.Get(agentID)
+	if !exists || now.Sub(profile.PaymentWindow) > 10*time.Minute {
+		profile = &paymentProfile{
+			PaymentWindow: now,
+			Recipients:    make(map[string]bool),
+		}
+		pm.agents.Add(agentID, profile)
+	}
+
+	// Check new recipient
+	if recipient != "" && !profile.Recipients[recipient] {
+		result.NewRecipient = true
+		profile.Recipients[recipient] = true
+	}
+
+	profile.PaymentCount++
+	profile.TotalSpent += amount
+	profile.LastPayment = now
+
+	result.PaymentCount = profile.PaymentCount
+	result.TotalSpent = profile.TotalSpent
+	result.Window = now.Sub(profile.PaymentWindow).Round(time.Second).String()
+
+	// Rapid spending: more than 10 payments in 10 minutes or total > 1000
+	if profile.PaymentCount > 10 || profile.TotalSpent > 1000 {
+		result.RapidSpending = true
+	}
+
+	return result
+}
+
+func parseFloat(s string) float64 {
+	if s == "" {
+		return 0
+	}
+	var f float64
+	fmt.Sscanf(s, "%f", &f)
+	return f
+}
+
+// ============================================================================
+// MarkdownIngestionScanner — scans markdown content for injection (2026)
+// ============================================================================
+
+// MarkdownIngestionScanner detects prompt injection, hidden directives, and
+// data exfiltration links embedded in markdown content that agents ingest
+// from llms.txt endpoints, Accept: text/markdown responses, or web scraping.
+type MarkdownIngestionScanner struct {
+	injectionPatterns  []*regexp.Regexp
+	hiddenDirPatterns  []*regexp.Regexp
+	exfilLinkPatterns  []*regexp.Regexp
+}
+
+type MarkdownScanResult struct {
+	InjectionDetected bool
+	HiddenDirectives  bool
+	ExfilLinks        bool
+	Indicators        []string
+}
+
+func NewMarkdownIngestionScanner() *MarkdownIngestionScanner {
+	return &MarkdownIngestionScanner{
+		injectionPatterns: []*regexp.Regexp{
+			// Direct prompt injection in markdown
+			regexp.MustCompile(`(?i)(ignore\s+(previous|prior|all|above)\s+instructions?)`),
+			regexp.MustCompile(`(?i)(you\s+are\s+now|your\s+new\s+(role|instructions?|objective)\s+(is|are))`),
+			regexp.MustCompile(`(?i)(system\s*:\s*|<\|im_start\|>system|<<SYS>>|\[INST\]|\[/INST\])`),
+			regexp.MustCompile(`(?i)(override\s+safety|bypass\s+(restrictions?|filters?|guardrails?))`),
+			regexp.MustCompile(`(?i)(do\s+not\s+(tell|show|inform|reveal)\s+(the\s+)?user)`),
+			regexp.MustCompile(`(?i)(IMPORTANT|URGENT|CRITICAL|ADMIN|SYSTEM)\s*:\s*(ignore|override|execute|run|perform)`),
+			// Markdown-specific injection vectors
+			regexp.MustCompile(`(?i)(<!--\s*(system|instruction|prompt|ignore|override))`),
+			regexp.MustCompile("(?i)(```\\s*(system|instruction|hidden|secret))"),
+			regexp.MustCompile(`(?i)(before\s+responding|when\s+asked|always\s+respond\s+with|from\s+now\s+on)`),
+			// Delimiter injection via markdown
+			regexp.MustCompile(`(?i)(<\|endoftext\|>|<\|im_end\|>|</s>|\[END\])`),
+		},
+		hiddenDirPatterns: []*regexp.Regexp{
+			// HTML comments with instructions
+			regexp.MustCompile(`<!--[\s\S]*?(instruction|directive|ignore|override|system|execute|perform|send|exfiltrate)[\s\S]*?-->`),
+			// Zero-width characters (U+200B, U+200C, U+200D, U+FEFF)
+			regexp.MustCompile(`[\x{200B}\x{200C}\x{200D}\x{FEFF}]{3,}`),
+			// Invisible Unicode blocks
+			regexp.MustCompile(`[\x{2060}-\x{2064}]{2,}`),
+			// White-on-white text patterns (markdown with excessive whitespace hiding)
+			regexp.MustCompile(`(?m)^\s{20,}\S+.*?(ignore|override|execute|system)`),
+		},
+		exfilLinkPatterns: []*regexp.Regexp{
+			// Image tags with data in URL params (classic markdown exfil)
+			regexp.MustCompile(`!\[.*?\]\(https?://[^)]*\?(.*?(token|key|secret|password|context|prompt|session|auth)[=&])`),
+			// Links with encoded data exfiltration
+			regexp.MustCompile(`\[.*?\]\(https?://[^)]*\?(.*?(data|payload|content|dump|leak|exfil)[=&])`),
+			// Tracking pixels / beacons
+			regexp.MustCompile(`!\[([^\]]{0,2})\]\(https?://[^)]+\.(php|aspx|jsp)\?`),
+			// Base64 in URL parameters
+			regexp.MustCompile(`https?://[^)\s]*\?[^)\s]*=[A-Za-z0-9+/]{20,}={0,2}`),
+		},
+	}
+}
+
+func (ms *MarkdownIngestionScanner) Scan(agentID, content, sourceURL, domain string) MarkdownScanResult {
+	result := MarkdownScanResult{}
+
+	// Check for injection patterns
+	for _, pattern := range ms.injectionPatterns {
+		if match := pattern.FindString(content); match != "" {
+			result.InjectionDetected = true
+			result.Indicators = append(result.Indicators, "injection: "+truncate(match, 80))
+		}
+	}
+
+	// Check for hidden directives
+	for _, pattern := range ms.hiddenDirPatterns {
+		if match := pattern.FindString(content); match != "" {
+			result.HiddenDirectives = true
+			result.Indicators = append(result.Indicators, "hidden: "+truncate(match, 80))
+		}
+	}
+
+	// Check for exfiltration links
+	for _, pattern := range ms.exfilLinkPatterns {
+		if match := pattern.FindString(content); match != "" {
+			result.ExfilLinks = true
+			result.Indicators = append(result.Indicators, "exfil_link: "+truncate(match, 80))
+		}
+	}
+
+	return result
+}
+
+// ============================================================================
+// DelegationChainTracker — validates agent identity delegation (2026)
+// ============================================================================
+
+// DelegationChainTracker monitors and validates agent-to-human delegation
+// chains, ensuring agents operate within their delegated authority.
+// Aligned with the OWASP proposed agent identity standard.
+type DelegationChainTracker struct {
+	mu          sync.RWMutex
+	delegations *lru.Cache[string, *delegationRecord]
+}
+
+type delegationRecord struct {
+	AgentID     string
+	DelegatedBy string
+	Scopes      string
+	ExpiresAt   string
+	ChainDepth  int
+	CreatedAt   time.Time
+}
+
+type DelegationResult struct {
+	Expired          bool
+	ChainTooDeep     bool
+	ScopeEscalation  bool
+	NoAttestation    bool
+	ChainDepth       int
+}
+
+func NewDelegationChainTracker() *DelegationChainTracker {
+	dCache, _ := lru.New[string, *delegationRecord](50000)
+	return &DelegationChainTracker{delegations: dCache}
+}
+
+func (dt *DelegationChainTracker) ValidateDelegation(agentID, delegatedBy, scopes, expiresAt, delegationChain, attestation string) DelegationResult {
+	dt.mu.Lock()
+	defer dt.mu.Unlock()
+
+	result := DelegationResult{}
+
+	// Check attestation
+	if attestation == "" {
+		result.NoAttestation = true
+	}
+
+	// Check expiry
+	if expiresAt != "" {
+		expiry, err := time.Parse(time.RFC3339, expiresAt)
+		if err == nil && time.Now().After(expiry) {
+			result.Expired = true
+		}
+	}
+
+	// Check delegation chain depth
+	chainDepth := 1
+	if delegationChain != "" {
+		chainDepth = strings.Count(delegationChain, "->") + 1
+		if chainDepth < 1 {
+			chainDepth = 1
+		}
+	}
+	result.ChainDepth = chainDepth
+	if chainDepth > 3 {
+		result.ChainTooDeep = true
+	}
+
+	// Check scope escalation: if scopes contain admin/write/delete but
+	// the delegator is not known to have those scopes
+	scopeLower := strings.ToLower(scopes)
+	escalationKeywords := []string{"admin", "root", "superuser", "write:all", "delete:all", "*", "full_access"}
+	for _, kw := range escalationKeywords {
+		if strings.Contains(scopeLower, kw) {
+			result.ScopeEscalation = true
+			break
+		}
+	}
+
+	// Record delegation
+	dt.delegations.Add(agentID, &delegationRecord{
+		AgentID:     agentID,
+		DelegatedBy: delegatedBy,
+		Scopes:      scopes,
+		ExpiresAt:   expiresAt,
+		ChainDepth:  chainDepth,
+		CreatedAt:   time.Now(),
+	})
 
 	return result
 }

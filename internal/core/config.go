@@ -22,6 +22,7 @@ type Config struct {
 	Enforcement *EnforcementConfig      `yaml:"enforcement,omitempty"`
 	Archive     ArchiveConfig           `yaml:"archive"`
 	Cloud       CloudConfig             `yaml:"cloud"`
+	Escalation  EscalationConfig        `yaml:"escalation"`
 }
 
 // CloudConfig holds settings for reporting to the 1SEC cloud dashboard.
@@ -72,11 +73,12 @@ type ResponsePolicyYAML struct {
 
 // ResponseRuleYAML is the YAML-friendly representation of a response rule.
 type ResponseRuleYAML struct {
-	Action      string            `yaml:"action"`
-	MinSeverity string            `yaml:"min_severity"`
-	Params      map[string]string `yaml:"params,omitempty"`
-	DryRun      bool              `yaml:"dry_run"`
-	Description string            `yaml:"description,omitempty"`
+	Action       string            `yaml:"action"`
+	MinSeverity  string            `yaml:"min_severity"`
+	Params       map[string]string `yaml:"params,omitempty"`
+	DryRun       bool              `yaml:"dry_run"`
+	SkipApproval bool              `yaml:"skip_approval,omitempty"` // bypass approval gate for this rule
+	Description  string            `yaml:"description,omitempty"`
 }
 
 // ServerConfig holds API server settings.
@@ -211,6 +213,7 @@ func DefaultConfig() *Config {
 			APIURL:            "https://1-sec.dev/api/v1",
 			HeartbeatInterval: 60,
 		},
+		Escalation: DefaultEscalationConfig(),
 	}
 }
 
