@@ -39,7 +39,10 @@
 # Install
 curl -fsSL https://1-sec.dev/get | sh
 
-# Run (all 16 modules, zero config)
+# Guided setup (config + AI keys + API auth)
+1sec setup
+
+# Or run directly (all 16 modules, zero config)
 1sec up
 ```
 
@@ -121,8 +124,12 @@ helm install 1sec ./deploy/helm \
 1sec config                      Show resolved config
 1sec config --validate           Validate and exit
 1sec config --json
+1sec config set-key <key>        Set Gemini API key for AI analysis
+1sec config set-key --show       Show current AI key status (masked)
+1sec config set-key --env        Import keys from GEMINI_API_KEY env vars
 
 1sec check                       Pre-flight diagnostics
+1sec doctor                      Health check with fix suggestions
 1sec stop                        Gracefully stop instance
 
 1sec docker up                   Start via Docker Compose
@@ -130,6 +137,10 @@ helm install 1sec ./deploy/helm \
 1sec docker logs                 Follow container logs
 1sec docker status               Show container status
 1sec docker build                Build image from source
+
+1sec setup                       Guided interactive setup wizard
+1sec setup --ai-only             Only configure AI (Gemini) keys
+1sec setup --non-interactive     Use env vars, skip prompts
 
 1sec correlator                  Inspect threat correlator state
 1sec correlator --json           JSON output with chain definitions
@@ -207,8 +218,23 @@ modules:
 AI keys are read from environment variables — no key required for the 15 rule-based modules:
 
 ```bash
+# Quickest way — one command
+1sec config set-key AIzaSy...
+
+# Or via environment variable
 export GEMINI_API_KEY=your_key_here
 1sec up
+
+# Multiple keys for load balancing / rate-limit rotation
+1sec config set-key key1 key2 key3
+
+# Import from env vars
+export GEMINI_API_KEY=key1
+export GEMINI_API_KEY_2=key2
+1sec config set-key --env
+
+# Check key status
+1sec config set-key --show
 ```
 
 ---
@@ -440,6 +466,9 @@ See [1-sec.dev/pricing](https://1-sec.dev/pricing) for details.
 │   ├── cmd_correlator.go     # 1sec correlator — threat chain state
 │   ├── cmd_threats.go        # 1sec threats — IP threat scoring
 │   ├── cmd_rust.go           # 1sec rust — Rust sidecar status
+│   ├── cmd_setup.go          # 1sec setup — guided interactive wizard
+│   ├── cmd_setup_key.go      # 1sec config set-key — AI key management
+│   ├── cmd_doctor.go         # 1sec doctor — health check with fix suggestions
 │   ├── selfupdate.go         # In-place binary self-update
 │   └── ...                   # status, config, check, stop, modules, etc.
 ├── internal/
