@@ -322,9 +322,14 @@ func getAPIMitigations(alertType string) []string {
 		}
 	case "data_exposure":
 		return []string{
-			"Return only the fields the client explicitly needs",
+			"Return only the fields the client explicitly needs — use response DTOs",
 			"Implement response filtering and field-level access control",
 			"Never expose internal object representations directly",
+			"Mask or redact sensitive values (SSNs, credit cards, tokens) before serialization",
+			"Scan API responses for PII and credential patterns in CI/CD pipelines",
+			"Strip internal IP addresses, stack traces, and debug info from production responses",
+			"Implement PCI-DSS compliant card number masking (show only last 4 digits)",
+			"Rotate any API keys, tokens, or secrets detected in response bodies immediately",
 		}
 	case "ssrf_via_api":
 		return []string{
@@ -736,6 +741,25 @@ func (m *MassAssignmentDetector) Check(method, path, body, contentType string) [
 type DataExposureDetector struct {
 	sensitivePatterns *regexp.Regexp
 	piiPatterns       *regexp.Regexp
+	// Value-based patterns — match actual data formats regardless of field names
+	creditCardPattern *regexp.Regexp
+	ssnPattern        *regexp.Regexp
+	awsKeyPattern     *regexp.Regexp
+	gcpKeyPattern     *regexp.Regexp
+	privateKeyPattern *regexp.Regexp
+	jwtPattern        *regexp.Regexp
+	bearerPattern     *regexp.Regexp
+	ipv4Pattern       *regexp.Regexp
+	emailPattern      *regexp.Regexp
+	phonePattern      *regexp.Regexp
+	ibanPattern       *regexp.Regexp
+	githubPattern     *regexp.Regexp
+	slackPattern      *regexp.Regexp
+	stripePattern     *regexp.Regexp
+	sendgridPattern   *regexp.Regexp
+	twilioPattern     *regexp.Regexp
+	herokuPattern     *regexp.Regexp
+	genericSecretPat  *regexp.Regexp
 }
 
 type DataExposureFinding struct {
@@ -745,14 +769,71 @@ type DataExposureFinding struct {
 
 func NewDataExposureDetector() *DataExposureDetector {
 	return &DataExposureDetector{
+		// Field-name patterns (JSON key matching)
 		sensitivePatterns: regexp.MustCompile(`(?i)"(password|password_hash|salt|secret|private_key|api_key|api_secret|access_token|refresh_token|ssn|social_security|credit_card|card_number|cvv|bank_account|routing_number)"\s*:\s*"[^"]+"`),
 		piiPatterns:       regexp.MustCompile(`(?i)"(date_of_birth|dob|national_id|passport_number|driver_license|tax_id|medical_record|health_insurance|biometric)"\s*:\s*"[^"]+"`),
+
+		// ── Value-based patterns: match actual data regardless of field name ──
+
+		// Credit cards: Visa, Mastercard, Amex, Discover, Diners, JCB (13-19 digits)
+		creditCardPattern: regexp.MustCompile(`\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12}|3(?:0[0-5]|[68][0-9])[0-9]{11}|(?:2131|1800|35\d{3})\d{11})\b`),
+
+		// US SSN: 123-45-6789 format (basic pattern, excludes obvious non-SSNs via Check logic)
+		ssnPattern: regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`),
+
+		// AWS access key IDs (always start with AKIA, ASIA, or AIDA)
+		awsKeyPattern: regexp.MustCompile(`\b(?:AKIA|ASIA|AIDA)[0-9A-Z]{16}\b`),
+
+		// GCP service account key / API key patterns
+		gcpKeyPattern: regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`),
+
+		// PEM private keys (RSA, EC, generic)
+		privateKeyPattern: regexp.MustCompile(`-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----`),
+
+		// JWT tokens (three base64url segments separated by dots)
+		jwtPattern: regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`),
+
+		// Bearer tokens in response bodies
+		bearerPattern: regexp.MustCompile(`(?i)bearer\s+[a-zA-Z0-9_\-\.]{20,}`),
+
+		// Internal/private IPv4 addresses leaked in responses
+		ipv4Pattern: regexp.MustCompile(`\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b`),
+
+		// Email addresses (basic but effective)
+		emailPattern: regexp.MustCompile(`\b[a-zA-Z0-9._%+\-]{2,}@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b`),
+
+		// Phone numbers: US format, international with +
+		phonePattern: regexp.MustCompile(`(?:\+1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b`),
+
+		// IBAN (International Bank Account Number)
+		ibanPattern: regexp.MustCompile(`\b[A-Z]{2}\d{2}[A-Z0-9]{4}\d{7}(?:[A-Z0-9]?){0,16}\b`),
+
+		// GitHub personal access tokens (ghp_, gho_, ghu_, ghs_, ghr_)
+		githubPattern: regexp.MustCompile(`\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}\b`),
+
+		// Slack tokens (xoxb-, xoxp-, xoxs-, xoxa-, xoxr-)
+		slackPattern: regexp.MustCompile(`\bxox[bpsar]-[0-9]{10,}-[0-9]{10,}-[a-zA-Z0-9]{20,}\b`),
+
+		// Stripe API keys (sk_live_, sk_test_, pk_live_, pk_test_, rk_live_, rk_test_)
+		stripePattern: regexp.MustCompile(`\b[spr]k_(?:live|test)_[0-9a-zA-Z]{24,}\b`),
+
+		// SendGrid API keys
+		sendgridPattern: regexp.MustCompile(`\bSG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}\b`),
+
+		// Twilio API keys
+		twilioPattern: regexp.MustCompile(`\bSK[0-9a-fA-F]{32}\b`),
+
+		// Heroku API keys
+		herokuPattern: regexp.MustCompile(`(?i)\bheroku.*[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b`),
+
+		// Generic high-entropy hex/base64 secrets in JSON values (40+ char hex or 30+ char base64)
+		genericSecretPat: regexp.MustCompile(`"[^"]*(?:key|token|secret|password|credential|auth)[^"]*"\s*:\s*"([a-fA-F0-9]{40,}|[A-Za-z0-9+/=]{30,})"`),
 	}
 }
 
 func (d *DataExposureDetector) Check(path, method, responseBody string, responseSize int) *DataExposureFinding {
-	// Check for sensitive data in response
 	if responseBody != "" {
+		// ── Field-name matching (JSON key names) ────────────────────────
 		if d.sensitivePatterns.MatchString(responseBody) {
 			matches := d.sensitivePatterns.FindAllString(responseBody, 5)
 			return &DataExposureFinding{
@@ -768,6 +849,130 @@ func (d *DataExposureDetector) Check(path, method, responseBody string, response
 				Severity: core.SeverityHigh,
 				Description: fmt.Sprintf("Response contains PII data: %d matches found. Fields: %s",
 					len(matches), summarizeMatches(matches)),
+			}
+		}
+
+		// ── Value-based matching (actual data formats) ──────────────────
+
+		// Critical: credentials and secrets
+		if d.privateKeyPattern.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a PEM private key. Private keys must never appear in API responses.",
+			}
+		}
+		if d.awsKeyPattern.MatchString(responseBody) {
+			match := d.awsKeyPattern.FindString(responseBody)
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: fmt.Sprintf("Response contains AWS access key ID: %s...%s", match[:8], match[len(match)-4:]),
+			}
+		}
+		if d.stripePattern.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a Stripe API key (sk_live/sk_test/pk_live/pk_test).",
+			}
+		}
+		if d.githubPattern.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a GitHub personal access token (ghp_/gho_/ghu_/ghs_/ghr_).",
+			}
+		}
+		if d.slackPattern.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a Slack API token (xoxb-/xoxp-/xoxs-).",
+			}
+		}
+		if d.sendgridPattern.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a SendGrid API key.",
+			}
+		}
+		if d.gcpKeyPattern.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a Google Cloud API key (AIza...).",
+			}
+		}
+		if d.twilioPattern.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityHigh,
+				Description: "Response contains a Twilio API key (SK...).",
+			}
+		}
+		if d.herokuPattern.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityHigh,
+				Description: "Response contains a Heroku API key.",
+			}
+		}
+
+		// High: tokens and auth material
+		if d.jwtPattern.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityHigh,
+				Description: "Response contains a JWT token. Tokens should not be echoed in API response bodies.",
+			}
+		}
+		if d.bearerPattern.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityHigh,
+				Description: "Response contains a Bearer token. Auth tokens should not appear in response payloads.",
+			}
+		}
+		if d.genericSecretPat.MatchString(responseBody) {
+			matches := d.genericSecretPat.FindAllString(responseBody, 3)
+			return &DataExposureFinding{
+				Severity: core.SeverityHigh,
+				Description: fmt.Sprintf("Response contains high-entropy secret values in %d field(s): %s",
+					len(matches), summarizeMatches(matches)),
+			}
+		}
+
+		// High: financial data
+		if d.creditCardPattern.MatchString(responseBody) {
+			count := len(d.creditCardPattern.FindAllString(responseBody, -1))
+			return &DataExposureFinding{
+				Severity:    core.SeverityHigh,
+				Description: fmt.Sprintf("Response contains %d credit card number(s) (Luhn-plausible patterns). PCI-DSS requires masking.", count),
+			}
+		}
+		if d.ibanPattern.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityHigh,
+				Description: "Response contains IBAN (International Bank Account Number). Financial account numbers must be masked.",
+			}
+		}
+
+		// High: PII values
+		if d.ssnPattern.MatchString(responseBody) {
+			allMatches := d.ssnPattern.FindAllString(responseBody, -1)
+			// Filter out known invalid SSN ranges: 000-xx-xxxx, 666-xx-xxxx, 9xx-xx-xxxx, xxx-00-xxxx, xxx-xx-0000
+			validCount := 0
+			for _, m := range allMatches {
+				parts := strings.Split(m, "-")
+				if len(parts) == 3 && parts[0] != "000" && parts[0] != "666" && parts[0][0] != '9' && parts[1] != "00" && parts[2] != "0000" {
+					validCount++
+				}
+			}
+			if validCount > 0 {
+				return &DataExposureFinding{
+					Severity:    core.SeverityHigh,
+					Description: fmt.Sprintf("Response contains %d US Social Security Number(s). SSNs must never appear unmasked in API responses.", validCount),
+				}
+			}
+		}
+
+		// Medium: internal infrastructure leakage
+		if d.ipv4Pattern.MatchString(responseBody) {
+			ips := d.ipv4Pattern.FindAllString(responseBody, 5)
+			return &DataExposureFinding{
+				Severity:    core.SeverityMedium,
+				Description: fmt.Sprintf("Response leaks %d internal/private IP address(es): %s", len(ips), strings.Join(ips, ", ")),
 			}
 		}
 	}
