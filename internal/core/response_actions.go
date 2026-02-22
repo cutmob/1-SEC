@@ -206,6 +206,52 @@ func ExportedUnblockIP(ip string, logger zerolog.Logger) {
 	unblockIP(ip, logger)
 }
 
+// ExportedEnableUser re-enables a previously disabled user account.
+func ExportedEnableUser(username string, logger zerolog.Logger) error {
+	username = sanitizeShellArg(username)
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "linux":
+		cmd = exec.Command("usermod", "-U", username)
+	case "windows":
+		cmd = exec.Command("net", "user", username, "/active:yes")
+	default:
+		return fmt.Errorf("unsupported OS for user enable: %s", runtime.GOOS)
+	}
+	if output, err := cmd.CombinedOutput(); err != nil {
+		logger.Warn().Err(err).Str("username", username).Str("output", string(output)).Msg("failed to re-enable user")
+		return fmt.Errorf("enable user failed: %w — output: %s", err, string(output))
+	}
+	logger.Info().Str("username", username).Msg("user re-enabled via rollback")
+	return nil
+}
+
+// ExportedRestoreFile moves a quarantined file back to its original path.
+// The target field is expected to be the original file path, and the details
+// field contains "quarantined <original> → <quarantine_path>".
+func ExportedRestoreFile(details string, logger zerolog.Logger) error {
+	// Parse "quarantined /original/path → /quarantine/path" from details
+	const prefix = "quarantined "
+	const sep = " → "
+	if !strings.HasPrefix(details, prefix) {
+		return fmt.Errorf("cannot parse quarantine details: %q", details)
+	}
+	rest := details[len(prefix):]
+	idx := strings.Index(rest, sep)
+	if idx < 0 {
+		return fmt.Errorf("cannot parse quarantine details: %q", details)
+	}
+	originalPath := rest[:idx]
+	quarantinePath := rest[idx+len(sep):]
+
+	if err := os.Rename(quarantinePath, originalPath); err != nil {
+		logger.Warn().Err(err).Str("from", quarantinePath).Str("to", originalPath).Msg("failed to restore quarantined file")
+		return fmt.Errorf("restore file failed: %w", err)
+	}
+	logger.Info().Str("from", quarantinePath).Str("to", originalPath).Msg("quarantined file restored via rollback")
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // KillProcessExecutor — terminates a malicious process by PID or name
 // ---------------------------------------------------------------------------
@@ -420,7 +466,9 @@ func (e *DisableUserExecutor) Execute(ctx context.Context, alert *Alert, rule Re
 // WebhookExecutor — sends alert + action context to a webhook URL
 // ---------------------------------------------------------------------------
 
-type WebhookExecutor struct{}
+type WebhookExecutor struct{
+	Dispatcher *WebhookDispatcher
+}
 
 func (e *WebhookExecutor) Validate(rule ResponseRule) error {
 	if rule.Params["url"] == "" {
@@ -442,6 +490,22 @@ func (e *WebhookExecutor) Execute(ctx context.Context, alert *Alert, rule Respon
 		"source":    "1sec-response-engine",
 	}
 
+	// Use the reliable dispatcher with retry + dead letter + circuit breaker
+	// if available, otherwise fall back to direct HTTP.
+	if e.Dispatcher != nil {
+		headers := map[string]string{
+			"Content-Type": "application/json",
+			"User-Agent":   "1sec-response-engine/1.0",
+		}
+		if token := rule.Params["auth_token"]; token != "" {
+			headers["Authorization"] = "Bearer " + token
+		}
+		deliveryID := e.Dispatcher.Enqueue(webhookURL, payload, headers)
+		details := fmt.Sprintf("webhook enqueued to %s (delivery_id=%s, retries enabled)", webhookURL, deliveryID)
+		return webhookURL, details, nil
+	}
+
+	// Fallback: direct HTTP (no retry)
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return webhookURL, "", fmt.Errorf("marshaling webhook payload: %w", err)
@@ -458,9 +522,6 @@ func (e *WebhookExecutor) Execute(ctx context.Context, alert *Alert, rule Respon
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	// Use a custom dialer that re-validates resolved IPs at connect time
-	// to prevent DNS rebinding attacks (hostname resolves to private IP
-	// after the initial validateWebhookURL check).
 	safeDialer := &net.Dialer{Timeout: 5 * time.Second}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -483,7 +544,6 @@ func (e *WebhookExecutor) Execute(ctx context.Context, alert *Alert, rule Respon
 	client := &http.Client{
 		Timeout:   10 * time.Second,
 		Transport: transport,
-		// Disable redirects to prevent SSRF via redirect chains
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return fmt.Errorf("webhook redirects are disabled for security")
 		},
@@ -494,8 +554,7 @@ func (e *WebhookExecutor) Execute(ctx context.Context, alert *Alert, rule Respon
 	}
 	defer resp.Body.Close()
 
-	// Limit response body read to prevent memory exhaustion
-	io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20)) // drain up to 1MB
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 
 	details := fmt.Sprintf("webhook sent to %s (status=%d)", webhookURL, resp.StatusCode)
 	if resp.StatusCode >= 400 {

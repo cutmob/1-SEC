@@ -47,6 +47,11 @@ func NewServer(engine *core.Engine) *Server {
 	mux.HandleFunc("/api/v1/enforce/status", s.handleEnforceStatus)
 	mux.HandleFunc("/api/v1/enforce/policies", s.handleEnforcePolicies)
 	mux.HandleFunc("/api/v1/enforce/history", s.handleEnforceHistory)
+	mux.HandleFunc("/api/v1/enforce/approvals/pending", s.handleEnforceApprovalsPending)
+	mux.HandleFunc("/api/v1/enforce/approvals/history", s.handleEnforceApprovalsHistory)
+	mux.HandleFunc("/api/v1/enforce/approvals/stats", s.handleEnforceApprovalsStats)
+	mux.HandleFunc("/api/v1/enforce/webhooks/stats", s.handleEnforceWebhookStats)
+	mux.HandleFunc("/api/v1/enforce/webhooks/dead-letters", s.handleEnforceWebhookDeadLetters)
 	mux.HandleFunc("/api/v1/metrics", s.handleMetrics)
 	mux.HandleFunc("/api/v1/event-schemas", s.handleEventSchemas)
 	mux.HandleFunc("/api/v1/archive/status", s.handleArchiveStatus)
@@ -61,6 +66,7 @@ func NewServer(engine *core.Engine) *Server {
 	mux.HandleFunc("/api/v1/enforce/approve/", s.handleEnforceApprove)
 	mux.HandleFunc("/api/v1/enforce/reject/", s.handleEnforceReject)
 	mux.HandleFunc("/api/v1/enforce/rollback/", s.handleEnforceRollback)
+	mux.HandleFunc("/api/v1/enforce/webhooks/retry/", s.handleEnforceWebhookRetry)
 	mux.HandleFunc("/api/v1/shutdown", s.handleShutdown)
 	mux.HandleFunc("/api/v1/config/reload", s.handleConfigReload)
 
@@ -684,6 +690,7 @@ var mutatingPaths = map[string]bool{
 	"/api/v1/enforce/approve/":    true,
 	"/api/v1/enforce/reject/":     true,
 	"/api/v1/enforce/rollback/":   true,
+	"/api/v1/enforce/webhooks/retry/": true,
 }
 
 // isMutatingPath returns true if the request path requires write scope.

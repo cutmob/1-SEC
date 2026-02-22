@@ -419,9 +419,9 @@ func (c *Config) Validate() (warnings []string, errs []string) {
 			}
 		}
 		if c.Enforcement.Preset != "" {
-			validPresets := map[string]bool{"safe": true, "lax": true, "balanced": true, "strict": true}
+			validPresets := map[string]bool{"safe": true, "lax": true, "balanced": true, "strict": true, "vps-agent": true}
 			if !validPresets[c.Enforcement.Preset] {
-				warnings = append(warnings, fmt.Sprintf("enforcement.preset %q is unknown (valid: safe, lax, balanced, strict)", c.Enforcement.Preset))
+				warnings = append(warnings, fmt.Sprintf("enforcement.preset %q is unknown (valid: safe, lax, balanced, strict, vps-agent)", c.Enforcement.Preset))
 			}
 		}
 	}

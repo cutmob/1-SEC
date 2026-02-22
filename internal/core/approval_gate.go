@@ -69,6 +69,7 @@ type ApprovalGate struct {
 	pending  map[string]*PendingApproval
 	history  []*PendingApproval
 	handlers []ApprovalHandler
+	notifyFn func(pa *PendingApproval) // called when action enters pending state
 	ctx      context.Context
 	cancel   context.CancelFunc
 }
@@ -99,6 +100,15 @@ func (ag *ApprovalGate) AddHandler(handler ApprovalHandler) {
 	ag.handlers = append(ag.handlers, handler)
 }
 
+// SetNotifyFunc registers a callback invoked when an action enters the pending
+// state. Use this to send webhook notifications so SOC teams know a decision
+// is needed before the TTL expires.
+func (ag *ApprovalGate) SetNotifyFunc(fn func(pa *PendingApproval)) {
+	ag.mu.Lock()
+	defer ag.mu.Unlock()
+	ag.notifyFn = fn
+}
+
 // RequiresApproval checks if an action type needs human approval.
 func (ag *ApprovalGate) RequiresApproval(action ActionType) bool {
 	if !ag.cfg.Enabled {
@@ -115,7 +125,6 @@ func (ag *ApprovalGate) RequiresApproval(action ActionType) bool {
 // Submit holds an action for approval. Returns the pending approval ID.
 func (ag *ApprovalGate) Submit(alert *Alert, rule ResponseRule, target string) string {
 	ag.mu.Lock()
-	defer ag.mu.Unlock()
 
 	// Enforce max pending limit
 	if len(ag.pending) >= ag.cfg.MaxPending {
@@ -145,6 +154,14 @@ func (ag *ApprovalGate) Submit(alert *Alert, rule ResponseRule, target string) s
 		Str("target", target).
 		Time("expires_at", pa.ExpiresAt).
 		Msg("⚠ action held for human approval")
+
+	notifyFn := ag.notifyFn
+	ag.mu.Unlock()
+
+	// Notify SOC team asynchronously that a decision is needed
+	if notifyFn != nil {
+		go notifyFn(pa)
+	}
 
 	return id
 }

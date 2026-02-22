@@ -75,6 +75,7 @@ type ResponseRecord struct {
 	Module      string       `json:"module"`
 	Action      ActionType   `json:"action"`
 	Status      ActionStatus `json:"status"`
+	Severity    string       `json:"severity"`
 	Target      string       `json:"target"`
 	Details     string       `json:"details"`
 	DurationMs  int64        `json:"duration_ms"`
@@ -101,7 +102,8 @@ type ResponseEngine struct {
 	cancel       context.CancelFunc
 	actionRate   map[string]int // per-minute action counter per module
 	rateReset    time.Time
-	ApprovalGate *ApprovalGate // exported for command poller access
+	ApprovalGate *ApprovalGate        // exported for command poller access
+	Dispatcher   *WebhookDispatcher   // reliable webhook delivery with retry + dead letter
 }
 
 // ActionExecutor is the interface for pluggable response action handlers.
@@ -129,13 +131,16 @@ func NewResponseEngine(logger zerolog.Logger, bus *EventBus, pipeline *AlertPipe
 		rateReset:  time.Now(),
 	}
 
+	// Initialize reliable webhook dispatcher with retry + dead letter + circuit breaker
+	re.Dispatcher = NewWebhookDispatcher(logger, DefaultWebhookRetryConfig())
+
 	// Register built-in executors
 	re.executors[ActionBlockIP] = &BlockIPExecutor{}
 	re.executors[ActionKillProcess] = &KillProcessExecutor{}
 	re.executors[ActionQuarantineFile] = &QuarantineFileExecutor{}
 	re.executors[ActionDropConnection] = &DropConnectionExecutor{}
 	re.executors[ActionDisableUser] = &DisableUserExecutor{}
-	re.executors[ActionWebhook] = &WebhookExecutor{}
+	re.executors[ActionWebhook] = &WebhookExecutor{Dispatcher: re.Dispatcher}
 	re.executors[ActionCommand] = &CommandExecutor{}
 	re.executors[ActionLog] = &LogOnlyExecutor{}
 
@@ -164,6 +169,32 @@ func NewResponseEngine(logger zerolog.Logger, bus *EventBus, pipeline *AlertPipe
 				re.recordAction(pa.Alert, pa.Rule, pa.Target, ActionStatusSuccess, details, durationMs, nil)
 			}
 		})
+		// Notify SOC team via webhook dispatcher when an action enters the approval gate
+		if re.Dispatcher != nil {
+			re.ApprovalGate.SetNotifyFunc(func(pa *PendingApproval) {
+				// Find any webhook URL from the module's policy to send the notification
+				webhookURLs := re.findWebhookURLs(pa.Module)
+				payload := map[string]interface{}{
+					"type":        "approval_required",
+					"approval_id": pa.ID,
+					"alert_id":    pa.AlertID,
+					"module":      pa.Module,
+					"action":      string(pa.Action),
+					"target":      pa.Target,
+					"severity":    pa.Alert.Severity.String(),
+					"title":       pa.Alert.Title,
+					"expires_at":  pa.ExpiresAt,
+					"source":      "1sec-approval-gate",
+					"message":     fmt.Sprintf("⚠ Action %s on %s requires human approval (expires %s)", pa.Action, pa.Target, pa.ExpiresAt.Format("15:04:05 UTC")),
+				}
+				for _, url := range webhookURLs {
+					re.Dispatcher.Enqueue(url, payload, map[string]string{
+						"Content-Type": "application/json",
+						"User-Agent":   "1sec-approval-gate/1.0",
+					})
+				}
+			})
+		}
 	}
 
 	return re
@@ -260,6 +291,9 @@ func (re *ResponseEngine) Stop() {
 	re.cancel()
 	if re.ApprovalGate != nil {
 		re.ApprovalGate.Stop()
+	}
+	if re.Dispatcher != nil {
+		re.Dispatcher.Stop()
 	}
 	re.logger.Info().Msg("response engine stopped")
 }
@@ -455,6 +489,7 @@ func (re *ResponseEngine) recordAction(alert *Alert, rule ResponseRule, target s
 		Module:     alert.Module,
 		Action:     rule.Action,
 		Status:     status,
+		Severity:   alert.Severity.String(),
 		Target:     target,
 		Details:    details,
 		DurationMs: durationMs,
@@ -571,6 +606,29 @@ func (re *ResponseEngine) Stats() map[string]interface{} {
 		"by_module":      byModule,
 		"by_action":      byAction,
 	}
+}
+
+// findWebhookURLs extracts configured webhook URLs from a module's policy
+// (and the wildcard policy) for use in approval gate notifications.
+func (re *ResponseEngine) findWebhookURLs(module string) []string {
+	re.mu.RLock()
+	defer re.mu.RUnlock()
+
+	seen := make(map[string]bool)
+	var urls []string
+	for _, policyKey := range []string{module, "*"} {
+		if p, ok := re.policies[policyKey]; ok {
+			for _, rule := range p.Actions {
+				if rule.Action == ActionWebhook {
+					if u := rule.Params["url"]; u != "" && !seen[u] {
+						seen[u] = true
+						urls = append(urls, u)
+					}
+				}
+			}
+		}
+	}
+	return urls
 }
 
 func (re *ResponseEngine) cleanupLoop(ctx context.Context) {

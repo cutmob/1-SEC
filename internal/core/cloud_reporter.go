@@ -229,7 +229,11 @@ func (cr *CloudReporter) enforcementReporter() {
 
 			cloudRecords := make([]CloudEnforcementRecord, 0, len(newRecords))
 			for _, r := range newRecords {
-				severity := "medium"
+				// Use actual severity from the enforcement record instead of hardcoded value
+				severity := strings.ToLower(r.Severity)
+				if severity == "" {
+					severity = "medium"
+				}
 				// Map Go-side uppercase status to dashboard lowercase
 				status := strings.ToLower(string(r.Status))
 				dryRun := r.Status == ActionStatusDryRun

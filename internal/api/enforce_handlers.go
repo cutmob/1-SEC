@@ -365,10 +365,207 @@ func (s *Server) handleEnforceRollback(w http.ResponseWriter, r *http.Request) {
 			"target":   record.Target,
 			"rollback": "completed",
 		})
+	case core.ActionDisableUser:
+		if err := core.ExportedEnableUser(record.Target, s.logger); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+				"error":  "rollback failed: " + err.Error(),
+				"action": string(record.Action),
+				"target": record.Target,
+			})
+			return
+		}
+		record.Status = core.ActionStatusSkipped
+		s.logger.Warn().
+			Str("record_id", id).
+			Str("action", string(record.Action)).
+			Str("target", record.Target).
+			Str("ip", r.RemoteAddr).
+			Msg("enforcement action rolled back via API")
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"id":       id,
+			"action":   string(record.Action),
+			"target":   record.Target,
+			"rollback": "completed",
+		})
+	case core.ActionQuarantineFile:
+		if err := core.ExportedRestoreFile(record.Details, s.logger); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+				"error":  "rollback failed: " + err.Error(),
+				"action": string(record.Action),
+				"target": record.Target,
+			})
+			return
+		}
+		record.Status = core.ActionStatusSkipped
+		s.logger.Warn().
+			Str("record_id", id).
+			Str("action", string(record.Action)).
+			Str("target", record.Target).
+			Str("ip", r.RemoteAddr).
+			Msg("enforcement action rolled back via API")
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"id":       id,
+			"action":   string(record.Action),
+			"target":   record.Target,
+			"rollback": "completed",
+		})
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
 			"error":  "rollback not supported for this action type",
 			"action": string(record.Action),
 		})
+	}
+}
+
+
+// handleEnforceApprovalsPending returns all pending approval gate actions.
+// URL pattern: GET /api/v1/enforce/approvals/pending
+func (s *Server) handleEnforceApprovalsPending(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	re := s.engine.ResponseEngine
+	if re == nil || re.ApprovalGate == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"pending": []interface{}{},
+			"count":   0,
+			"message": "approval gate not configured",
+		})
+		return
+	}
+
+	pending := re.ApprovalGate.GetPending()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"pending": pending,
+		"count":   len(pending),
+	})
+}
+
+// handleEnforceApprovalsHistory returns recent approval decisions.
+// URL pattern: GET /api/v1/enforce/approvals/history
+func (s *Server) handleEnforceApprovalsHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	re := s.engine.ResponseEngine
+	if re == nil || re.ApprovalGate == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"history": []interface{}{},
+			"count":   0,
+		})
+		return
+	}
+
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
+	history := re.ApprovalGate.GetHistory(limit)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"history": history,
+		"count":   len(history),
+	})
+}
+
+// handleEnforceApprovalsStats returns approval gate statistics.
+// URL pattern: GET /api/v1/enforce/approvals/stats
+func (s *Server) handleEnforceApprovalsStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	re := s.engine.ResponseEngine
+	if re == nil || re.ApprovalGate == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"enabled": false,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, re.ApprovalGate.Stats())
+}
+
+// handleEnforceWebhookStats returns webhook dispatcher statistics.
+// URL pattern: GET /api/v1/enforce/webhooks/stats
+func (s *Server) handleEnforceWebhookStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	re := s.engine.ResponseEngine
+	if re == nil || re.Dispatcher == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"message": "webhook dispatcher not configured",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, re.Dispatcher.Stats())
+}
+
+// handleEnforceWebhookDeadLetters returns failed webhook deliveries.
+// URL pattern: GET /api/v1/enforce/webhooks/dead-letters
+func (s *Server) handleEnforceWebhookDeadLetters(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	re := s.engine.ResponseEngine
+	if re == nil || re.Dispatcher == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"dead_letters": []interface{}{},
+			"count":        0,
+		})
+		return
+	}
+
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
+	dls := re.Dispatcher.GetDeadLetters(limit)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"dead_letters": dls,
+		"count":        len(dls),
+	})
+}
+
+// handleEnforceWebhookRetry re-enqueues a dead letter webhook delivery.
+// URL pattern: POST /api/v1/enforce/webhooks/retry/{id}
+func (s *Server) handleEnforceWebhookRetry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	re := s.engine.ResponseEngine
+	if re == nil || re.Dispatcher == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "webhook dispatcher not configured"})
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/enforce/webhooks/retry/")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "delivery ID required"})
+		return
+	}
+
+	if re.Dispatcher.RetryDeadLetter(id) {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"id": id, "status": "re-enqueued"})
+	} else {
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": "dead letter not found or queue full"})
 	}
 }

@@ -326,8 +326,8 @@ The Helm chart includes:
 │                     REST :1780                                  │
 ├─────────────────────────────────────────────────────────────────┤
 │              NATS JetStream Event Bus :4222                     │
-│        sec.events.>  (7d retention, 1GB)                        │
-│        sec.alerts.>  (30d retention, 512MB)                     │
+│        sec.events.>  sec.alerts.>  sec.matches.>               │
+│        sec.responses.>                                          │
 ├────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┤
 │Net │API │IoT │Inj │SC  │Ran │Auth│DF  │ID  │LLM │AIC │DP  │... │
 └────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┘
@@ -360,6 +360,7 @@ type Module interface {
     Start(ctx context.Context, bus *EventBus, pipeline *AlertPipeline, cfg *Config) error
     Stop() error
     HandleEvent(event *SecurityEvent) error
+    EventTypes() []string  // filtered routing — return nil for all events
 }
 ```
 
@@ -389,16 +390,22 @@ The engine exposes a REST API on port 1780:
 | GET | `/api/v1/enforce/status` | Enforcement engine status and statistics |
 | GET | `/api/v1/enforce/policies` | All configured response policies |
 | GET | `/api/v1/enforce/history` | Response action execution history |
+| GET | `/api/v1/enforce/approvals/pending` | List actions awaiting human approval |
+| GET | `/api/v1/enforce/approvals/history` | Approval decision history |
+| GET | `/api/v1/enforce/approvals/stats` | Approval gate statistics |
+| GET | `/api/v1/enforce/webhooks/stats` | Webhook dispatcher statistics |
+| GET | `/api/v1/enforce/webhooks/dead-letters` | Failed webhook deliveries |
 | POST | `/api/v1/events` | Ingest an external SecurityEvent |
 | POST | `/api/v1/shutdown` | Graceful shutdown |
 | POST | `/api/v1/config/reload` | Hot-reload configuration |
 | DELETE | `/api/v1/alerts/clear` | Clear all alerts |
-| PUT | `/api/v1/enforce/policies/{module}` | Enable/disable enforcement per module |
-| PUT | `/api/v1/enforce/dry-run/{on\|off}` | Toggle global dry-run mode |
+| POST | `/api/v1/enforce/policies/{module}` | Enable/disable enforcement per module |
+| POST | `/api/v1/enforce/dry-run/{on\|off}` | Toggle global dry-run mode |
 | POST | `/api/v1/enforce/test/{module}` | Simulate alert to preview enforcement |
 | POST | `/api/v1/enforce/approve/{id}` | Approve a pending enforcement action |
 | POST | `/api/v1/enforce/reject/{id}` | Reject a pending enforcement action |
 | POST | `/api/v1/enforce/rollback/{id}` | Rollback an executed enforcement action |
+| POST | `/api/v1/enforce/webhooks/retry/{id}` | Retry a failed webhook delivery |
 
 Secure the API by setting `ONESEC_API_KEY` or `server.api_keys` in config. Read-only keys are blocked from mutating endpoints (enforce approve/reject/rollback, shutdown, etc.).
 

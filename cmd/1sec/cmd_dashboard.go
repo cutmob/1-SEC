@@ -297,6 +297,46 @@ func renderDashboard(base, apiKey string, timeout time.Duration) {
 		}
 	}
 
+	// Pending approvals section
+	approvalsBody, approvalsErr := apiGet(base+"/api/v1/enforce/approvals/stats", apiKey, timeout)
+	if approvalsErr == nil {
+		var approvalsResp map[string]interface{}
+		if json.Unmarshal(approvalsBody, &approvalsResp) == nil {
+			if enabled, _ := approvalsResp["enabled"].(bool); enabled {
+				pendingCount := 0
+				if p, ok := approvalsResp["pending_count"].(float64); ok {
+					pendingCount = int(p)
+				}
+				if pendingCount > 0 {
+					fmt.Printf("  %-20s %s\n", "Approvals:", red(fmt.Sprintf("%d PENDING", pendingCount)))
+				} else {
+					fmt.Printf("  %-20s %s\n", "Approvals:", dim("none pending"))
+				}
+			}
+		}
+	}
+
+	// Webhook dispatcher health
+	webhookBody, webhookErr := apiGet(base+"/api/v1/enforce/webhooks/stats", apiKey, timeout)
+	if webhookErr == nil {
+		var webhookResp map[string]interface{}
+		if json.Unmarshal(webhookBody, &webhookResp) == nil {
+			parts := make([]string, 0)
+			if dl, ok := webhookResp["dead_letters"].(float64); ok && dl > 0 {
+				parts = append(parts, red(fmt.Sprintf("dead:%d", int(dl))))
+			}
+			if oc, ok := webhookResp["open_circuits"].(float64); ok && oc > 0 {
+				parts = append(parts, red(fmt.Sprintf("circuits:%d", int(oc))))
+			}
+			if qd, ok := webhookResp["queue_depth"].(float64); ok && qd > 0 {
+				parts = append(parts, yellow(fmt.Sprintf("queued:%d", int(qd))))
+			}
+			if len(parts) > 0 {
+				fmt.Printf("  %-20s %s\n", "Webhooks:", strings.Join(parts, "  "))
+			}
+		}
+	}
+
 	fmt.Printf("\n  %s\n", dim("─────────────────────────────────────────────"))
 	fmt.Printf("  %s %s  %s %s\n",
 		dim("API:"), base,
