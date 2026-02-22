@@ -747,6 +747,7 @@ type DataExposureDetector struct {
 	awsKeyPattern     *regexp.Regexp
 	gcpKeyPattern     *regexp.Regexp
 	privateKeyPattern *regexp.Regexp
+	pgpKeyPattern     *regexp.Regexp
 	jwtPattern        *regexp.Regexp
 	bearerPattern     *regexp.Regexp
 	ipv4Pattern       *regexp.Regexp
@@ -755,11 +756,37 @@ type DataExposureDetector struct {
 	ibanPattern       *regexp.Regexp
 	githubPattern     *regexp.Regexp
 	slackPattern      *regexp.Regexp
+	slackWebhookPat   *regexp.Regexp
 	stripePattern     *regexp.Regexp
 	sendgridPattern   *regexp.Regexp
 	twilioPattern     *regexp.Regexp
 	herokuPattern     *regexp.Regexp
 	genericSecretPat  *regexp.Regexp
+	// Wave 2: additional provider patterns from secrets-patterns-db research
+	facebookTokenPat  *regexp.Regexp
+	amazonMWSPat      *regexp.Regexp
+	mailgunPat        *regexp.Regexp
+	mailchimpPat      *regexp.Regexp
+	paypalBraintreePat *regexp.Regexp
+	squareTokenPat    *regexp.Regexp
+	squareOAuthPat    *regexp.Regexp
+	passwordInURLPat  *regexp.Regexp
+	googleOAuthPat    *regexp.Regexp
+	gcpOAuthClientPat *regexp.Regexp
+	gcpServiceAcctPat *regexp.Regexp
+	cloudinaryPat     *regexp.Regexp
+	firebaseURLPat    *regexp.Regexp
+	firebaseSecretPat *regexp.Regexp
+	databricksTokenPat *regexp.Regexp
+	shopifyTokenPat   *regexp.Regexp
+	vercelTokenPat    *regexp.Regexp
+	azureSASPat       *regexp.Regexp
+	supabaseKeyPat    *regexp.Regexp
+	datadogKeyPat     *regexp.Regexp
+	npmTokenPat       *regexp.Regexp
+	pypiTokenPat      *regexp.Regexp
+	nugetKeyPat       *regexp.Regexp
+	dockerHubTokenPat *regexp.Regexp
 }
 
 type DataExposureFinding struct {
@@ -828,6 +855,86 @@ func NewDataExposureDetector() *DataExposureDetector {
 
 		// Generic high-entropy hex/base64 secrets in JSON values (40+ char hex or 30+ char base64)
 		genericSecretPat: regexp.MustCompile(`"[^"]*(?:key|token|secret|password|credential|auth)[^"]*"\s*:\s*"([a-fA-F0-9]{40,}|[A-Za-z0-9+/=]{30,})"`),
+
+		// ── Wave 2: additional provider patterns (secrets-patterns-db, h33tlit/secret-regex-list) ──
+
+		// PGP private key blocks
+		pgpKeyPattern: regexp.MustCompile(`-----BEGIN PGP PRIVATE KEY BLOCK-----`),
+
+		// Slack incoming webhook URLs
+		slackWebhookPat: regexp.MustCompile(`https://hooks\.slack\.com/services/T[a-zA-Z0-9_]{8,}/B[a-zA-Z0-9_]{8,}/[a-zA-Z0-9_]{24,}`),
+
+		// Facebook access tokens (start with EAACEdEose0cBA)
+		facebookTokenPat: regexp.MustCompile(`\bEAACEdEose0cBA[0-9A-Za-z]+\b`),
+
+		// Amazon MWS auth tokens
+		amazonMWSPat: regexp.MustCompile(`\bamzn\.mws\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`),
+
+		// Mailgun API keys (key-...)
+		mailgunPat: regexp.MustCompile(`\bkey-[0-9a-zA-Z]{32}\b`),
+
+		// MailChimp API keys (hex32-us[0-9]+)
+		mailchimpPat: regexp.MustCompile(`\b[0-9a-f]{32}-us[0-9]{1,2}\b`),
+
+		// PayPal Braintree access tokens
+		paypalBraintreePat: regexp.MustCompile(`access_token\$production\$[0-9a-z]{16}\$[0-9a-f]{32}`),
+
+		// Square access tokens (sq0atp-)
+		squareTokenPat: regexp.MustCompile(`\bsq0atp-[0-9A-Za-z_-]{22,}\b`),
+
+		// Square OAuth secrets (sq0csp-)
+		squareOAuthPat: regexp.MustCompile(`\bsq0csp-[0-9A-Za-z_-]{43,}\b`),
+
+		// Password in URL (protocol://user:pass@host)
+		passwordInURLPat: regexp.MustCompile(`[a-zA-Z]{3,10}://[^/\s:@]{1,100}:[^/\s:@]{1,100}@[a-zA-Z0-9.-]+`),
+
+		// Google OAuth access tokens (ya29.)
+		googleOAuthPat: regexp.MustCompile(`\bya29\.[0-9A-Za-z_-]{30,}\b`),
+
+		// GCP OAuth client ID (*.apps.googleusercontent.com)
+		gcpOAuthClientPat: regexp.MustCompile(`[0-9]+-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com`),
+
+		// GCP service account JSON marker
+		gcpServiceAcctPat: regexp.MustCompile(`"type"\s*:\s*"service_account"`),
+
+		// Cloudinary URLs (cloudinary://key:secret@cloud)
+		cloudinaryPat: regexp.MustCompile(`cloudinary://[0-9]{15}:[0-9A-Za-z_-]+@[a-zA-Z0-9_-]+`),
+
+		// Firebase realtime database URLs
+		firebaseURLPat: regexp.MustCompile(`\b[a-zA-Z0-9_-]+\.firebaseio\.com\b`),
+
+		// Firebase Cloud Messaging server keys
+		firebaseSecretPat: regexp.MustCompile(`\bAAAA[A-Za-z0-9_-]{7}:[A-Za-z0-9_-]{140,}\b`),
+
+		// Databricks personal access tokens
+		databricksTokenPat: regexp.MustCompile(`\bdapi[0-9a-f]{32}\b`),
+
+		// Shopify access tokens and shared secrets
+		shopifyTokenPat: regexp.MustCompile(`\bshpat_[0-9a-fA-F]{32}\b`),
+
+		// Vercel tokens
+		vercelTokenPat: regexp.MustCompile(`\b[A-Za-z0-9]{24}OAI[A-Za-z0-9]{24,}\b`),
+
+		// Azure SAS tokens (sig= parameter in URLs)
+		azureSASPat: regexp.MustCompile(`(?i)sig=[0-9A-Za-z%+/=]{43,}(&|$)`),
+
+		// Supabase API keys (eyJ prefix, service_role or anon)
+		supabaseKeyPat: regexp.MustCompile(`\bsbp_[0-9a-f]{40}\b`),
+
+		// Datadog API keys (32-char hex)
+		datadogKeyPat: regexp.MustCompile(`(?i)(?:datadog|dd)[_-]?(?:api[_-]?key|app[_-]?key)\s*[:=]\s*[0-9a-f]{32}`),
+
+		// npm tokens
+		npmTokenPat: regexp.MustCompile(`\bnpm_[A-Za-z0-9]{36}\b`),
+
+		// PyPI tokens
+		pypiTokenPat: regexp.MustCompile(`\bpypi-[A-Za-z0-9_-]{50,}\b`),
+
+		// NuGet API keys
+		nugetKeyPat: regexp.MustCompile(`\boy2[a-zA-Z0-9]{43}\b`),
+
+		// Docker Hub tokens / passwords
+		dockerHubTokenPat: regexp.MustCompile(`\bdckr_pat_[A-Za-z0-9_-]{27,}\b`),
 	}
 }
 
@@ -908,6 +1015,171 @@ func (d *DataExposureDetector) Check(path, method, responseBody string, response
 			return &DataExposureFinding{
 				Severity:    core.SeverityHigh,
 				Description: "Response contains a Heroku API key.",
+			}
+		}
+
+		// ── Wave 2: additional provider secrets (critical) ──────────────
+
+		if d.pgpKeyPattern.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a PGP private key block. Private keys must never appear in API responses.",
+			}
+		}
+		if d.facebookTokenPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a Facebook access token (EAACEdEose0cBA...).",
+			}
+		}
+		if d.amazonMWSPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains an Amazon MWS auth token (amzn.mws.*).",
+			}
+		}
+		if d.mailgunPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a Mailgun API key (key-...).",
+			}
+		}
+		if d.mailchimpPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a MailChimp API key.",
+			}
+		}
+		if d.paypalBraintreePat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a PayPal/Braintree access token.",
+			}
+		}
+		if d.squareTokenPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a Square access token (sq0atp-...).",
+			}
+		}
+		if d.squareOAuthPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a Square OAuth secret (sq0csp-...).",
+			}
+		}
+		if d.shopifyTokenPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a Shopify access token (shpat_...).",
+			}
+		}
+		if d.databricksTokenPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a Databricks personal access token (dapi...).",
+			}
+		}
+		if d.npmTokenPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains an npm token (npm_...).",
+			}
+		}
+		if d.pypiTokenPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a PyPI token (pypi-...).",
+			}
+		}
+		if d.dockerHubTokenPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a Docker Hub token (dckr_pat_...).",
+			}
+		}
+		if d.gcpServiceAcctPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a GCP service account JSON credential.",
+			}
+		}
+		if d.cloudinaryPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a Cloudinary URL with embedded credentials.",
+			}
+		}
+		if d.firebaseSecretPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityCritical,
+				Description: "Response contains a Firebase Cloud Messaging server key.",
+			}
+		}
+
+		// ── Wave 2: high severity ──────────────────────────────────────
+
+		if d.slackWebhookPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityHigh,
+				Description: "Response contains a Slack incoming webhook URL.",
+			}
+		}
+		if d.googleOAuthPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityHigh,
+				Description: "Response contains a Google OAuth access token (ya29.*).",
+			}
+		}
+		if d.gcpOAuthClientPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityHigh,
+				Description: "Response contains a GCP OAuth client ID (*.apps.googleusercontent.com).",
+			}
+		}
+		if d.passwordInURLPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityHigh,
+				Description: "Response contains a URL with embedded credentials (protocol://user:pass@host).",
+			}
+		}
+		if d.azureSASPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityHigh,
+				Description: "Response contains an Azure SAS token.",
+			}
+		}
+		if d.supabaseKeyPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityHigh,
+				Description: "Response contains a Supabase API key (sbp_...).",
+			}
+		}
+		if d.datadogKeyPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityHigh,
+				Description: "Response contains a Datadog API/app key.",
+			}
+		}
+		if d.nugetKeyPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityHigh,
+				Description: "Response contains a NuGet API key.",
+			}
+		}
+		if d.vercelTokenPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityHigh,
+				Description: "Response contains a Vercel token.",
+			}
+		}
+
+		// ── Wave 2: medium severity (infrastructure leakage) ───────────
+
+		if d.firebaseURLPat.MatchString(responseBody) {
+			return &DataExposureFinding{
+				Severity:    core.SeverityMedium,
+				Description: "Response contains a Firebase realtime database URL (*.firebaseio.com).",
 			}
 		}
 
