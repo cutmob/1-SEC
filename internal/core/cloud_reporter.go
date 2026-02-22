@@ -39,7 +39,10 @@ type CloudEnforcementRecord struct {
 	RolledBack        bool   `json:"rolledBack,omitempty"`
 	MitreTactic       string `json:"mitreTactic,omitempty"`
 	MitreTechnique    string `json:"mitreTechnique,omitempty"`
+	InstanceID        string `json:"instanceId,omitempty"`
+	Hostname          string `json:"hostname,omitempty"`
 }
+
 
 // CloudCorrelationRecord is the shape expected by the cloud dashboard's ingest API.
 type CloudCorrelationRecord struct {
@@ -227,6 +230,9 @@ func (cr *CloudReporter) enforcementReporter() {
 			newRecords := records[:len(records)-lastSent]
 			lastSent = len(records)
 
+			hostname, _ := os.Hostname()
+			instanceID := fmt.Sprintf("i-%s-%s", hostname, runtime.GOARCH)
+
 			cloudRecords := make([]CloudEnforcementRecord, 0, len(newRecords))
 			for _, r := range newRecords {
 				// Use actual severity from the enforcement record instead of hardcoded value
@@ -248,6 +254,8 @@ func (cr *CloudReporter) enforcementReporter() {
 					Status:         status,
 					DurationMs:     r.DurationMs,
 					DryRun:         dryRun,
+					InstanceID:     instanceID,
+					Hostname:       hostname,
 				})
 			}
 
