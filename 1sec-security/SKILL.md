@@ -15,6 +15,31 @@ compatibility: >
 metadata:
   author: cutmob
   version: "0.4.11"
+  external_connections:
+    - domain: api.1-sec.dev
+      purpose: "Cloud control plane for centralized management"
+      required: false
+      enabled_by: "cloud.enabled: true in config"
+    - domain: "user-configured"
+      purpose: "Webhook notifications (Slack, Discord, Telegram, etc.)"
+      required: false
+      enabled_by: "webhook_urls in config"
+    - domain: generativelanguage.googleapis.com
+      purpose: "Gemini API for AI-powered cross-module correlation"
+      required: false
+      enabled_by: "GEMINI_API_KEY environment variable"
+  required_permissions:
+    - "Network monitoring (read-only for all modules)"
+    - "Log file access (read-only for detection)"
+    - "iptables/nftables (optional, for IP blocking enforcement)"
+    - "Process management (optional, for kill_process enforcement)"
+    - "File system access (optional, for quarantine_file enforcement)"
+  data_collection:
+    - "System logs (processed locally, not sent externally)"
+    - "Network metadata (processed locally, not sent externally)"
+    - "Alert metadata (sent to webhooks/cloud API only if configured)"
+  source_repository: "https://github.com/1sec-security/1sec"
+  security_policy: "See SECURITY.md for vulnerability reporting and supply chain security"
 ---
 
 # 1-SEC Security Platform — Agent Skill
@@ -30,7 +55,9 @@ cybersecurity platform. One binary, 16 defense modules, zero config required.
 - User needs to harden a Linux server or VPS
 - User mentions 1-SEC, 1sec, or "one sec" in a security context
 
-## Quick Install
+## Installation Methods
+
+### Quick Install (Recommended for Testing)
 
 ```bash
 curl -fsSL https://1-sec.dev/get | sh
@@ -38,6 +65,38 @@ curl -fsSL https://1-sec.dev/get | sh
 
 This detects OS/arch, downloads the latest release, and installs to
 `/usr/local/bin` (or `~/.local/bin` without root).
+
+### Manual Install with Verification (Recommended for Production)
+
+```bash
+# 1. Download release and checksums
+VERSION="0.4.11"
+wget https://github.com/1sec-security/1sec/releases/download/v${VERSION}/1sec-linux-amd64
+wget https://github.com/1sec-security/1sec/releases/download/v${VERSION}/checksums.txt
+
+# 2. Verify checksum
+sha256sum -c checksums.txt 2>&1 | grep 1sec-linux-amd64
+
+# 3. Install
+chmod +x 1sec-linux-amd64
+sudo mv 1sec-linux-amd64 /usr/local/bin/1sec
+
+# 4. Verify installation
+1sec --version
+```
+
+### Inspect Before Install
+
+```bash
+# Download installer script for review
+curl -fsSL https://1-sec.dev/get -o install.sh
+
+# Review the script
+cat install.sh
+
+# Run after review
+sh install.sh
+```
 
 ## Post-Install Setup
 
@@ -54,9 +113,17 @@ This detects OS/arch, downloads the latest release, and installs to
 ### Option B: AI agent VPS deployment
 
 If this server hosts an AI agent, use the purpose-built `vps-agent` preset.
-This preset enables escalation timers (auto-escalates unacknowledged alerts),
-disables approval gates (no human to approve), and marks critical actions
-with `skip_approval` for immediate response:
+
+**Important:** The `vps-agent` preset is designed for maximum security on unattended AI agent hosts. It uses aggressive enforcement settings including:
+- Automatic process termination for containment violations
+- File quarantine without approval for agent file tampering
+- Short cooldown periods and high action rate limits
+- Escalation timers that auto-escalate unacknowledged alerts
+- Disabled approval gates (no human available to approve)
+
+**We recommend these settings for production AI agent hosts** as they provide the strongest defense against the specific threats targeting autonomous agents (prompt injection, malicious skills, credential theft, memory tampering).
+
+**Recommended Deployment Path:**
 
 ```bash
 # Install
@@ -65,11 +132,22 @@ curl -fsSL https://1-sec.dev/get | sh
 # Non-interactive setup (uses env vars for AI keys)
 1sec setup --non-interactive
 
-# Apply the vps-agent enforcement preset (start in dry-run)
+# Apply the vps-agent enforcement preset (start in dry-run for validation)
 1sec enforce preset vps-agent --dry-run
 
 # Start the engine
 1sec up
+
+# Monitor for 24-48 hours to validate behavior
+1sec alerts
+1sec enforce history
+
+# Review what would have been blocked
+1sec enforce test auth_fortress
+1sec enforce test llm_firewall
+
+# Go live with full enforcement (recommended)
+1sec enforce dry-run off
 
 # Configure notifications (pick your platform)
 # Slack:
@@ -80,6 +158,20 @@ curl -fsSL https://1-sec.dev/get | sh
 1sec config set webhook-url https://api.telegram.org/botTOKEN/sendMessage --template telegram --param chat_id=CHAT_ID
 ```
 
+**If you need to reduce enforcement** (not recommended for production):
+
+```yaml
+# In 1sec.yaml, override specific actions:
+enforcement:
+  policies:
+    ai_containment:
+      actions:
+        - action: kill_process
+          enabled: false  # Disable if too aggressive
+    runtime_watcher:
+      min_severity: HIGH  # Raise threshold from MEDIUM
+```
+
 ### Option C: Interactive setup
 
 ```bash
@@ -87,6 +179,27 @@ curl -fsSL https://1-sec.dev/get | sh
 ```
 
 Walks through config creation, AI key setup, and API authentication.
+
+## Security & Transparency
+
+### What This Tool Does
+- Installs a binary to `/usr/local/bin` or `~/.local/bin`
+- Creates config directory at `~/.1sec/`
+- Monitors system logs and network activity locally
+- Optionally sends alerts to configured webhooks (user-controlled)
+- Optionally connects to cloud API for centralized management (opt-in via `cloud.enabled: true`)
+- Self-updates daily via the same installer mechanism
+
+### External Connections (All Optional)
+- **api.1-sec.dev**: Cloud control plane (only if `cloud.enabled: true` in config)
+- **Webhook URLs**: User-configured alert destinations (Slack, Discord, Telegram, etc.)
+- **Gemini API**: AI analysis (only if `GEMINI_API_KEY` environment variable is set)
+
+### Source & Provenance
+- Source code: https://github.com/1sec-security/1sec
+- Release artifacts: https://github.com/1sec-security/1sec/releases
+- License: AGPL-3.0
+- All releases include SHA256 checksums for verification
 
 ## Enforcement Presets
 
@@ -103,6 +216,34 @@ Walks through config creation, AI key setup, and API authentication.
 Recommended progression: `lax` → `safe` → `balanced` → `strict`
 
 The `vps-agent` preset is standalone — use it for AI agent deployments.
+
+### VPS-Agent Preset: Detailed Configuration
+
+The `vps-agent` preset is **purpose-built for unattended AI agent hosts** where no human SOC team is actively monitoring. It addresses the specific threat model of autonomous agents: prompt injection, malicious skill installations, credential exfiltration, and runtime file tampering.
+
+**Current Configuration (Recommended for Maximum Security):**
+
+Critical modules with aggressive enforcement:
+- **auth_fortress**: Blocks IPs at MEDIUM severity, 30s cooldown, 60 actions/min
+- **llm_firewall**: Drops connections at MEDIUM, 10s cooldown, 100 actions/min
+- **ai_containment**: Kills processes at MEDIUM with `skip_approval: true`, 15s cooldown
+- **runtime_watcher**: Kills processes and quarantines files at MEDIUM with `skip_approval: true`, 15s cooldown
+- **supply_chain**: Quarantines files at MEDIUM with `skip_approval: true`, 30s cooldown
+
+**Escalation timers** (shorter than defaults for autonomous hosts):
+- CRITICAL: 3 min timeout, re-notify up to 5 times
+- HIGH: 10 min timeout, escalate to CRITICAL, 3 times
+- MEDIUM: 20 min timeout, escalate to HIGH, 2 times
+
+**Approval gates**: Disabled by default (no human available to approve)
+
+**What gets auto-enforced:**
+- Process kills: Suspicious processes accessing agent files (SOUL.md, MEMORY.md, .env)
+- File quarantine: Unauthorized modifications to agent configuration files
+- IP blocks: Brute force attempts, port scans, prompt injection sources
+- Connection drops: Active prompt injection attempts, command injection
+
+**We recommend these aggressive settings for maximum security on AI agent hosts.** The threat model justifies immediate response without human approval. However, if you need to reduce enforcement for testing or have concerns about false positives, see the deployment path below.
 
 ```bash
 # Apply a preset
@@ -254,3 +395,19 @@ and troubleshooting — see `references/operations-runbook.md`.
 - `references/config-reference.md` — Full configuration reference
 - `references/vps-agent-guide.md` — Detailed VPS agent deployment guide
 - `scripts/install-and-configure.sh` — Automated install + configure script
+
+## Uninstall
+
+```bash
+# Stop the engine
+1sec stop
+
+# Remove enforcement rules (iptables, etc.)
+1sec enforce cleanup
+
+# Remove binary
+sudo rm /usr/local/bin/1sec
+
+# Remove data directory
+rm -rf ~/.1sec
+```
