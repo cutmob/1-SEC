@@ -113,6 +113,8 @@ helm install 1sec ./deploy/helm \
 1sec alerts --module llm_firewall Filter by module
 1sec alerts --json --output f.json Save to file
 
+1sec archive                     Manage historical alert storage (list, delete, vacuum)
+1sec collect                     Manage local log collectors (auth, nginx, etc.)
 1sec scan                        Submit payload via stdin
 1sec scan --input file.json      Submit payload from file
 1sec scan --module injection_shield --type sqli
@@ -121,6 +123,7 @@ helm install 1sec ./deploy/helm \
 1sec modules --tier 4            Filter by tier
 1sec modules --json
 
+1sec dashboard                   Open the real-time TUI dashboard
 1sec config                      Show resolved config
 1sec config --validate           Validate and exit
 1sec config --json
@@ -160,13 +163,10 @@ helm install 1sec ./deploy/helm \
 1sec enforce dry-run [on|off]    Toggle global dry-run mode
 1sec enforce test <module>       Simulate alert to preview actions
 1sec enforce preset <name>       Apply preset (lax, safe, balanced, strict, vps-agent)
-1sec enforce webhooks stats      Webhook dispatcher statistics
-1sec enforce webhooks dead-letters  Dead letter queue
-1sec enforce webhooks retry <id> Retry a failed webhook delivery
 1sec enforce approvals pending   List pending approval gates
 1sec enforce approvals approve <id>  Approve a pending action
 1sec enforce approvals reject <id>   Reject a pending action
-1sec enforce approvals history   Approval decision history
+1sec enforce history             Approval decision history
 1sec enforce batching            Alert batcher stats
 1sec enforce escalations         Escalation timer stats
 1sec enforce chains list         Action chain definitions
@@ -174,6 +174,11 @@ helm install 1sec ./deploy/helm \
 
 1sec version                     Print version + build info
 1sec help <command>              Detailed help for any command
+1sec completions [bash|zsh|ps1]  Generate shell autocompletes
+1sec export                      Export alerts or configuration
+1sec profile                     Start performance profiling (cpu, mem, trace)
+1sec init                        Bootstrap a new configuration file
+1sec events                      Inspect or ingest raw security events
 ```
 
 ---
@@ -347,34 +352,42 @@ The Helm chart includes:
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      1SEC CLI / API                             │
-│                     REST :1780                                  │
-├─────────────────────────────────────────────────────────────────┤
-│              NATS JetStream Event Bus :4222                     │
-│        sec.events.>  sec.alerts.>  sec.matches.>               │
-│        sec.responses.>                                          │
-├────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┤
-│Net │API │IoT │Inj │SC  │Ran │Auth│DF  │ID  │LLM │AIC │DP  │... │
-└────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┘
-         │              │                │              │
-  ┌──────┴──────┐ ┌─────┴──────┐  ┌─────┴──────┐ ┌────┴─────────┐
-  │ Threat      │ │ AI Engine  │  │  Dashboard │ │ Enforcement  │
-  │ Correlator  │ │ Tier 1:Lite│  │  Next.js   │ │ (SOAR)       │
-  │ (attack     │ │ Tier 2:Flash│ │  1-sec.dev │ │              │
-  │  chains)    │ └────────────┘  └─────┬──────┘ │ block_ip     │
-  └─────────────┘                       │        │ kill_process  │
-                                        │        │ quarantine    │
-                                  ┌─────┴──────┐ │ webhook       │
-                                  │ Command    │ │ approval_gate │
-                                  │ Queue      │ │ action_chains │
-                                  │ (poll/ack) │ │ presets       │
-                                  │ approve    │ │ escalation    │
-                                  │ reject     │ └──────────────┘
-                                  │ rollback   │
-                                  │ set_dryrun │
-                                  │ set_policy │
-                                  └────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│                      1SEC CLI / API / TUI                         │
+│                     REST :1780   |  TUI Dashboard                 │
+└───────────────────────────────┬───────────────────────────────────┘
+                                │
+┌───────────────────────────────▼───────────────────────────────────┐
+│              NATS JetStream Event Bus (Embedded) :4222            │
+│  sec.events.>  sec.alerts.>  sec.matches.>  sec.responses.>       │
+└───────┬───────────────────────┬──────────────────────────┬────────┘
+        │                       │                          │
+┌───────▼────────┐      ┌───────▼────────┐         ┌───────▼────────┐
+│  GO ENGINE     │      │  RUST SIDECAR  │         │  COLLECTORS    │
+│  16 Detection  │◄────►│  High-Perf DX  │◄────────┤  (Syslog, Auth,│
+│    Modules     │      │  (DPI / PCAP)  │         │   Nginx, etc.) │
+└───────┬────────┘      └────────────────┘         └────────────────┘
+        │
+┌───────▼────────┐      ┌────────────────┐         ┌────────────────┐
+│ Threat         │      │ AI Engine      │         │ Enforcement    │
+│ Correlator     │◄────►│ (Gemini Flash) │◄───────►│ (SOAR Engine)  │
+│ (Attack Chains)│      │                │         │                │
+└────────────────┘      └────────────────┘         └───────┬────────┘
+                                                           │
+                                            ┌──────────────┴────────┐
+                                            │ block_ip / kill_proc  │
+                                            │ quarantine / webhook  │
+                                            │ approval_gate / chain │
+                                            └───────────────────────┘
+
+### Tech Stack
+
+- **Core Engine**: Go 1.22+ (High-concurrency detection, SOAR logic, REST API)
+- **Performance Layer**: Rust 1.75+ (High-speed pattern matching, DPI, packet capture)
+- **Messaging**: NATS JetStream (Embedded, zero-latency internal event bus)
+- **AI Layer**: Google Gemini (Flash/Lite) for cross-module threat correlation
+- **Frontend**: Next.js 14 / TailwindCSS (Cloud Dashboard & Landing Page)
+- **Storage**: LevelDB / Local FS (Fully standalone, no external DB required)
 ```
 
 Each module implements a single Go interface:
@@ -461,55 +474,40 @@ See [1-sec.dev/pricing](https://1-sec.dev/pricing) for details.
 │   ├── cmd_up.go             # 1sec up — start engine
 │   ├── cmd_enforce.go        # 1sec enforce — SOAR response management
 │   ├── cmd_alerts.go         # 1sec alerts — query alerts
+│   ├── cmd_archive.go        # 1sec archive — alert storage management
+│   ├── cmd_collect.go        # 1sec collect — manage log collectors
+│   ├── cmd_dashboard.go      # 1sec dashboard — terminal UI dashboard
 │   ├── cmd_scan.go           # 1sec scan — submit payloads
 │   ├── cmd_docker.go         # 1sec docker — compose shortcuts
 │   ├── cmd_correlator.go     # 1sec correlator — threat chain state
 │   ├── cmd_threats.go        # 1sec threats — IP threat scoring
 │   ├── cmd_rust.go           # 1sec rust — Rust sidecar status
 │   ├── cmd_setup.go          # 1sec setup — guided interactive wizard
-│   ├── cmd_setup_key.go      # 1sec config set-key — AI key management
 │   ├── cmd_doctor.go         # 1sec doctor — health check with fix suggestions
-│   ├── selfupdate.go         # In-place binary self-update
-│   └── ...                   # status, config, check, stop, modules, etc.
+│   ├── cmd_export.go         # 1sec export — export data/config
+│   ├── cmd_profile.go        # 1sec profile — pprof performance analysis
+│   └── selfupdate.go         # In-place binary self-update
 ├── internal/
 │   ├── core/
-│   │   ├── engine.go         # Central engine — starts modules, bus, API
-│   │   ├── config.go         # Config loading, validation, thread-safe accessors
-│   │   ├── bus.go            # NATS JetStream event bus
-│   │   ├── event.go          # SecurityEvent type
-│   │   ├── alert.go          # Alert pipeline, severity, dedup
-│   │   ├── module.go         # Module interface + registry
-│   │   ├── correlator.go     # Cross-module attack chain correlation
-│   │   ├── response.go       # SOAR enforcement engine (block, kill, quarantine)
-│   │   ├── response_actions.go   # Concrete response action implementations
-│   │   ├── response_presets.go   # Enforcement presets (lax, balanced, strict)
-│   │   ├── approval_gate.go  # Human-in-the-loop approval gates
-│   │   ├── command_poller.go # Cloud command queue (approve/reject/rollback from dashboard)
-│   │   ├── cloud_reporter.go # Telemetry push to cloud dashboard
-│   │   ├── action_chain.go   # Multi-step response action chains
-│   │   ├── alert_batcher.go  # Alert batching and grouping
-│   │   ├── escalation.go     # Escalation timers for unacknowledged alerts
-│   │   ├── webhook_retry.go  # Webhook delivery with retry + dead letter queue
-│   │   ├── archiver.go       # Alert archival to disk
-│   │   ├── notification_templates.go # Alert notification formatting
-│   │   ├── dedup.go          # Event deduplication
-│   │   ├── logbuffer.go      # In-memory log ring buffer
-│   │   ├── reload.go         # Hot config reload
-│   │   ├── rustsidecar.go    # Rust pattern-matching sidecar management
-│   │   └── rust_match_bridge.go  # Go ↔ Rust FFI bridge
+│   │   ├── engine.go         # Central engine — orchestration & lifecycle
+│   │   ├── bus.go            # NATS JetStream event bus management
+│   │   ├── correlator.go     # Multi-module attack chain correlation
+│   │   ├── response.go       # SOAR enforcement & action execution
+│   │   ├── rustsidecar.go    # Rust pattern-matching sidecar lifecycle
+│   │   ├── archiver.go       # Local alert persistence & archival
+│   │   └── approval_gate.go  # Human-in-the-loop decision logic
 │   ├── modules/              # 16 defense modules (one package each)
-│   ├── api/
-│   │   ├── server.go         # REST API server, middleware, auth, CORS, rate limiting
-│   │   └── enforce_handlers.go # Enforcement API (status, policies, approve, reject, rollback)
-│   ├── ingest/
-│   │   └── syslog.go         # Syslog ingestion (RFC 5424/3164)
-│   └── collect/              # Log collectors (authlog, nginx, pfSense, GitHub, JSON)
-├── configs/
-│   └── default.yaml          # Default config with all modules
-├── deploy/
-│   ├── docker/               # Dockerfile + docker-compose.yml
-│   └── helm/                 # Helm chart for Kubernetes
-└── web/                      # Next.js dashboard + landing page (separate repo)
+│   ├── collect/              # Log collectors (Auth, Nginx, Syslog, etc.)
+│   ├── ingest/               # Ingest protocols (Syslog RFC5424/3164)
+│   └── api/
+│       ├── server.go         # REST API server & middleware
+│       └── handlers.go       # API endpoint implementations
+├── rust/
+│   └── 1sec-engine/          # High-performance Rust pattern engine
+├── web/                      # Next.js dashboard + marketing site
+├── configs/                  # Default and example configurations
+├── deploy/                   # Docker, Helm, and systemd deployment
+└── scripts/                  # Helper scripts and installation tools
 ```
 
 ---
