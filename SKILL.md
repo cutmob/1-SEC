@@ -1,20 +1,61 @@
 ---
 name: 1sec-security
 description: >
-  Install, configure, and manage 1-SEC — an all-in-one cybersecurity platform
-  (16 modules, single binary) on Linux servers and VPS instances. Use when the
-  user asks to secure a server, install security monitoring, set up intrusion
-  detection, harden a VPS, protect an AI agent host, or deploy endpoint defense.
-  Covers installation, setup, enforcement presets, module configuration, alert
-  management, and ongoing security operations.
+  Install, configure, and manage 1-SEC — an open-source, all-in-one
+  cybersecurity platform (16 modules, single binary) on Linux servers and
+  VPS instances. Use when the user asks to secure a server, install security
+  monitoring, set up intrusion detection, harden a VPS, protect an AI agent
+  host, or deploy endpoint defense. Covers installation, setup, enforcement
+  presets, module configuration, alert management, and ongoing security
+  operations.
 license: AGPL-3.0
 compatibility: >
-  Requires Linux (amd64 or arm64) with curl or wget. Root or sudo recommended
-  for full enforcement (iptables, process kill). Optional: GEMINI_API_KEY env
-  var for AI-powered cross-module correlation.
+  Requires Linux (amd64 or arm64) with curl or wget and sudo/root for full
+  enforcement (iptables, process kill). All 16 detection modules run without
+  any API key. Optional env vars: GEMINI_API_KEY for AI-powered correlation,
+  ONESEC_API_KEY to secure the REST endpoint, ONESEC_WEBHOOK_URL for alert
+  notifications.
 metadata:
   author: cutmob
   version: "0.4.11"
+  source_repository: "https://github.com/1sec-security/1sec"
+  security_policy: "https://github.com/1sec-security/1sec/blob/main/SECURITY.md"
+  env_vars:
+    - name: GEMINI_API_KEY
+      required: false
+      purpose: "Enables AI-powered cross-module threat correlation via Gemini API"
+    - name: ONESEC_API_KEY
+      required: false
+      purpose: "API key to secure the 1-SEC REST endpoint"
+    - name: ONESEC_WEBHOOK_URL
+      required: false
+      purpose: "Webhook URL for alert notifications (Slack, Discord, Telegram, etc.)"
+  external_connections:
+    - domain: "1-sec.dev"
+      purpose: "Serves the install script (install.sh) and binary redirects to GitHub Releases"
+      data_sent: "OS, architecture (detected locally by install script)"
+      required: false
+      enabled_by: "Only if user runs the quick-install; manual install path avoids this entirely"
+    - domain: "github.com / objects.githubusercontent.com"
+      purpose: "Download binary releases and checksums.txt for manual installation"
+      data_sent: "Standard HTTPS request headers"
+      required: false
+      enabled_by: "Manual install path (recommended)"
+    - domain: "api.1-sec.dev"
+      purpose: "Cloud control plane for centralized multi-host management"
+      data_sent: "Alert metadata, host identifier (only if cloud.enabled: true in config)"
+      required: false
+      enabled_by: "cloud.enabled: true in 1sec.yaml (opt-in, disabled by default)"
+    - domain: "user-configured"
+      purpose: "Webhook alert notifications (Slack, Discord, Telegram, PagerDuty, Teams)"
+      data_sent: "Alert metadata as configured by user"
+      required: false
+      enabled_by: "webhook_urls set in 1sec.yaml or via CLI"
+    - domain: "generativelanguage.googleapis.com"
+      purpose: "Gemini API for AI-powered cross-module threat correlation"
+      data_sent: "Anonymized alert metadata for correlation"
+      required: false
+      enabled_by: "GEMINI_API_KEY environment variable"
 ---
 
 # 1-SEC Security Platform — Agent Skill
@@ -22,62 +63,116 @@ metadata:
 You are installing and configuring **1-SEC**, an open-source all-in-one
 cybersecurity platform. One binary, 16 defense modules, zero config required.
 
+> **Trust Statement:** Only install this skill if you trust the source.
+> 1-SEC is open-source (AGPL-3.0) and available at
+> https://github.com/1sec-security/1sec. Review the code, checksums, and
+> SECURITY.md before deploying to production systems.
+
+## Security & Privacy
+
+**What leaves this machine:**
+- Alert metadata — only if you configure webhooks or enable the cloud API (both opt-in)
+- Anonymized alert context — only if `GEMINI_API_KEY` is set (opt-in)
+
+**What stays local:**
+- All system logs, network traffic, and detection data are processed on-host
+- No telemetry is collected or transmitted by default
+- Config files and agent state remain on disk at `~/.1sec/`
+
+**Privileges used:**
+- `iptables`/`nftables`: only when enforcement preset is active (opt-in)
+- `kill_process`: only when enforcement preset is active (opt-in)
+- `quarantine_file`: only when enforcement preset is active (opt-in)
+- All enforcement is disabled by default (`dry_run: true`, `safe` preset)
+
+**External Endpoints**
+
+| Domain | Purpose | Data Sent | Required | Enabled By |
+|--------|---------|-----------|----------|------------|
+| `1-sec.dev` | Serves install.sh redirect to GitHub Releases | OS/arch from install script | No | Quick-install only |
+| `github.com` | Binary release downloads + `checksums.txt` | Standard HTTP headers | No | Manual install |
+| `api.1-sec.dev` | Cloud control plane (centralized management) | Alert metadata, host ID | No | `cloud.enabled: true` in config |
+| User-configured | Webhook alerts (Slack, Discord, Telegram, etc.) | Alert payload | No | `webhook_urls` in config |
+| `generativelanguage.googleapis.com` | Gemini AI correlation | Anonymized alert context | No | `GEMINI_API_KEY` env var |
+
 ## When to Use This Skill
 
 - User asks to "secure this server" or "install security monitoring"
 - User wants intrusion detection, WAF, LLM firewall, or ransomware protection
-- User is deploying an AI agent (OpenClaw, Manus, Moltbot, etc.) on a VPS
+- User is deploying an AI agent (OpenClaw, Manus, etc.) on a VPS
 - User needs to harden a Linux server or VPS
 - User mentions 1-SEC, 1sec, or "one sec" in a security context
 
-## Quick Install
+## Installation
+
+### Recommended: Manual Install with Checksum Verification
+
+For production use, always download from GitHub Releases and verify before
+running as root:
 
 ```bash
-curl -fsSL https://1-sec.dev/get | sh
+# 1. Download the release binary and checksums
+VERSION="0.4.11"
+wget https://github.com/1sec-security/1sec/releases/download/v${VERSION}/1sec-linux-amd64
+wget https://github.com/1sec-security/1sec/releases/download/v${VERSION}/checksums.txt
+
+# 2. Verify SHA256 checksum
+sha256sum -c checksums.txt 2>&1 | grep 1sec-linux-amd64
+
+# 3. Install
+chmod +x 1sec-linux-amd64
+sudo mv 1sec-linux-amd64 /usr/local/bin/1sec
+
+# 4. Confirm
+1sec --version
 ```
 
-This detects OS/arch, downloads the latest release, and installs to
-`/usr/local/bin` (or `~/.local/bin` without root).
+For arm64, replace `1sec-linux-amd64` with `1sec-linux-arm64`.
+
+### Alternative: Quick Install (Testing / Non-Critical Environments)
+
+```bash
+# Download and review the install script first
+curl -fsSL https://1-sec.dev/get -o install.sh
+cat install.sh          # Review before running
+sh install.sh           # Run after review
+```
+
+> **Note:** Piping remote scripts directly to `sh` (`curl | sh`) is
+> convenient but bypasses local review. The quick-install script is open-source
+> at https://github.com/1sec-security/1sec/blob/main/get.sh — review it before
+> use on production systems.
 
 ## Post-Install Setup
 
 ### Option A: Non-interactive (recommended for agents)
 
 ```bash
-# Install + configure in one shot
 1sec setup --non-interactive
-
-# Start with all 16 modules, zero config
 1sec up
 ```
 
 ### Option B: AI agent VPS deployment
 
-If this server hosts an AI agent, use the purpose-built `vps-agent` preset.
-This preset enables escalation timers (auto-escalates unacknowledged alerts),
-disables approval gates (no human to approve), and marks critical actions
-with `skip_approval` for immediate response:
+The `vps-agent` preset is designed for unattended AI agent hosts. It enables
+aggressive enforcement (process kills, file quarantine, IP blocks) to protect
+against prompt injection, malicious skills, and credential theft.
+
+**Always start in dry-run mode and validate before going live:**
 
 ```bash
-# Install
-curl -fsSL https://1-sec.dev/get | sh
-
-# Non-interactive setup (uses env vars for AI keys)
 1sec setup --non-interactive
 
-# Apply the vps-agent enforcement preset (start in dry-run)
+# Start in dry-run — no live enforcement yet
 1sec enforce preset vps-agent --dry-run
-
-# Start the engine
 1sec up
 
-# Configure notifications (pick your platform)
-# Slack:
-1sec config set webhook-url https://hooks.slack.com/services/YOUR/WEBHOOK --template slack
-# Discord:
-1sec config set webhook-url https://discord.com/api/webhooks/YOUR/WEBHOOK --template discord
-# Telegram:
-1sec config set webhook-url https://api.telegram.org/botTOKEN/sendMessage --template telegram --param chat_id=CHAT_ID
+# Monitor 24-48 hours to validate behavior before going live
+1sec alerts
+1sec enforce history
+
+# Go live only after validating dry-run output
+1sec enforce dry-run off
 ```
 
 ### Option C: Interactive setup
@@ -86,33 +181,37 @@ curl -fsSL https://1-sec.dev/get | sh
 1sec setup
 ```
 
-Walks through config creation, AI key setup, and API authentication.
-
 ## Enforcement Presets
 
-1-SEC ships with `dry_run: true` and the `safe` preset by default.
+1-SEC ships with `dry_run: true` and the `safe` preset by default. No live
+enforcement happens until you explicitly enable it.
 
-| Preset      | Behavior |
-|-------------|----------|
-| `lax`       | Log + webhook only. Never blocks or kills. |
-| `safe`      | Default. Blocks only brute force + port scans at CRITICAL. |
-| `balanced`  | Blocks IPs on HIGH, kills processes on CRITICAL. |
-| `strict`    | Aggressive enforcement on MEDIUM+. |
-| `vps-agent` | Purpose-built for AI agent hosts. Aggressive on auth, LLM firewall, containment, runtime, supply chain. |
-
-Recommended progression: `lax` → `safe` → `balanced` → `strict`
-
-The `vps-agent` preset is standalone — use it for AI agent deployments.
+| Preset | Behavior |
+|--------|----------|
+| `lax` | Log + webhook only. Never blocks or kills. |
+| `safe` | Default. Blocks only brute force + port scans at CRITICAL. |
+| `balanced` | Blocks IPs on HIGH, kills processes on CRITICAL. |
+| `strict` | Aggressive enforcement on MEDIUM+. |
+| `vps-agent` | Max security for unattended AI agent hosts. Aggressive on auth, LLM firewall, containment, runtime, supply chain. |
 
 ```bash
-# Apply a preset
-1sec enforce preset balanced
-
-# Preview what a preset does without applying
+# Preview a preset without applying
 1sec enforce preset strict --show
 
-# Apply with dry-run safety net
+# Apply with dry-run protection
 1sec enforce preset balanced --dry-run
+
+# Apply live
+1sec enforce preset balanced
+```
+
+## AI Analysis (Optional)
+
+All 16 detection modules work with zero API keys. To add AI-powered correlation:
+
+```bash
+export GEMINI_API_KEY=your_key_here
+1sec up
 ```
 
 ## Essential Commands
@@ -129,37 +228,6 @@ The `vps-agent` preset is standalone — use it for AI agent deployments.
 1sec stop                      # Graceful shutdown
 ```
 
-## Enforcement Management
-
-```bash
-1sec enforce status            # Enforcement engine status
-1sec enforce policies          # List response policies
-1sec enforce history           # Action execution history
-1sec enforce dry-run off       # Go live (disable dry-run)
-1sec enforce test <module>     # Simulate alert, preview actions
-1sec enforce approvals pending # Pending human approval gates
-1sec enforce escalations       # Escalation timer stats
-1sec enforce batching          # Alert batcher stats
-1sec enforce chains list       # Action chain definitions
-```
-
-## AI Analysis (Optional)
-
-The 15 rule-based modules work without any API key. For AI-powered
-cross-module correlation, set a Gemini API key:
-
-```bash
-# Via environment variable
-export GEMINI_API_KEY=your_key_here
-1sec up
-
-# Or via CLI
-1sec config set-key AIzaSy...
-
-# Multiple keys for load balancing
-1sec config set-key key1 key2 key3
-```
-
 ## The 16 Modules
 
 | # | Module | Covers |
@@ -173,7 +241,7 @@ export GEMINI_API_KEY=your_key_here
 | 7 | Auth Fortress | Brute force, credential stuffing, MFA fatigue, AitM |
 | 8 | Deepfake Shield | Audio forensics, AI phishing, BEC detection |
 | 9 | Identity Fabric | Synthetic identity, privilege escalation |
-| 10 | LLM Firewall | 65+ prompt injection patterns, jailbreak detection, multimodal hidden injection scanning |
+| 10 | LLM Firewall | 65+ prompt injection patterns, jailbreak detection, multimodal scanning |
 | 11 | AI Agent Containment | Action sandboxing, scope escalation, OWASP Agentic Top 10 |
 | 12 | Data Poisoning Guard | Training data integrity, RAG pipeline validation |
 | 13 | Quantum-Ready Crypto | Crypto inventory, PQC readiness, TLS auditing |
@@ -181,79 +249,9 @@ export GEMINI_API_KEY=your_key_here
 | 15 | Cloud Posture Manager | Config drift, misconfiguration, secrets sprawl |
 | 16 | AI Analysis Engine | Two-tier Gemini pipeline for correlation |
 
-## Configuration
-
-Zero-config works out of the box. For customization, generate a config:
-
-```bash
-1sec init                      # Generate 1sec.yaml
-1sec config --validate         # Validate config
-```
-
-Key config sections: `server`, `bus`, `modules`, `enforcement`, `escalation`,
-`archive`, `cloud`. See `1sec-security/references/config-reference.md` for details.
-
-## Webhook Notifications
-
-Configure webhook URLs for alert notifications to Slack, Discord, Telegram,
-PagerDuty, or Microsoft Teams:
-
-```yaml
-# In 1sec.yaml or configs/default.yaml
-alerts:
-  webhook_urls:
-    - "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
-
-# Enforcement webhooks support templates:
-# pagerduty, slack, teams, discord, telegram, generic
-```
-
-Telegram example:
-
-```yaml
-enforcement:
-  policies:
-    auth_fortress:
-      actions:
-        - action: webhook
-          params:
-            url: "https://api.telegram.org/botYOUR_TOKEN/sendMessage"
-            template: "telegram"
-            chat_id: "-1001234567890"
-```
-
-## Docker Deployment
-
-```bash
-cd deploy/docker
-docker compose up -d
-docker compose logs -f
-```
-
-## Day-to-Day Operations (Post-Install)
-
-Once 1-SEC is running, the key commands for daily operations:
-
-```bash
-1sec status                    # Quick health check
-1sec alerts                    # Recent alerts
-1sec alerts --severity HIGH    # Filter by severity
-1sec enforce status            # Enforcement engine state
-1sec enforce history           # What actions were taken
-1sec threats --blocked         # Currently blocked IPs
-1sec doctor                    # Health check with fix suggestions
-```
-
-For the full operations runbook — investigating alerts, handling false
-positives, tuning noisy modules, managing webhooks, escalation timers,
-and troubleshooting — see `1sec-security/references/operations-runbook.md`.
-
 ## Additional References
 
-These files live inside the `1sec-security/` directory in this repo:
-
-- `1sec-security/references/operations-runbook.md` — Day-to-day operations, alert investigation, tuning, troubleshooting
+- `1sec-security/references/operations-runbook.md` — Day-to-day operations
 - `1sec-security/references/config-reference.md` — Full configuration reference
-- `1sec-security/references/vps-agent-guide.md` — Detailed VPS agent deployment guide
-- `1sec-security/scripts/install-and-configure.sh` — Automated install + configure script
-- `configs/default.yaml` — Default configuration file
+- `1sec-security/references/vps-agent-guide.md` — VPS agent deployment guide
+- `1sec-security/scripts/install-and-configure.sh` — Automated install script
