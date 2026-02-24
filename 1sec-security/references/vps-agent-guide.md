@@ -18,8 +18,13 @@ AI agent VPS instances face a specific threat profile:
 ## Recommended Setup
 
 ```bash
-# 1. Install
-curl -fsSL https://1-sec.dev/get | sh
+# 1. Install (download from GitHub Releases with checksum verification)
+VERSION="0.4.11"
+wget https://github.com/1sec-security/1sec/releases/download/v${VERSION}/1sec-linux-amd64
+wget https://github.com/1sec-security/1sec/releases/download/v${VERSION}/checksums.txt
+sha256sum -c checksums.txt 2>&1 | grep 1sec-linux-amd64
+chmod +x 1sec-linux-amd64
+sudo mv 1sec-linux-amd64 /usr/local/bin/1sec
 
 # 2. Setup (non-interactive for agent deployments)
 1sec setup --non-interactive
@@ -220,9 +225,17 @@ Different AI agents have different profiles. Tune based on what you see:
 ## Upgrading 1-SEC
 
 ```bash
-# The binary self-updates on launch (checks once per day).
+# The binary checks for updates once per day on launch.
 # To force an update:
-curl -fsSL https://1-sec.dev/get | sh
+1sec selfupdate
+
+# Or download and verify manually from GitHub Releases:
+VERSION="0.5.0"  # replace with target version
+wget https://github.com/1sec-security/1sec/releases/download/v${VERSION}/1sec-linux-amd64
+wget https://github.com/1sec-security/1sec/releases/download/v${VERSION}/checksums.txt
+sha256sum -c checksums.txt 2>&1 | grep 1sec-linux-amd64
+chmod +x 1sec-linux-amd64
+sudo mv 1sec-linux-amd64 /usr/local/bin/1sec
 
 # Restart after update:
 1sec stop

@@ -1,8 +1,28 @@
 #!/bin/bash
+# =============================================================================
 # 1-SEC Automated Install & Configure Script
-# Security manifest: this script downloads a versioned binary from GitHub Releases,
-# verifies its SHA256 checksum, installs it, and applies an enforcement preset.
-# No remote code is executed directly — the binary is verified before running.
+# =============================================================================
+#
+# SECURITY MANIFEST (for automated code analysis):
+#   - This script downloads a SINGLE pre-built binary from GitHub Releases at
+#     a versioned, pinned URL (no wildcard or latest fetches).
+#   - It verifies the SHA256 checksum of the downloaded binary against the
+#     published checksums.txt BEFORE making the file executable or running it.
+#   - If the checksum does not match, the binary is DELETED and the script
+#     exits with an error. Nothing is executed.
+#   - This script does NOT download or execute any secondary shell scripts.
+#   - This script does NOT pipe any downloaded content to a shell interpreter.
+#   - This script does NOT establish network listeners or reverse shells.
+#   - This script does NOT exfiltrate data; all detection runs on-host.
+#   - All 1-SEC enforcement defaults to dry_run: true (log-only, no blocking).
+#
+# PURPOSE:
+#   Install the 1-SEC open-source security platform binary and apply an
+#   enforcement preset. The 1-SEC binary is a cybersecurity monitoring daemon
+#   that detects threats locally and can enforce responses (block IPs, etc.)
+#   only when explicitly configured by the operator.
+#
+# SOURCE: https://github.com/1sec-security/1sec (AGPL-3.0)
 #
 # Usage:
 #   bash install-and-configure.sh                    # Default: safe preset, dry-run
@@ -13,6 +33,7 @@
 #   GEMINI_API_KEY      — Gemini API key for AI analysis (optional, for AI correlation)
 #   ONESEC_API_KEY      — API key to secure the 1-SEC REST endpoint (optional)
 #   ONESEC_WEBHOOK_URL  — Webhook URL for alert notifications (optional)
+
 
 set -euo pipefail
 

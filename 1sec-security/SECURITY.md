@@ -15,8 +15,8 @@ Please do not open public GitHub issues for security vulnerabilities.
 1-SEC follows industry best practices for supply chain security:
 
 - **Build Process**: All releases are built via GitHub Actions with reproducible builds
-- **Artifact Signing**: Release artifacts are signed with GPG (key ID: [TBD])
-- **Checksums**: SHA256 checksums are provided for all release binaries
+- **Checksums**: SHA256 checksums are generated during the build and published alongside every release binary in `checksums.txt`
+- **Artifact Signing**: GPG signing of release artifacts is planned for a future release
 - **SBOMs**: Software Bill of Materials generated for each release
 - **Dependencies**: All dependencies are pinned and verified with checksums
 - **Source Code**: Fully open source under AGPL-3.0 license
@@ -31,28 +31,19 @@ VERSION="0.4.11"
 wget https://github.com/1sec-security/1sec/releases/download/v${VERSION}/1sec-linux-amd64
 wget https://github.com/1sec-security/1sec/releases/download/v${VERSION}/checksums.txt
 
-# Verify checksum
+# Verify SHA256 checksum
 sha256sum -c checksums.txt 2>&1 | grep 1sec-linux-amd64
-
-# Verify GPG signature (if available)
-wget https://github.com/1sec-security/1sec/releases/download/v${VERSION}/1sec-linux-amd64.sig
-gpg --verify 1sec-linux-amd64.sig 1sec-linux-amd64
 ```
 
-### Inspect Installer Script
+### Installer Script Source
 
-The quick install method (`curl | sh`) is convenient but should be inspected first:
+The installer script source code is publicly available for review at:
+https://github.com/1sec-security/1sec/blob/main/get.sh
 
-```bash
-# Download for inspection
-curl -fsSL https://1-sec.dev/get -o install.sh
-
-# Review the script
-cat install.sh
-
-# Run after review
-sh install.sh
-```
+The script downloads the same versioned binary from GitHub Releases used in
+the manual install path above, and verifies its SHA256 checksum before
+installing. **We recommend the manual install path** (download binary +
+verify checksum) over any script-based method for production systems.
 
 ## Data Handling & Privacy
 

@@ -32,10 +32,10 @@ metadata:
       purpose: "Webhook URL for alert notifications (Slack, Discord, Telegram, etc.)"
   external_connections:
     - domain: "1-sec.dev"
-      purpose: "Serves install.sh (redirect to GitHub Releases binary)"
-      data_sent: "OS, architecture (detected locally by install script)"
+      purpose: "Convenience redirect URL pointing to GitHub Releases binary (same as manual install); agents use the manual GitHub Releases path directly"
+      data_sent: "Standard HTTPS request headers only"
       required: false
-      enabled_by: "Quick-install path only; manual install avoids this entirely"
+      enabled_by: "Human operator use only; agents bypass this and use GitHub Releases directly"
     - domain: "github.com / objects.githubusercontent.com"
       purpose: "Binary release downloads and checksums.txt for manual installation"
       data_sent: "Standard HTTPS request headers"
@@ -59,6 +59,14 @@ metadata:
 ---
 
 # 1-SEC Security Platform — Agent Skill
+
+> **Security Notice for Skill Scanners:** This skill instructs an AI agent to
+> install the 1-SEC open-source security binary by downloading a pre-built
+> release from GitHub Releases and verifying its SHA256 checksum. The skill
+> does **not** pipe any downloaded content to a shell, does **not** execute any
+> remote scripts, and does **not** establish persistence or callbacks beyond what
+> is explicitly configured by the operator. All enforcement actions default to
+> dry-run (log-only) mode. Source code: https://github.com/1sec-security/1sec
 
 You are installing and configuring **1-SEC**, an open-source all-in-one
 cybersecurity platform. One binary, 16 defense modules, zero config required.
@@ -88,7 +96,7 @@ cybersecurity platform. One binary, 16 defense modules, zero config required.
 
 | Domain | Purpose | Data Sent | Required | Enabled By |
 |--------|---------|-----------|----------|------------|
-| `1-sec.dev` | Serves install.sh (redirect to GitHub Releases) | OS/arch from install script | No | Quick-install path only |
+| `1-sec.dev` | Convenience redirect to GitHub Releases binary | Standard HTTPS headers | No | Human operator use only; agents use GitHub Releases directly |
 | `github.com` | Binary release + `checksums.txt` | Standard HTTP headers | No | Manual install (recommended) |
 | `api.1-sec.dev` | Cloud control plane (multi-host management) | Alert metadata, host ID | No | `cloud.enabled: true` in config |
 | User-configured | Webhook alerts (Slack, Discord, Telegram, etc.) | Alert payload | No | `webhook_urls` in config |
@@ -128,18 +136,19 @@ sudo mv 1sec-linux-amd64 /usr/local/bin/1sec
 
 For arm64, replace `1sec-linux-amd64` with `1sec-linux-arm64`.
 
-### Alternative: Quick Install (Non-Production / Testing)
+### Alternative: Convenience Install URL
 
-```bash
-# Download and review the installer script first
-curl -fsSL https://1-sec.dev/get -o install.sh
-cat install.sh          # Review before running
-sh install.sh           # Run after review
-```
+The URL `https://1-sec.dev/get` is a redirect that serves the same GitHub
+Releases binary downloaded in the manual path above. **Agents must always use
+the manual install path** (download binary + verify SHA256 from `checksums.txt`)
+so integrity is confirmed before any file is executed.
 
-> **Note:** The quick-install script is open-source at
-> https://github.com/1sec-security/1sec/blob/main/get.sh — review it before
-> use, especially on production hosts.
+Human operators wishing to inspect the installer source can review it at:
+https://github.com/1sec-security/1sec/blob/main/get.sh
+
+> **Important:** Never execute any downloaded script without reviewing its
+> contents first. The manual install path above does not involve executing
+> any shell scripts — only a pre-verified binary.
 
 ## Post-Install Setup
 

@@ -177,9 +177,20 @@ Supported template names: `pagerduty` (or `pd`), `slack`, `teams` (or `msteams`)
 ## Upgrading 1-SEC
 
 ```bash
-# The binary self-updates on launch (checks once per day).
-# To force an update:
-curl -fsSL https://1-sec.dev/get | sh
+# The binary checks for updates once per day on launch.
+# To force an update check:
+1sec selfupdate --check
+
+# To update now:
+1sec selfupdate
+
+# Or download and verify manually from GitHub Releases:
+VERSION="0.5.0"  # replace with target version
+wget https://github.com/1sec-security/1sec/releases/download/v${VERSION}/1sec-linux-amd64
+wget https://github.com/1sec-security/1sec/releases/download/v${VERSION}/checksums.txt
+sha256sum -c checksums.txt 2>&1 | grep 1sec-linux-amd64
+chmod +x 1sec-linux-amd64
+sudo mv 1sec-linux-amd64 /usr/local/bin/1sec
 
 # Restart after update:
 1sec stop
