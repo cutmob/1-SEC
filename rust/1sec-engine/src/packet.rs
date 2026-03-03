@@ -254,6 +254,79 @@ pub async fn capture_loop(
     }
 }
 
+/// Validate file magic bytes against declared extension to detect polyglot files.
+/// Returns an anomaly string if the magic bytes don't match the claimed file type.
+pub fn validate_magic(data: &[u8], extension: &str) -> Option<String> {
+    if data.len() < 4 {
+        return None;
+    }
+
+    let ext = extension.to_lowercase();
+    let ext = ext.trim_start_matches('.');
+
+    // Known magic byte signatures
+    let expected: &[(&str, &[&[u8]])] = &[
+        ("png", &[&[0x89, 0x50, 0x4E, 0x47]]),
+        ("jpg", &[&[0xFF, 0xD8, 0xFF]]),
+        ("jpeg", &[&[0xFF, 0xD8, 0xFF]]),
+        ("gif", &[b"GIF8"]),
+        ("pdf", &[b"%PDF"]),
+        ("zip", &[b"PK\x03\x04", b"PK\x05\x06"]),
+        ("gz", &[&[0x1F, 0x8B]]),
+        ("bz2", &[b"BZ"]),
+        ("rar", &[b"Rar!"]),
+        ("7z", &[&[0x37, 0x7A, 0xBC, 0xAF]]),
+        ("exe", &[b"MZ"]),
+        ("dll", &[b"MZ"]),
+        ("elf", &[&[0x7F, 0x45, 0x4C, 0x46]]),  // \x7fELF
+        ("class", &[&[0xCA, 0xFE, 0xBA, 0xBE]]),
+        ("wasm", &[&[0x00, 0x61, 0x73, 0x6D]]),
+        ("doc", &[&[0xD0, 0xCF, 0x11, 0xE0]]),
+        ("xls", &[&[0xD0, 0xCF, 0x11, 0xE0]]),
+        ("ppt", &[&[0xD0, 0xCF, 0x11, 0xE0]]),
+    ];
+
+    // Dangerous magic bytes that should NEVER appear disguised as images/documents
+    let dangerous_magics: &[(&[u8], &str)] = &[
+        (&[0x7F, 0x45, 0x4C, 0x46], "ELF executable"),
+        (b"MZ", "PE/Windows executable"),
+        (&[0xCA, 0xFE, 0xBA, 0xBE], "Java class file"),
+        (&[0x00, 0x61, 0x73, 0x6D], "WebAssembly binary"),
+    ];
+
+    let safe_extensions = ["png", "jpg", "jpeg", "gif", "bmp", "svg", "webp",
+                           "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+                           "txt", "csv", "json", "xml", "html"];
+
+    // Check if a "safe" extension contains dangerous magic bytes
+    if safe_extensions.contains(&&*ext) {
+        for (magic, desc) in dangerous_magics {
+            if data.starts_with(magic) {
+                return Some(format!(
+                    "magic_byte_mismatch: file claims .{} but contains {} magic bytes",
+                    ext, desc
+                ));
+            }
+        }
+    }
+
+    // Check declared extension against expected magic bytes
+    for (known_ext, signatures) in expected {
+        if ext == *known_ext {
+            let matches = signatures.iter().any(|sig| data.starts_with(sig));
+            if !matches {
+                return Some(format!(
+                    "magic_byte_mismatch: .{} file does not match expected magic bytes",
+                    ext
+                ));
+            }
+            break;
+        }
+    }
+
+    None
+}
+
 /// Extract a text preview from a payload slice, returning empty string if binary.
 fn extract_text_preview(payload: &[u8]) -> String {
     if payload.is_empty() {
@@ -368,5 +441,115 @@ mod packet_util_tests {
             preview.len() <= 256,
             "Preview should be capped at MAX_PAYLOAD_PREVIEW=256"
         );
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // validate_magic() — polyglot file detection
+    // ────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_validate_magic_valid_png() {
+        let data = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]; // PNG header
+        assert!(validate_magic(&data, "png").is_none(), "Valid PNG should pass");
+    }
+
+    #[test]
+    fn test_validate_magic_valid_jpg() {
+        let data = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+        assert!(validate_magic(&data, "jpg").is_none(), "Valid JPG should pass");
+        assert!(validate_magic(&data, ".jpeg").is_none(), "Valid JPEG with dot prefix should pass");
+    }
+
+    #[test]
+    fn test_validate_magic_valid_pdf() {
+        let data = b"%PDF-1.4 some content here";
+        assert!(validate_magic(data, "pdf").is_none(), "Valid PDF should pass");
+    }
+
+    #[test]
+    fn test_validate_magic_valid_zip() {
+        let data = [0x50, 0x4B, 0x03, 0x04, 0x00, 0x00]; // PK\x03\x04
+        assert!(validate_magic(&data, "zip").is_none(), "Valid ZIP should pass");
+    }
+
+    #[test]
+    fn test_validate_magic_elf_disguised_as_png() {
+        let data = [0x7F, 0x45, 0x4C, 0x46, 0x02, 0x01]; // ELF header
+        let result = validate_magic(&data, "png");
+        assert!(result.is_some(), "ELF disguised as PNG must be detected");
+        let msg = result.unwrap();
+        assert!(msg.contains("ELF executable"), "Should mention ELF: {msg}");
+        assert!(msg.contains(".png"), "Should mention claimed extension: {msg}");
+    }
+
+    #[test]
+    fn test_validate_magic_pe_disguised_as_jpg() {
+        let data = b"MZ\x90\x00\x03\x00\x00\x00"; // PE/MZ header
+        let result = validate_magic(data, "jpg");
+        assert!(result.is_some(), "PE executable disguised as JPG must be detected");
+        assert!(result.unwrap().contains("PE/Windows executable"));
+    }
+
+    #[test]
+    fn test_validate_magic_java_class_disguised_as_pdf() {
+        let data = [0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x00]; // Java class
+        let result = validate_magic(&data, "pdf");
+        assert!(result.is_some(), "Java class disguised as PDF must be detected");
+        assert!(result.unwrap().contains("Java class file"));
+    }
+
+    #[test]
+    fn test_validate_magic_wasm_disguised_as_json() {
+        let data = [0x00, 0x61, 0x73, 0x6D, 0x01, 0x00]; // WASM header
+        let result = validate_magic(&data, "json");
+        assert!(result.is_some(), "WASM disguised as JSON must be detected");
+        assert!(result.unwrap().contains("WebAssembly binary"));
+    }
+
+    #[test]
+    fn test_validate_magic_wrong_magic_for_declared_ext() {
+        // Random bytes claiming to be a PNG
+        let data = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let result = validate_magic(&data, "png");
+        assert!(result.is_some(), "Wrong magic bytes for PNG should be flagged");
+        assert!(result.unwrap().contains("does not match expected magic bytes"));
+    }
+
+    #[test]
+    fn test_validate_magic_exe_with_correct_magic() {
+        let data = b"MZ\x90\x00"; // Valid PE header for .exe
+        assert!(validate_magic(data, "exe").is_none(), "Valid EXE should pass");
+    }
+
+    #[test]
+    fn test_validate_magic_too_short() {
+        let data = [0x89, 0x50]; // Only 2 bytes — too short
+        assert!(validate_magic(&data, "png").is_none(), "Data < 4 bytes should return None");
+    }
+
+    #[test]
+    fn test_validate_magic_unknown_extension() {
+        let data = b"RIFF\x00\x00\x00\x00WAVEfmt ";
+        assert!(validate_magic(data, "wav").is_none(), "Unknown extension should pass (no rule)");
+    }
+
+    #[test]
+    fn test_validate_magic_case_insensitive_extension() {
+        let data = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A];
+        assert!(validate_magic(&data, "PNG").is_none(), "Extension matching should be case-insensitive");
+        assert!(validate_magic(&data, ".PNG").is_none(), "Dot-prefixed uppercase should work");
+    }
+
+    #[test]
+    fn test_validate_magic_pe_disguised_as_csv() {
+        let data = b"MZ\x90\x00\x03\x00";
+        let result = validate_magic(data, "csv");
+        assert!(result.is_some(), "PE disguised as CSV must be detected");
+    }
+
+    #[test]
+    fn test_validate_magic_gif_valid() {
+        let data = b"GIF89a\x01\x00\x01\x00";
+        assert!(validate_magic(data, "gif").is_none(), "Valid GIF89a should pass");
     }
 }

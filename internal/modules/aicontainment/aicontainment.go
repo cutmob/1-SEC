@@ -2,6 +2,7 @@ package aicontainment
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"regexp"
 	"strings"
@@ -249,6 +250,8 @@ func (c *Containment) handleAgentSpawn(event *core.SecurityEvent) {
 
 // handleToolIntegrity detects MCP tool poisoning, rug pulls, and shadowing (ASI04).
 // Ref: Invariant Labs April 2025, arxiv.org/html/2512.06556v1
+// Enhanced: auto-computes SHA256 hash of tool definition when not provided by the event,
+// enabling hash-based rug pull detection even for clients that don't send hashes.
 func (c *Containment) handleToolIntegrity(event *core.SecurityEvent) {
 	toolName := getStringDetail(event, "tool_name")
 	description := getStringDetail(event, "description")
@@ -257,6 +260,14 @@ func (c *Containment) handleToolIntegrity(event *core.SecurityEvent) {
 
 	if toolName == "" {
 		return
+	}
+
+	// Auto-compute hash from description + parameters schema if not provided
+	if hash == "" && description != "" {
+		params := getStringDetail(event, "parameters")
+		hashInput := description + "|" + params
+		h := sha256.Sum256([]byte(hashInput))
+		hash = fmt.Sprintf("%x", h)
 	}
 
 	result := c.toolIntegrity.Analyze(toolName, description, serverName, hash)
@@ -484,6 +495,20 @@ func (c *Containment) handleAgentWebFetch(event *core.SecurityEvent) {
 				"Status: %s. Agents should only access pre-approved domains.",
 				agentID, domain, statusCode),
 			"agent_unauthorized_domain")
+	}
+
+	// Lateral movement: external→internal fetch sequence (XPIA defense)
+	// Detects when an agent reads external content then pivots to internal resources,
+	// which is a hallmark of cross-prompt injection attacks.
+	if result.LateralMovement {
+		c.raiseAlert(event, core.SeverityCritical,
+			"Agent Lateral Movement Detected (XPIA)",
+			fmt.Sprintf("Agent %s accessed internal domain %s after fetching from external domains "+
+				"(lateral movement score: %d). This pattern indicates cross-prompt injection (XPIA) "+
+				"where malicious external content commands the agent to access internal resources. "+
+				"Blocking further fetches for this session.",
+				agentID, domain, result.LateralMoveScore),
+			"agent_lateral_movement")
 	}
 }
 
@@ -1569,11 +1594,13 @@ type AgentWebFetchMonitor struct {
 }
 
 type webFetchProfile struct {
-	FetchCount    int
-	FetchWindow   time.Time
-	Domains       map[string]int
-	LLMSTxtDomains map[string]bool
-	LastFetch     time.Time
+	FetchCount         int
+	FetchWindow        time.Time
+	Domains            map[string]int
+	LLMSTxtDomains     map[string]bool
+	LastFetch          time.Time
+	LastExternalDomain string // tracks last external domain for lateral movement detection
+	LateralMoveScore   int    // incremented on external→internal fetch sequences
 }
 
 type WebFetchResult struct {
@@ -1581,9 +1608,11 @@ type WebFetchResult struct {
 	SensitiveURL       bool
 	LLMSTxtProbing     bool
 	UnauthorizedDomain bool
+	LateralMovement    bool
 	FetchCount         int
 	UniqueDomains      int
 	LLMSTxtDomains     int
+	LateralMoveScore   int
 	Window             string
 }
 
@@ -1658,7 +1687,43 @@ func (wm *AgentWebFetchMonitor) RecordFetch(agentID, url, domain, acceptHeader s
 		result.RapidFetching = true
 	}
 
+	// Lateral movement detection: external→internal fetch sequence (XPIA defense)
+	// If agent fetches from an external domain then immediately accesses internal resources,
+	// it may have been prompt-injected by the external content.
+	isInternal := wm.isInternalDomain(domain)
+	if isInternal && profile.LastExternalDomain != "" {
+		profile.LateralMoveScore++
+		if profile.LateralMoveScore > 2 {
+			result.LateralMovement = true
+		}
+	}
+	if !isInternal && domain != "" {
+		profile.LastExternalDomain = domain
+	}
+	result.LateralMoveScore = profile.LateralMoveScore
+
 	return result
+}
+
+// isInternalDomain checks if a domain resolves to internal/private network ranges.
+func (wm *AgentWebFetchMonitor) isInternalDomain(domain string) bool {
+	domainLower := strings.ToLower(domain)
+	internalPatterns := []string{
+		"localhost", "127.0.0.1", "::1",
+		".internal", ".local", ".corp", ".home", ".private",
+		"169.254.169.254", "metadata.google.internal",
+	}
+	for _, p := range internalPatterns {
+		if strings.Contains(domainLower, p) {
+			return true
+		}
+	}
+	// Check for private IP ranges in domain
+	if strings.HasPrefix(domainLower, "10.") || strings.HasPrefix(domainLower, "192.168.") ||
+		strings.HasPrefix(domainLower, "172.") {
+		return true
+	}
+	return false
 }
 
 // ============================================================================

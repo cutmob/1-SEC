@@ -970,3 +970,71 @@ func TestGetAPIMitigations_NewTypes(t *testing.T) {
 		}
 	}
 }
+
+// ─── SSRF Evasion: Decimal IP + Astro Redirect (CVE-2026-25545) ──────────────
+
+func TestSSRF_DecimalIPDetection(t *testing.T) {
+	det := NewSSRFViaAPIDetector()
+	// 2852039166 = 169.254.169.254 in decimal
+	result := det.Check("/api/proxy", "", "http://2852039166/latest/meta-data/")
+	if result == nil {
+		t.Error("expected SSRF detection for decimal-encoded cloud metadata IP")
+	}
+}
+
+func TestSSRF_AstroRedirectDetection(t *testing.T) {
+	det := NewSSRFViaAPIDetector()
+	result := det.Check("/_astro/redir?url=http://169.254.169.254/", "", "")
+	if result == nil {
+		t.Error("expected SSRF detection for Astro redirect to cloud metadata")
+	}
+}
+
+func TestSSRF_OctalIPDetection(t *testing.T) {
+	det := NewSSRFViaAPIDetector()
+	result := det.Check("/api/proxy", "", "http://012.012.012.012/")
+	if result == nil {
+		t.Error("expected SSRF detection for octal-encoded IP address")
+	}
+}
+
+// ─── Stateful Auth Flow: Admin Without Recent Login ──────────────────────────
+
+func TestStatefulAuth_AdminWithoutLogin(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+	defer f.Stop()
+
+	// Access admin endpoint without any prior login
+	ev := makeAPIRequest("/api/admin/users", "GET", "user123", "", "user")
+	ev.SourceIP = "10.0.0.100"
+	f.HandleEvent(ev)
+	time.Sleep(10 * time.Millisecond)
+
+	if !cp.hasAlertType("auth_bypass_stateful") {
+		t.Error("expected auth_bypass_stateful alert when admin accessed without login")
+	}
+}
+
+func TestStatefulAuth_AdminAfterLogin(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+	defer f.Stop()
+
+	// Record a successful login
+	loginEv := core.NewSecurityEvent("test", "login_success", core.SeverityInfo, "login")
+	loginEv.SourceIP = "10.0.0.100"
+	loginEv.Details["session_id"] = "sess-abc"
+	f.HandleEvent(loginEv)
+
+	// Access admin endpoint with session that just authenticated
+	ev := makeAPIRequest("/api/admin/users", "GET", "admin-user", "", "admin")
+	ev.SourceIP = "10.0.0.100"
+	ev.Details["session_id"] = "sess-abc"
+	f.HandleEvent(ev)
+	time.Sleep(10 * time.Millisecond)
+
+	if cp.hasAlertType("auth_bypass_stateful") {
+		t.Error("should NOT alert for admin access after recent login_success")
+	}
+}

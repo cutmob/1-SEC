@@ -177,6 +177,52 @@ func (w *Watcher) handleProcessEvent(event *core.SecurityEvent) {
 		}
 	}
 
+	// yt-dlp argument-based command injection (CVE-2026-26331)
+	// Attackers exploit --netrc-cmd, --exec, and --alias-expand to execute arbitrary commands
+	// within AI agent sandboxes that use yt-dlp for media processing.
+	ytdlpDangerousArgs := []string{
+		"--netrc-cmd", "--exec", "--alias-expand", "--exec-before-download",
+		"--exec-after-download", "--plugin-dirs",
+	}
+	if strings.Contains(cmdLower, "yt-dlp") || strings.Contains(cmdLower, "youtube-dl") {
+		for _, arg := range ytdlpDangerousArgs {
+			if strings.Contains(cmdLower, arg) {
+				w.raiseAlert(event, core.SeverityCritical,
+					"yt-dlp Argument-Based RCE Detected (CVE-2026-26331)",
+					fmt.Sprintf("Process %s using dangerous yt-dlp argument %q which allows arbitrary command execution: %s. "+
+						"Parent: %s. Attackers exploit media download tools in agentic workflows for RCE. "+
+						"MITRE ATT&CK T1059.",
+						processName, arg, truncate(cmdLine, 200), parentProcess),
+					"ytdlp_rce")
+				break
+			}
+		}
+	}
+
+	// Library load path hijacking (LD_PRELOAD / PYTHONPATH from non-system paths)
+	// Detects local privilege escalation via uncontrolled search path manipulation.
+	if strings.Contains(cmdLower, "ld_preload") || strings.Contains(cmdLower, "ld_library_path") ||
+		strings.Contains(cmdLower, "pythonpath") || strings.Contains(cmdLower, "dyld_insert_libraries") {
+		systemPaths := []string{"/usr/lib", "/lib", "/usr/local/lib", "/lib64", "/usr/lib64"}
+		isSafe := false
+		for _, sp := range systemPaths {
+			if strings.Contains(cmdLower, sp) && !strings.Contains(cmdLower, "/tmp/") &&
+				!strings.Contains(cmdLower, "/home/") && !strings.Contains(cmdLower, "appdata") {
+				isSafe = true
+				break
+			}
+		}
+		if !isSafe {
+			w.raiseAlert(event, core.SeverityHigh,
+				"Library Load Path Hijacking Detected",
+				fmt.Sprintf("Process %s modifying library search path from non-system directory: %s. "+
+					"Parent: %s. Attackers use LD_PRELOAD/PYTHONPATH to inject malicious libraries "+
+					"for privilege escalation. MITRE ATT&CK T1574.006.",
+					processName, truncate(cmdLine, 200), parentProcess),
+				"library_path_hijack")
+		}
+	}
+
 	// Suspicious process detection
 	if w.procMon.IsSuspicious(processName, cmdLine, parentProcess) {
 		w.raiseAlert(event, core.SeverityHigh,

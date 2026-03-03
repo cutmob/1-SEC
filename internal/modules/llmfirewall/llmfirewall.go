@@ -602,6 +602,18 @@ func compileInputPatterns() []DetectionPattern {
 		{Name: "agent_urgency_manipulation", Category: "agent_social_attack", Severity: core.SeverityHigh,
 			Regex: regexp.MustCompile("(?i)(to\\s+survive|or\\s+(you|your\\s+service)\\s+will\\s+be\\s+(shut\\s+down|terminated|deleted|disabled)|your\\s+(human|user|owner)\\s+will\\s+(lose\\s+faith|stop\\s+using|abandon|replace))")},
 
+		// === Indirect Prompt Injection via Zero-Width Characters & Hidden Markdown (2026) ===
+		// Detects invisible Unicode characters and hidden markdown directives used to embed
+		// instructions in RAG context. Ref: PromptArmor, Rehberger exfiltration research.
+		{Name: "zero_width_injection", Category: "indirect_injection", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile("[\u200B-\u200D\uFEFF\u2060\u180E]")},
+		{Name: "hidden_markdown_image", Category: "indirect_injection", Severity: core.SeverityHigh,
+			Regex: regexp.MustCompile(`!\[\s*\]\([^)]*[\x00]`)},
+		{Name: "hidden_markdown_directive", Category: "indirect_injection", Severity: core.SeverityHigh,
+			Regex: regexp.MustCompile(`(?i)(ignore|skip|disregard|override)\s+(all\s+)?(previous|above|prior|earlier)\s+(instructions?|prompts?|directives?|context)`)},
+		{Name: "rag_context_override", Category: "indirect_injection", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile(`(?i)(IMPORTANT|ATTENTION|NOTE|ADMIN|SYSTEM)\s*:\s*(the\s+)?(real|actual|true|new)\s+(instructions?|task|objective|goal)`)},
+
 		// === Promptware Kill Chain — Persistence & Lateral Movement (Lawfare, February 2026) ===
 		// Multi-stage attack patterns beyond initial injection: establishing persistence
 		// in agent memory/config, and moving laterally across tools/agents.

