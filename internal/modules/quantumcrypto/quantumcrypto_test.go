@@ -779,6 +779,54 @@ func TestSplitAlgorithmName(t *testing.T) {
 	}
 }
 
+// ─── TLS PQ Curve Inventory ──────────────────────────────────────────────────
+
+func TestTLSAudit_ClassicalOnlyKeyExchange_FlagsPQ(t *testing.T) {
+	cp := makeCapturingPipeline()
+	m := &Monitor{}
+	cfg := core.DefaultConfig()
+	if err := m.Start(context.Background(), nil, cp.pipeline, cfg); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer m.Stop()
+
+	ev := core.NewSecurityEvent("test", "tls_handshake", core.SeverityInfo, "TLS handshake")
+	ev.Details["tls_version"] = "TLSv1.3"
+	ev.Details["cipher_suite"] = "TLS_AES_256_GCM_SHA384"
+	ev.Details["key_exchange"] = "X25519"
+	ev.Details["server_name"] = "api.example.com"
+	ev.Details["supported_groups"] = "X25519,secp256r1,secp384r1"
+	m.HandleEvent(ev)
+	time.Sleep(10 * time.Millisecond)
+
+	if !cp.hasTitle("TLS Handshake Without PQ Curves") {
+		t.Error("expected 'TLS Handshake Without PQ Curves' alert for classical-only supported_groups")
+	}
+}
+
+func TestTLSAudit_HybridPQ_NoAlert(t *testing.T) {
+	cp := makeCapturingPipeline()
+	m := &Monitor{}
+	cfg := core.DefaultConfig()
+	if err := m.Start(context.Background(), nil, cp.pipeline, cfg); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer m.Stop()
+
+	ev := core.NewSecurityEvent("test", "tls_handshake", core.SeverityInfo, "TLS handshake")
+	ev.Details["tls_version"] = "TLSv1.3"
+	ev.Details["cipher_suite"] = "TLS_AES_256_GCM_SHA384"
+	ev.Details["key_exchange"] = "X25519MLKEM768"
+	ev.Details["server_name"] = "secure.example.com"
+	ev.Details["supported_groups"] = "X25519MLKEM768,X25519,secp256r1"
+	m.HandleEvent(ev)
+	time.Sleep(10 * time.Millisecond)
+
+	if cp.hasTitle("TLS Handshake Without PQ Curves") {
+		t.Error("should NOT alert when PQ curves are in supported_groups")
+	}
+}
+
 // ─── Compile-time interface check ─────────────────────────────────────────────
 
 var _ core.Module = (*Monitor)(nil)

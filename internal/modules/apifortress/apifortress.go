@@ -36,6 +36,7 @@ type Fortress struct {
 	jwtValidator     *JWTValidator
 	ssrfDetector     *SSRFViaAPIDetector
 	responseAnalyzer *ResponseAnomalyAnalyzer
+	authFlowTracker  *lru.Cache[string, time.Time] // tracks recent login_success per session/IP
 }
 
 func New() *Fortress { return &Fortress{} }
@@ -51,6 +52,7 @@ func (f *Fortress) EventTypes() []string {
 		"graphql_request",
 		"jwt_validation", "token_event",
 		"api_config", "api_upstream_response",
+		"login_success", "auth_success",
 	}
 }
 
@@ -73,6 +75,7 @@ func (f *Fortress) Start(ctx context.Context, bus *core.EventBus, pipeline *core
 	f.jwtValidator = NewJWTValidator()
 	f.ssrfDetector = NewSSRFViaAPIDetector()
 	f.responseAnalyzer = NewResponseAnomalyAnalyzer()
+	f.authFlowTracker, _ = lru.New[string, time.Time](50000)
 
 	// BOLA, BFLA, rateLimiter, and responseAnalyzer now use LRU caches internally, so no external cleanup loops are needed.
 
@@ -102,8 +105,21 @@ func (f *Fortress) HandleEvent(event *core.SecurityEvent) error {
 		f.checkSecurityMisconfiguration(event)
 	case "api_upstream_response":
 		f.checkUnsafeConsumption(event)
+	case "login_success", "auth_success":
+		f.recordAuthSuccess(event)
 	}
 	return nil
+}
+
+// recordAuthSuccess tracks successful authentication for stateful API flow validation.
+func (f *Fortress) recordAuthSuccess(event *core.SecurityEvent) {
+	sessionID := getStringDetail(event, "session_id")
+	if sessionID == "" {
+		sessionID = event.SourceIP // fallback to IP
+	}
+	if sessionID != "" {
+		f.authFlowTracker.Add(sessionID, time.Now())
+	}
 }
 
 func (f *Fortress) handleAPIRequest(event *core.SecurityEvent) {
@@ -143,6 +159,25 @@ func (f *Fortress) handleAPIRequest(event *core.SecurityEvent) {
 				fmt.Sprintf("User %s (role: %s) attempted %s %s which requires role %s. OWASP API Top 10: API5 Broken Function Level Authorization. %s",
 					userID, userRole, method, path, violation.RequiredRole, violation.Reason),
 				"bfla")
+		}
+	}
+
+	// Stateful API flow: admin endpoints require recent authentication (CVE-2026-20127)
+	// Logic-based auth bypass detection — ensures login_success preceded admin access.
+	if path != "" && strings.Contains(strings.ToLower(path), "/admin") {
+		sessionID := getStringDetail(event, "session_id")
+		if sessionID == "" {
+			sessionID = event.SourceIP
+		}
+		lastAuth, hasAuth := f.authFlowTracker.Get(sessionID)
+		if !hasAuth || time.Since(lastAuth) > 15*time.Minute {
+			f.raiseAlert(event, core.SeverityCritical,
+				"Logic-Based Auth Bypass Detected",
+				fmt.Sprintf("Admin endpoint %s %s accessed by %s (IP: %s) without recent authentication. "+
+					"No login_success event in last 15 minutes for session %s. "+
+					"This may indicate a logic-based authentication bypass.",
+					method, path, userID, event.SourceIP, sessionID),
+				"auth_bypass_stateful")
 		}
 	}
 
@@ -1528,8 +1563,8 @@ type SSRFFinding struct {
 
 func NewSSRFViaAPIDetector() *SSRFViaAPIDetector {
 	return &SSRFViaAPIDetector{
-		internalPatterns: regexp.MustCompile(`(?i)(127\.0\.0\.1|0\.0\.0\.0|localhost|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|\[::1\]|\[0:0:0:0:0:0:0:1\]|0x7f|2130706433|017700000001|\.internal\.|\.local\.|\.corp\.|\.home\.)`),
-		cloudMetadata:    regexp.MustCompile(`(?i)(169\.254\.169\.254|metadata\.google\.internal|100\.100\.100\.200|fd00:ec2::254)`),
+		internalPatterns: regexp.MustCompile(`(?i)(127\.0\.0\.1|0\.0\.0\.0|localhost|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|\[::1\]|\[0:0:0:0:0:0:0:1\]|0x7f|2130706433|017700000001|2852039166|012\.012\.012\.012|\.internal\.|\.local\.|\.corp\.|\.home\.)`),
+		cloudMetadata:    regexp.MustCompile(`(?i)(169\.254\.169\.254|metadata\.google\.internal|100\.100\.100\.200|fd00:ec2::254|_astro/redir\?url=)`),
 		urlParams:        regexp.MustCompile(`(?i)(url|uri|link|href|src|source|redirect|callback|webhook|endpoint|target|dest|fetch|load|proxy|forward)=`),
 	}
 }
@@ -1554,6 +1589,14 @@ func (s *SSRFViaAPIDetector) Check(path, body, urlParam string) *SSRFFinding {
 				Severity:    core.SeverityHigh,
 				Description: "Request targets internal/private IP address. SSRF can be used to scan internal networks and access internal services.",
 			}
+		}
+	}
+
+	// Check for cloud metadata patterns in the path (e.g., Astro redirect SSRF)
+	if s.cloudMetadata.MatchString(path) {
+		return &SSRFFinding{
+			Severity:    core.SeverityCritical,
+			Description: "Request path targets cloud metadata endpoint (169.254.169.254 or equivalent). This can expose instance credentials and secrets.",
 		}
 	}
 

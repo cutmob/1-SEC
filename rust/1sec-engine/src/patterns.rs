@@ -35,6 +35,8 @@ pub fn all_patterns() -> Vec<PatternDef> {
     patterns.extend(deserialization_patterns());
     patterns.extend(canary_token_patterns());
     patterns.extend(zipslip_patterns());
+    patterns.extend(argbased_rce_patterns());
+    patterns.extend(ssrf_evasion_patterns());
     patterns
 }
 
@@ -698,6 +700,55 @@ fn zipslip_patterns() -> Vec<PatternDef> {
             severity: Severity::Critical,
             regex: r"(?i)\.\.[\\/].*(WEB-INF|META-INF|wwwroot|htdocs|public_html|www|webapps|inetpub)",
             literals: &["WEB-INF", "META-INF", "wwwroot", "htdocs", "webapps"],
+        },
+    ]
+}
+
+/// Argument-based RCE patterns — tools exploited via legitimate CLI arguments.
+/// CVE-2026-26331: yt-dlp --netrc-cmd used for RCE in agentic workflows.
+fn argbased_rce_patterns() -> Vec<PatternDef> {
+    vec![
+        PatternDef {
+            name: "ytdlp_rce_netrc_cmd",
+            category: "cmdi",
+            severity: Severity::Critical,
+            regex: r"(?i)(yt-?dlp|youtube-?dl)\s+.*--(netrc-cmd|exec|exec-before-download|exec-after-download|alias-expand|plugin-dirs)\b",
+            literals: &["yt-dlp", "ytdlp", "youtube-dl", "--netrc-cmd", "--exec", "--alias-expand"],
+        },
+        PatternDef {
+            name: "ffmpeg_rce_filter",
+            category: "cmdi",
+            severity: Severity::High,
+            regex: r"(?i)ffmpeg\s+.*-vf\s+.*(\bsystem\b|\bexec\b|\|)",
+            literals: &["ffmpeg", "-vf"],
+        },
+    ]
+}
+
+/// SSRF evasion patterns — decimal IPs, Astro redirect, and other cloud metadata bypasses.
+/// CVE-2026-25545: Astro framework SSRF via custom error pages.
+fn ssrf_evasion_patterns() -> Vec<PatternDef> {
+    vec![
+        PatternDef {
+            name: "ssrf_decimal_ip",
+            category: "ssrf",
+            severity: Severity::High,
+            regex: r"(?i)(https?://)?(\b2852039166\b|\b2130706433\b|\b017700000001\b|0177\.0\.0\.01)",
+            literals: &["2852039166", "2130706433", "017700000001"],
+        },
+        PatternDef {
+            name: "ssrf_astro_redirect",
+            category: "ssrf",
+            severity: Severity::High,
+            regex: r"(?i)_astro/(redir|redirect)\?url=",
+            literals: &["_astro/redir", "_astro/redirect"],
+        },
+        PatternDef {
+            name: "ssrf_dotted_octal_ip",
+            category: "ssrf",
+            severity: Severity::High,
+            regex: r"(?i)(https?://)?0[0-7]{1,3}\.0[0-7]{1,3}\.0[0-7]{1,3}\.0[0-7]{1,3}",
+            literals: &["://0"],
         },
     ]
 }
