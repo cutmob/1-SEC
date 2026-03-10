@@ -5,6 +5,7 @@
 //! - Optional raw packet capture and protocol parsing
 //! - Post-quantum cryptographic operations (when `pqc` feature is enabled)
 
+#[allow(dead_code)]
 mod analytics;
 mod config;
 mod events;
@@ -12,6 +13,7 @@ mod matcher;
 mod nats_bridge;
 mod normalize;
 #[cfg(feature = "pcap-capture")]
+#[allow(dead_code)]
 mod packet;
 mod patterns;
 #[cfg(test)]

@@ -40,7 +40,7 @@ pub fn consonant_ratio(s: &str) -> f64 {
     let mut alpha = 0u32;
     for c in s.bytes() {
         let lower = c.to_ascii_lowercase();
-        if lower >= b'a' && lower <= b'z' {
+        if (b'a'..=b'z').contains(&lower) {
             alpha += 1;
             if !matches!(lower, b'a' | b'e' | b'i' | b'o' | b'u') {
                 consonants += 1;
@@ -114,7 +114,7 @@ impl IPScorer {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(ip)
-            .map_or(false, |e| e.blocked)
+            .is_some_and(|e| e.blocked)
     }
 
     /// Get score and module count for an IP.
@@ -270,7 +270,7 @@ impl BeaconJitterAnalyzer {
         let now = Instant::now();
         let mut conns = self.connections.write().unwrap_or_else(|e| e.into_inner());
 
-        let timestamps = conns.entry(pair).or_insert_with(Vec::new);
+        let timestamps = conns.entry(pair).or_default();
         timestamps.push(now);
 
         // Keep only last max_samples
@@ -320,7 +320,7 @@ impl BeaconJitterAnalyzer {
         let cv = stddev / mean;
 
         // Beaconing: CV < threshold AND average interval between 5s and 1h
-        let is_beaconing = cv < self.cv_threshold && mean >= 5.0 && mean <= 3600.0;
+        let is_beaconing = cv < self.cv_threshold && (5.0..=3600.0).contains(&mean);
 
         BeaconResult {
             is_beaconing,

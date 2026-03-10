@@ -18,12 +18,14 @@ import (
 // package_install canonical events. Requires a GitHub token with actions:read.
 //
 // Config:
-//   type: github
-//   log_path: "owner/repo"  (reused as repo identifier)
-//   tag: "github"
+//
+//	type: github
+//	log_path: "owner/repo"  (reused as repo identifier)
+//	tag: "github"
 //
 // Environment:
-//   GITHUB_TOKEN — personal access token or fine-grained token with actions:read
+//
+//	GITHUB_TOKEN — personal access token or fine-grained token with actions:read
 type GitHubCollector struct {
 	repo     string // "owner/repo"
 	tag      string

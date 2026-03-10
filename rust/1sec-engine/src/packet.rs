@@ -300,7 +300,7 @@ pub fn validate_magic(data: &[u8], extension: &str) -> Option<String> {
     ];
 
     // Check if a "safe" extension contains dangerous magic bytes
-    if safe_extensions.contains(&&*ext) {
+    if safe_extensions.contains(&ext) {
         for (magic, desc) in dangerous_magics {
             if data.starts_with(magic) {
                 return Some(format!(

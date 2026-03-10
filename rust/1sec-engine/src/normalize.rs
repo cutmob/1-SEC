@@ -4,9 +4,7 @@
 //! Go engine, closing the evasion blind spot where attackers use encoding tricks
 //! to bypass Rust-side detection while Go catches them.
 
-use std::collections::HashMap;
-
-/// Run the full 8-phase normalization pipeline on input text.
+/// Run the full 9-phase normalization pipeline on input text.
 pub fn normalize(input: &str) -> String {
     if input.is_empty() {
         return String::new();
@@ -124,7 +122,7 @@ fn decode_html_entities(s: &str) -> String {
                     } else {
                         parse_decimal(num_slice)
                     };
-                    if val >= 0 && val < 128 {
+                    if (0..128).contains(&val) {
                         out.push(val as u8);
                         i += end + 1;
                         continue;
@@ -153,7 +151,7 @@ fn parse_hex(bytes: &[u8]) -> i32 {
 fn parse_decimal(bytes: &[u8]) -> i32 {
     let mut val: i32 = 0;
     for &b in bytes {
-        if b < b'0' || b > b'9' {
+        if !(b'0'..=b'9').contains(&b) {
             return -1;
         }
         val = val * 10 + (b - b'0') as i32;
