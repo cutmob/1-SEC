@@ -151,7 +151,7 @@ fn parse_hex(bytes: &[u8]) -> i32 {
 fn parse_decimal(bytes: &[u8]) -> i32 {
     let mut val: i32 = 0;
     for &b in bytes {
-        if !(b'0'..=b'9').contains(&b) {
+        if !b.is_ascii_digit() {
             return -1;
         }
         val = val * 10 + (b - b'0') as i32;

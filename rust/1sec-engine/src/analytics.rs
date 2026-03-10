@@ -40,7 +40,7 @@ pub fn consonant_ratio(s: &str) -> f64 {
     let mut alpha = 0u32;
     for c in s.bytes() {
         let lower = c.to_ascii_lowercase();
-        if (b'a'..=b'z').contains(&lower) {
+        if lower.is_ascii_lowercase() {
             alpha += 1;
             if !matches!(lower, b'a' | b'e' | b'i' | b'o' | b'u') {
                 consonants += 1;
