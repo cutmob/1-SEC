@@ -51,6 +51,12 @@ func compilePatterns() []Pattern {
 			Regex: regexp.MustCompile(`(>\s*/etc/|>\s*/tmp/|<\s*/etc/passwd|/dev/(tcp|udp)/)`)},
 		{Name: "cmdi_reverse_shell", Category: "cmdi", Severity: core.SeverityCritical,
 			Regex: regexp.MustCompile(`(?i)(bash\s+-i\s+>&|nc\s+-[elp]|ncat\s+-|python\s+-c\s+.*socket|perl\s+-e\s+.*socket|ruby\s+-rsocket|php\s+-r\s+.*fsockopen)`)},
+		// Management interface RCE — CVE-2025-67840 (WatchGuard XMLRPC) & CVE-2025-63911 (Cohesity API)
+		{Name: "cmdi_mgmt_xmlrpc", Category: "cmdi", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile(`(?i)<member><name>(?:os_system|shell_exec|exec)</name><value><string>.*?(?:curl|wget|python|sh|bash).*?</string>`)},
+		{Name: "cmdi_mgmt_api_json", Category: "cmdi", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile(`(?i)"(?:command|cmd)":\s*".*?(?:\|\||;|&&)\s*(?:id|whoami|cat|ls|env)"`)},
+
 		// Node.js / server-side JS command injection — CVE-2026-2544 (LuLu UI child_process.exec)
 		{Name: "cmdi_nodejs_exec", Category: "cmdi", Severity: core.SeverityCritical,
 			Regex: regexp.MustCompile(`(?i)(child_process|require\s*\(\s*['"]child_process['"]\s*\))\s*\.\s*(exec|execSync|spawn|spawnSync|execFile|fork)\s*\(`)},
@@ -96,6 +102,10 @@ func compilePatterns() []Pattern {
 		// Path Traversal patterns
 		{Name: "path_traversal", Category: "path", Severity: core.SeverityHigh,
 			Regex: regexp.MustCompile(`(?i)(\.\.[\\/]|%2e%2e[\\/]|%252e%252e[\\/]|\.\.%2f|%2e%2e%2f){2,}`)},
+		// Unicode/NFKC normalization evasion — CVE-2026-25673 (Django on Windows)
+		// Detects fullwidth dot/slash lookalikes that normalize to ../ after security filters
+		{Name: "path_unicode_nfkc", Category: "path", Severity: core.SeverityCritical,
+			Regex: regexp.MustCompile(`(?i)(%ef%bc%8e%ef%bc%8e|%ef%bc%8f|%uFF0E%uFF0E|%uFF0F|\x{FF0E}\x{FF0E}[\\/\x{FF0F}]|\x{FF0E}\x{FF0E}\x{FF0F}|%ef%bc%8e\.|\.\x{FF0E}[\\/])`)},
 		{Name: "path_sensitive_files", Category: "path", Severity: core.SeverityCritical,
 			Regex: regexp.MustCompile(`(?i)(/etc/(passwd|shadow|hosts|crontab)|/proc/self/|/windows/system32/|web\.config|\.env|\.git/config|\.htaccess|wp-config\.php)`)},
 		{Name: "path_null_byte", Category: "path", Severity: core.SeverityHigh,

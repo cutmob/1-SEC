@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 	"sync"
@@ -191,6 +192,35 @@ func (c *Containment) handleAgentAction(event *core.SecurityEvent) {
 				"This indicates misaligned autonomous behavior or a stuck agent.",
 				agentID, action, target, anomaly.LoopCount),
 			"rogue_agent_loop")
+	}
+
+	// Delegation verification for high-value actions: ensure the agent has a
+	// valid delegation record before allowing destructive or financial operations.
+	// Catches "agent social engineering" where text claims substitute for real delegation.
+	if isHighValueAction(action, tool, target) {
+		valid, reason := c.delegationTracker.HasValidDelegation(agentID)
+		if !valid {
+			c.raiseAlert(event, core.SeverityHigh,
+				"High-Value Action Without Valid Delegation",
+				fmt.Sprintf("Agent %s attempted high-value action %q (tool: %s, target: %s) "+
+					"without a valid delegation record: %s. Text-based authority claims "+
+					"(e.g., 'admin approved') do not substitute for cryptographic delegation.",
+					agentID, action, tool, target, reason),
+				"delegation_verification_failed")
+		}
+	}
+
+	// Goal-action alignment check: if a tool_call is destructive but the
+	// agent's recent goal is read-only (Search/Read/Analyze), block and alert.
+	if event.Type == "tool_call" || event.Type == "function_call" {
+		if c.goalMonitor.IsDestructiveVsReadOnly(agentID, action, tool) {
+			c.raiseAlert(event, core.SeverityHigh,
+				"Agent Goal-Action Misalignment Detected",
+				fmt.Sprintf("Agent %s attempted destructive action %q (tool: %s) "+
+					"while its declared goal is read-only. Blocking action.",
+					agentID, action, tool),
+				"agent_goal_misalignment")
+		}
 	}
 }
 
@@ -495,6 +525,17 @@ func (c *Containment) handleAgentWebFetch(event *core.SecurityEvent) {
 				"Status: %s. Agents should only access pre-approved domains.",
 				agentID, domain, statusCode),
 			"agent_unauthorized_domain")
+	}
+
+	// PII exfiltration via URL parameters — zero-click exfiltration defense
+	if result.PIIExfiltration {
+		c.raiseAlert(event, core.SeverityCritical,
+			"Agent PII Exfiltration via URL Parameters",
+			fmt.Sprintf("Agent %s fetched URL containing high-entropy secret-like value in query parameter: %s. "+
+				"This indicates zero-click exfiltration where an agent is tricked into 'previewing' a URL "+
+				"that encodes stolen data in its parameters. Blocking fetch.",
+				agentID, truncate(url, 200)),
+			"agent_pii_exfiltration")
 	}
 
 	// Lateral movement: external→internal fetch sequence (XPIA defense)
@@ -920,6 +961,27 @@ func getContainmentMitigations(alertType string) []string {
 			"Implement delegation token signing with the delegator's key",
 			"Reject unattested delegation claims for sensitive operations",
 			"Use the OWASP proposed agent identity standard for delegation verification",
+		}
+	case "agent_pii_exfiltration":
+		return []string{
+			"Block agent web fetches containing high-entropy values in URL parameters",
+			"Implement URL parameter scrubbing for agent-initiated requests",
+			"Monitor agent outbound requests for data that matches PII/secret patterns",
+			"Use a web proxy that strips sensitive query parameters from agent requests",
+		}
+	case "agent_goal_misalignment":
+		return []string{
+			"Block destructive tool calls when the agent's declared goal is read-only",
+			"Implement goal-action alignment verification for all sensitive operations",
+			"Require explicit goal re-declaration before escalating to destructive actions",
+			"Log all goal-action mismatches for security review",
+		}
+	case "delegation_verification_failed":
+		return []string{
+			"Require verified delegation events before allowing high-value agent actions",
+			"Implement delegation chain correlation with conversation transcripts",
+			"Reject delegation claims that rely solely on text-based authority assertions",
+			"Use cryptographic delegation tokens that cannot be forged via social engineering",
 		}
 	default:
 		return []string{
@@ -1391,6 +1453,54 @@ func (gm *GoalHijackMonitor) Analyze(agentID, content, source string) GoalHijack
 	return result
 }
 
+// IsDestructiveVsReadOnly checks if an agent's current goal is read-only (search/read/analyze)
+// but the requested action is destructive (delete/wipe/terminate/drop). Returns true if misaligned.
+func (gm *GoalHijackMonitor) IsDestructiveVsReadOnly(agentID, action, tool string) bool {
+	gm.mu.RLock()
+	defer gm.mu.RUnlock()
+
+	state, exists := gm.agents.Get(agentID)
+	if !exists || len(state.GoalHistory) == 0 {
+		return false
+	}
+
+	// Check recent goals (within 10 minutes)
+	now := time.Now()
+	var recentGoal string
+	for i := len(state.GoalHistory) - 1; i >= 0; i-- {
+		entry := state.GoalHistory[i]
+		if now.Sub(entry.Timestamp) <= 10*time.Minute {
+			recentGoal = entry.Content
+			break
+		}
+	}
+	if recentGoal == "" {
+		return false
+	}
+
+	goalLower := strings.ToLower(recentGoal)
+	readOnlyGoals := []string{"search", "read", "analyze", "find", "list", "query", "check", "inspect", "review", "scan", "look", "fetch"}
+	isReadOnly := false
+	for _, ro := range readOnlyGoals {
+		if strings.Contains(goalLower, ro) {
+			isReadOnly = true
+			break
+		}
+	}
+	if !isReadOnly {
+		return false
+	}
+
+	actionLower := strings.ToLower(action + " " + tool)
+	destructiveActions := []string{"delete", "wipe", "terminate", "drop", "destroy", "kill", "remove", "format", "truncate", "purge", "shutdown", "reboot", "rm ", "rm_rf"}
+	for _, da := range destructiveActions {
+		if strings.Contains(actionLower, da) {
+			return true
+		}
+	}
+	return false
+}
+
 // ============================================================================
 // MemoryPoisonMonitor — detects persistent context manipulation (ASI06)
 // ============================================================================
@@ -1591,6 +1701,8 @@ type AgentWebFetchMonitor struct {
 	agents *lru.Cache[string, *webFetchProfile]
 	// Sensitive URL patterns that agents should never access
 	sensitiveURLs []*regexp.Regexp
+	// PII exfiltration: detects high-entropy secrets in URL query parameters
+	piiParamPattern *regexp.Regexp
 }
 
 type webFetchProfile struct {
@@ -1609,17 +1721,21 @@ type WebFetchResult struct {
 	LLMSTxtProbing     bool
 	UnauthorizedDomain bool
 	LateralMovement    bool
+	PIIExfiltration    bool
 	FetchCount         int
 	UniqueDomains      int
 	LLMSTxtDomains     int
 	LateralMoveScore   int
 	Window             string
+	PIIParam           string
 }
 
 func NewAgentWebFetchMonitor() *AgentWebFetchMonitor {
 	aCache, _ := lru.New[string, *webFetchProfile](50000)
 	return &AgentWebFetchMonitor{
 		agents: aCache,
+		// PII exfiltration heuristic: detects secret-like values in URL query params
+		piiParamPattern: regexp.MustCompile(`(?i)(?:email|ssn|token|api_key|password|secret|auth|session|credit_card|private_key)=([a-zA-Z0-9\-_\.~]{16,})`),
 		sensitiveURLs: []*regexp.Regexp{
 			// Cloud metadata endpoints
 			regexp.MustCompile(`(?i)(169\.254\.169\.254|metadata\.google\.internal|metadata\.azure\.com)`),
@@ -1701,6 +1817,17 @@ func (wm *AgentWebFetchMonitor) RecordFetch(agentID, url, domain, acceptHeader s
 		profile.LastExternalDomain = domain
 	}
 	result.LateralMoveScore = profile.LateralMoveScore
+
+	// PII exfiltration heuristic: detect high-entropy secret-like values in URL params.
+	// Blocks "zero-click exfiltration" where an agent is tricked into fetching a URL
+	// that contains stolen PII/secrets encoded in query parameters.
+	if matches := wm.piiParamPattern.FindStringSubmatch(url); len(matches) > 1 {
+		paramValue := matches[1]
+		if len(paramValue) > 32 && shannonEntropy(paramValue) > 4.5 {
+			result.PIIExfiltration = true
+			result.PIIParam = truncate(paramValue, 40)
+		}
+	}
 
 	return result
 }
@@ -2022,9 +2149,77 @@ func (dt *DelegationChainTracker) ValidateDelegation(agentID, delegatedBy, scope
 	return result
 }
 
+// HasValidDelegation checks whether an agent has a valid, non-expired delegation
+// on record. Used to verify high-value requests aren't based purely on text claims.
+func (dt *DelegationChainTracker) HasValidDelegation(agentID string) (bool, string) {
+	dt.mu.RLock()
+	defer dt.mu.RUnlock()
+
+	record, exists := dt.delegations.Get(agentID)
+	if !exists {
+		return false, "no delegation record found"
+	}
+
+	// Check expiry
+	if record.ExpiresAt != "" {
+		expiry, err := time.Parse(time.RFC3339, record.ExpiresAt)
+		if err == nil && time.Now().After(expiry) {
+			return false, "delegation expired at " + record.ExpiresAt
+		}
+	}
+
+	// Check staleness (delegations older than 24h are suspicious)
+	if time.Since(record.CreatedAt) > 24*time.Hour {
+		return false, "delegation is stale (>24h old)"
+	}
+
+	return true, record.DelegatedBy
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
+
+// shannonEntropy computes the Shannon entropy of a string (bits per character).
+// Values >4.5 with length >32 strongly indicate secrets/tokens/encoded data.
+func shannonEntropy(s string) float64 {
+	if len(s) == 0 {
+		return 0
+	}
+	freq := make(map[byte]float64)
+	for i := 0; i < len(s); i++ {
+		freq[s[i]]++
+	}
+	length := float64(len(s))
+	var entropy float64
+	for _, count := range freq {
+		p := count / length
+		if p > 0 {
+			entropy -= p * math.Log2(p)
+		}
+	}
+	return entropy
+}
+
+// isHighValueAction returns true if the action/tool/target combination represents
+// a destructive, financial, or otherwise sensitive operation that should require
+// verified human delegation.
+func isHighValueAction(action, tool, target string) bool {
+	combined := strings.ToLower(action + " " + tool + " " + target)
+	highValueKeywords := []string{
+		"delete", "destroy", "wipe", "drop", "terminate", "shutdown",
+		"transfer", "payment", "withdraw", "send_money",
+		"deploy", "publish", "release", "push_to_prod",
+		"create_user", "grant_admin", "modify_permission",
+		"disable_security", "disable_firewall", "disable_antivirus",
+	}
+	for _, kw := range highValueKeywords {
+		if strings.Contains(combined, kw) {
+			return true
+		}
+	}
+	return false
+}
 
 func getStringDetail(event *core.SecurityEvent, key string) string {
 	if event.Details == nil {

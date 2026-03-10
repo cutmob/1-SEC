@@ -199,7 +199,11 @@ func normalizeInput(input string) string {
 	// Phase 7: Unicode homoglyph normalization — Cyrillic/fullwidth substitutions
 	result = normalizeHomoglyphs(result)
 
-	// Phase 8: Collapse redundant whitespace to single space
+	// Phase 8: Unicode NFKC folding — fullwidth/halfwidth/mathematical chars to ASCII
+	// Mitigates CVE-2026-25673 class bypasses where frameworks normalize after filters
+	result = foldUnicode(result)
+
+	// Phase 9: Collapse redundant whitespace to single space
 	result = collapseSpaces(result)
 
 	return result
@@ -466,6 +470,45 @@ func normalizeHomoglyphs(s string) string {
 	return r.Replace(s)
 }
 
+// foldUnicode performs NFKC-style folding of fullwidth, halfwidth, and mathematical
+// alphanumeric symbols to their ASCII equivalents. This prevents bypasses where
+// payloads use U+FF0E (fullwidth period) instead of '.' etc — the target framework
+// normalizes them after our filter has already passed the input through.
+// Covers: Fullwidth ASCII (U+FF01–U+FF5E), Halfwidth Katakana forms, and
+// Mathematical Alphanumeric Symbols (U+1D400–U+1D7FF, common subset).
+func foldUnicode(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		// Fullwidth ASCII variants: U+FF01 '!' .. U+FF5E '~'
+		// These map directly to ASCII 0x21..0x7E
+		case r >= 0xFF01 && r <= 0xFF5E:
+			b.WriteByte(byte(r - 0xFF01 + 0x21))
+		// Fullwidth digit zero: U+FF10 is caught above, but be explicit for clarity
+		// Halfwidth forms that are letter-like are less common in injection; skip for now
+		// Mathematical Bold capitals A-Z: U+1D400..U+1D419
+		case r >= 0x1D400 && r <= 0x1D419:
+			b.WriteByte(byte('A' + (r - 0x1D400)))
+		// Mathematical Bold lowercase a-z: U+1D41A..U+1D433
+		case r >= 0x1D41A && r <= 0x1D433:
+			b.WriteByte(byte('a' + (r - 0x1D41A)))
+		// Mathematical Italic capitals A-Z: U+1D434..U+1D44D
+		case r >= 0x1D434 && r <= 0x1D44D:
+			b.WriteByte(byte('A' + (r - 0x1D434)))
+		// Mathematical Italic lowercase a-z: U+1D44E..U+1D467
+		case r >= 0x1D44E && r <= 0x1D467:
+			b.WriteByte(byte('a' + (r - 0x1D44E)))
+		// Mathematical Bold digits 0-9: U+1D7CE..U+1D7D7
+		case r >= 0x1D7CE && r <= 0x1D7D7:
+			b.WriteByte(byte('0' + (r - 0x1D7CE)))
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // collapseSpaces reduces runs of multiple spaces to a single space.
 // After all normalization, redundant whitespace can hide keyword boundaries.
 func collapseSpaces(s string) string {
@@ -666,22 +709,22 @@ func getInjectionMitigations(categories []string) []string {
 			"Validate and escape special LDAP characters in user input",
 			"Implement input length limits for LDAP query parameters",
 		},
-		"template_injection": {
+		"template": {
 			"Use logic-less templates or sandboxed template engines",
 			"Never pass user input directly into template expressions",
 			"Implement strict input validation before template rendering",
 		},
-		"nosqli": {
+		"nosql": {
 			"Validate input types — reject objects where strings are expected",
 			"Use query builders that prevent operator injection",
 			"Implement schema validation on all database inputs",
 		},
-		"path_traversal": {
+		"path": {
 			"Normalize and validate file paths against a base directory",
 			"Use chroot or containerized file access",
 			"Reject paths containing .. or absolute path components",
 		},
-		"deserialization": {
+		"deser": {
 			"Avoid deserializing untrusted data",
 			"Use safe serialization formats (JSON) instead of native serialization",
 			"Implement integrity checks on serialized data",

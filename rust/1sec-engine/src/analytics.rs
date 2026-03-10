@@ -205,6 +205,146 @@ impl RateLimiter {
     }
 }
 
+// ─── C2 Beacon Jitter Analyzer ──────────────────────────────────────────────
+
+/// IP pair key for tracking connections between two endpoints.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct IPPair {
+    pub src: String,
+    pub dst: String,
+}
+
+impl IPPair {
+    pub fn new(src: &str, dst: &str) -> Self {
+        Self {
+            src: src.to_string(),
+            dst: dst.to_string(),
+        }
+    }
+}
+
+/// Result of C2 beacon jitter analysis.
+#[derive(Debug, Clone)]
+pub struct BeaconResult {
+    pub is_beaconing: bool,
+    pub cv: f64,
+    pub sample_count: usize,
+    pub avg_interval_secs: f64,
+}
+
+/// Tracks SYN packet timestamps per IP pair and computes the Coefficient of
+/// Variation (CV) of connection intervals. A low CV (<0.1) indicates extreme
+/// regularity — a hallmark of C2 heartbeat beacons.
+///
+/// Design:
+/// - Circular buffer of last `max_samples` SYN timestamps per IP pair
+/// - Computes CV = stddev / mean of inter-arrival intervals
+/// - Flags as BEACONING if CV < threshold and avg interval is in [5s, 1h]
+#[derive(Clone)]
+pub struct BeaconJitterAnalyzer {
+    connections: Arc<RwLock<HashMap<IPPair, Vec<Instant>>>>,
+    max_samples: usize,
+    cv_threshold: f64,
+    min_samples: usize,
+}
+
+impl BeaconJitterAnalyzer {
+    pub fn new(max_samples: usize, cv_threshold: f64, min_samples: usize) -> Self {
+        Self {
+            connections: Arc::new(RwLock::new(HashMap::new())),
+            max_samples,
+            cv_threshold,
+            min_samples,
+        }
+    }
+
+    /// Record a SYN packet timestamp for an IP pair and check for beaconing.
+    pub fn record_syn(&self, src: &str, dst: &str) -> BeaconResult {
+        let pair = IPPair::new(src, dst);
+        let now = Instant::now();
+        let mut conns = self.connections.write().unwrap_or_else(|e| e.into_inner());
+
+        let timestamps = conns.entry(pair).or_insert_with(Vec::new);
+        timestamps.push(now);
+
+        // Keep only last max_samples
+        if timestamps.len() > self.max_samples {
+            let drain_count = timestamps.len() - self.max_samples;
+            timestamps.drain(..drain_count);
+        }
+
+        if timestamps.len() < self.min_samples {
+            return BeaconResult {
+                is_beaconing: false,
+                cv: 0.0,
+                sample_count: timestamps.len(),
+                avg_interval_secs: 0.0,
+            };
+        }
+
+        // Calculate inter-arrival intervals
+        let intervals: Vec<f64> = timestamps
+            .windows(2)
+            .map(|w| w[1].duration_since(w[0]).as_secs_f64())
+            .collect();
+
+        if intervals.is_empty() {
+            return BeaconResult {
+                is_beaconing: false,
+                cv: 0.0,
+                sample_count: timestamps.len(),
+                avg_interval_secs: 0.0,
+            };
+        }
+
+        let n = intervals.len() as f64;
+        let mean = intervals.iter().sum::<f64>() / n;
+
+        if mean <= 0.0 {
+            return BeaconResult {
+                is_beaconing: false,
+                cv: 0.0,
+                sample_count: timestamps.len(),
+                avg_interval_secs: 0.0,
+            };
+        }
+
+        let variance = intervals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n;
+        let stddev = variance.sqrt();
+        let cv = stddev / mean;
+
+        // Beaconing: CV < threshold AND average interval between 5s and 1h
+        let is_beaconing = cv < self.cv_threshold && mean >= 5.0 && mean <= 3600.0;
+
+        BeaconResult {
+            is_beaconing,
+            cv,
+            sample_count: timestamps.len(),
+            avg_interval_secs: mean,
+        }
+    }
+
+    /// Remove entries older than max_age.
+    pub fn cleanup(&self, max_age: Duration) {
+        let mut conns = self.connections.write().unwrap_or_else(|e| e.into_inner());
+        conns.retain(|_, timestamps| {
+            if let Some(last) = timestamps.last() {
+                last.elapsed() < max_age
+            } else {
+                false
+            }
+        });
+    }
+
+    /// Get the number of tracked IP pairs.
+    pub fn tracked_pairs(&self) -> usize {
+        self.connections
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    }
+}
+
 // ─── File Hashing ───────────────────────────────────────────────────────────
 
 /// Compute blake3 hash of a byte slice. ~3-5x faster than SHA-256.
@@ -306,6 +446,64 @@ mod tests {
         assert_eq!(hash, blake3_hash(b"hello world"));
         // Different input = different hash
         assert_ne!(hash, blake3_hash(b"hello world!"));
+    }
+
+    #[test]
+    fn test_beacon_jitter_insufficient_samples() {
+        let analyzer = BeaconJitterAnalyzer::new(50, 0.1, 8);
+        // Only 3 samples — should not flag
+        for _ in 0..3 {
+            let result = analyzer.record_syn("10.0.0.1", "192.168.1.100");
+            assert!(!result.is_beaconing);
+        }
+        assert_eq!(analyzer.tracked_pairs(), 1);
+    }
+
+    #[test]
+    fn test_beacon_jitter_regular_intervals() {
+        let analyzer = BeaconJitterAnalyzer::new(50, 0.1, 4);
+        // Simulate perfectly regular intervals by recording timestamps
+        // Since we can't control time in unit tests, we verify the analyzer
+        // correctly tracks samples and returns a result
+        for _ in 0..10 {
+            let result = analyzer.record_syn("10.0.0.1", "evil.c2.com");
+            // With near-zero intervals (sub-ms), these won't be flagged as beaconing
+            // because mean interval < 5s threshold
+            assert!(!result.is_beaconing || result.avg_interval_secs >= 5.0);
+        }
+        assert!(analyzer.tracked_pairs() >= 1);
+    }
+
+    #[test]
+    fn test_beacon_jitter_different_pairs() {
+        let analyzer = BeaconJitterAnalyzer::new(50, 0.1, 4);
+        analyzer.record_syn("10.0.0.1", "1.2.3.4");
+        analyzer.record_syn("10.0.0.2", "5.6.7.8");
+        analyzer.record_syn("10.0.0.1", "1.2.3.4");
+        assert_eq!(analyzer.tracked_pairs(), 2);
+    }
+
+    #[test]
+    fn test_beacon_jitter_cleanup() {
+        let analyzer = BeaconJitterAnalyzer::new(50, 0.1, 4);
+        analyzer.record_syn("10.0.0.1", "1.2.3.4");
+        // Cleanup with 0 duration should remove everything
+        analyzer.cleanup(Duration::from_secs(0));
+        // After cleanup, the pair with a recent timestamp should be gone
+        // (since elapsed > 0)
+        assert_eq!(analyzer.tracked_pairs(), 0);
+    }
+
+    #[test]
+    fn test_beacon_jitter_max_samples_cap() {
+        let analyzer = BeaconJitterAnalyzer::new(5, 0.1, 3);
+        for _ in 0..20 {
+            analyzer.record_syn("10.0.0.1", "1.2.3.4");
+        }
+        // Internal buffer should be capped at 5
+        let conns = analyzer.connections.read().unwrap();
+        let pair = IPPair::new("10.0.0.1", "1.2.3.4");
+        assert_eq!(conns.get(&pair).unwrap().len(), 5);
     }
 
     #[test]

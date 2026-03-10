@@ -247,6 +247,22 @@ fn cmdi_patterns() -> Vec<PatternDef> {
             regex: r"(?i)(bash\s+-i\s+>&|nc\s+-[elp]|ncat\s+-|python\s+-c\s+.*socket|perl\s+-e\s+.*socket|ruby\s+-rsocket|php\s+-r\s+.*fsockopen)",
             literals: &["bash -i", "nc -", "ncat -", "fsockopen", "-rsocket"],
         },
+        // Management interface RCE — CVE-2025-67840 (WatchGuard XMLRPC)
+        PatternDef {
+            name: "cmdi_mgmt_xmlrpc",
+            category: "cmdi",
+            severity: Severity::Critical,
+            regex: r"(?i)<member><name>(?:os_system|shell_exec|exec)</name><value><string>.*?(?:curl|wget|python|sh|bash).*?</string>",
+            literals: &["<member><name>", "os_system", "shell_exec"],
+        },
+        // Management interface RCE — CVE-2025-63911 (Cohesity API)
+        PatternDef {
+            name: "cmdi_mgmt_api_json",
+            category: "cmdi",
+            severity: Severity::Critical,
+            regex: r#"(?i)"(?:command|cmd)":\s*".*?(?:\|\||;|&&)\s*(?:id|whoami|cat|ls|env)""#,
+            literals: &["\"command\"", "\"cmd\""],
+        },
     ]
 }
 
@@ -412,6 +428,14 @@ fn path_traversal_patterns() -> Vec<PatternDef> {
             severity: Severity::High,
             regex: r"(%00|\\x00|\\0)",
             literals: &["%00", "\\x00", "\\0"],
+        },
+        // Unicode/NFKC normalization evasion — CVE-2026-25673
+        PatternDef {
+            name: "path_unicode_nfkc",
+            category: "path_traversal",
+            severity: Severity::Critical,
+            regex: r"(?i)(%ef%bc%8e%ef%bc%8e|%ef%bc%8f|%uFF0E%uFF0E|%uFF0F)",
+            literals: &["%ef%bc%8e", "%ef%bc%8f", "%uFF0E", "%uFF0F"],
         },
     ]
 }
