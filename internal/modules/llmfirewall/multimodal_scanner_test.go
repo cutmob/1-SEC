@@ -469,9 +469,9 @@ func buildPNGWithTextChunk(keyword, text string) []byte {
 	ihdr := []byte{
 		0x00, 0x00, 0x00, 0x01, // width: 1
 		0x00, 0x00, 0x00, 0x01, // height: 1
-		0x08,                   // bit depth: 8
-		0x02,                   // color type: RGB
-		0x00, 0x00, 0x00,       // compression, filter, interlace
+		0x08,             // bit depth: 8
+		0x02,             // color type: RGB
+		0x00, 0x00, 0x00, // compression, filter, interlace
 	}
 	writePNGChunk(&buf, "IHDR", ihdr)
 

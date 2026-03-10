@@ -48,14 +48,14 @@ const (
 
 // ResponsePolicy defines when and how to respond to alerts from a module.
 type ResponsePolicy struct {
-	Module           string          `json:"module" yaml:"module"`
-	Enabled          bool            `json:"enabled" yaml:"enabled"`
-	MinSeverity      Severity        `json:"min_severity" yaml:"min_severity"`
-	Actions          []ResponseRule  `json:"actions" yaml:"actions"`
-	Cooldown         time.Duration   `json:"cooldown" yaml:"cooldown"`
-	DryRun           bool            `json:"dry_run" yaml:"dry_run"`
-	AllowList        []string        `json:"allow_list,omitempty" yaml:"allow_list"`
-	MaxActionsPerMin int             `json:"max_actions_per_min" yaml:"max_actions_per_min"`
+	Module           string         `json:"module" yaml:"module"`
+	Enabled          bool           `json:"enabled" yaml:"enabled"`
+	MinSeverity      Severity       `json:"min_severity" yaml:"min_severity"`
+	Actions          []ResponseRule `json:"actions" yaml:"actions"`
+	Cooldown         time.Duration  `json:"cooldown" yaml:"cooldown"`
+	DryRun           bool           `json:"dry_run" yaml:"dry_run"`
+	AllowList        []string       `json:"allow_list,omitempty" yaml:"allow_list"`
+	MaxActionsPerMin int            `json:"max_actions_per_min" yaml:"max_actions_per_min"`
 }
 
 // ResponseRule maps an alert condition to a specific action.
@@ -70,17 +70,17 @@ type ResponseRule struct {
 
 // ResponseRecord is the audit log entry for an executed (or skipped) action.
 type ResponseRecord struct {
-	ID          string       `json:"id"`
-	Timestamp   time.Time    `json:"timestamp"`
-	AlertID     string       `json:"alert_id"`
-	Module      string       `json:"module"`
-	Action      ActionType   `json:"action"`
-	Status      ActionStatus `json:"status"`
-	Severity    string       `json:"severity"`
-	Target      string       `json:"target"`
-	Details     string       `json:"details"`
-	DurationMs  int64        `json:"duration_ms"`
-	Error       string       `json:"error,omitempty"`
+	ID         string       `json:"id"`
+	Timestamp  time.Time    `json:"timestamp"`
+	AlertID    string       `json:"alert_id"`
+	Module     string       `json:"module"`
+	Action     ActionType   `json:"action"`
+	Status     ActionStatus `json:"status"`
+	Severity   string       `json:"severity"`
+	Target     string       `json:"target"`
+	Details    string       `json:"details"`
+	DurationMs int64        `json:"duration_ms"`
+	Error      string       `json:"error,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -103,8 +103,8 @@ type ResponseEngine struct {
 	cancel       context.CancelFunc
 	actionRate   map[string]int // per-minute action counter per module
 	rateReset    time.Time
-	ApprovalGate *ApprovalGate        // exported for command poller access
-	Dispatcher   *WebhookDispatcher   // reliable webhook delivery with retry + dead letter
+	ApprovalGate *ApprovalGate      // exported for command poller access
+	Dispatcher   *WebhookDispatcher // reliable webhook delivery with retry + dead letter
 }
 
 // ActionExecutor is the interface for pluggable response action handlers.
@@ -548,6 +548,7 @@ func (re *ResponseEngine) FindRecord(id string) *ResponseRecord {
 	}
 	return nil
 }
+
 // HandleAlertForTest is an exported wrapper around handleAlert for use in tests
 // from other packages (e.g., api tests). Not intended for production use.
 func (re *ResponseEngine) HandleAlertForTest(alert *Alert) {

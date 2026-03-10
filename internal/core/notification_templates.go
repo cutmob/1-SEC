@@ -211,7 +211,7 @@ func (t *TeamsTemplate) Format(alert *Alert, rule ResponseRule) map[string]inter
 		"summary":    fmt.Sprintf("1SEC: %s", alert.Title),
 		"sections": []map[string]interface{}{
 			{
-				"activityTitle": fmt.Sprintf("🛡️ 1SEC Alert: %s", alert.Title),
+				"activityTitle":    fmt.Sprintf("🛡️ 1SEC Alert: %s", alert.Title),
 				"activitySubtitle": alert.Timestamp.Format(time.RFC3339),
 				"facts":            facts,
 				"text":             truncate(alert.Description, 500),

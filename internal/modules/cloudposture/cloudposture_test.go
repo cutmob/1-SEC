@@ -389,10 +389,10 @@ func TestManager_HandleEvent_PolicyCheck(t *testing.T) {
 		totalCount int
 		wantAlert  bool
 	}{
-		{"low compliance", 30, 70, 100, true},   // 30% compliance → critical
+		{"low compliance", 30, 70, 100, true},    // 30% compliance → critical
 		{"medium compliance", 60, 40, 100, true}, // 60% compliance → high
 		{"high compliance", 80, 20, 100, true},   // 80% compliance → medium
-		{"all pass", 100, 0, 100, false},          // 100% compliance → no alert
+		{"all pass", 100, 0, 100, false},         // 100% compliance → no alert
 	}
 
 	for _, tc := range tests {

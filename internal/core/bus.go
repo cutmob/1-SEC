@@ -27,18 +27,18 @@ type EventBus struct {
 // BusMetrics tracks event bus performance counters.
 type BusMetrics struct {
 	mu              sync.Mutex `json:"-"`
-	EventsPublished int64 `json:"events_published"`
-	EventsFailed    int64 `json:"events_failed"`
-	AlertsPublished int64 `json:"alerts_published"`
-	MessagesAcked   int64 `json:"messages_acked"`
-	MessagesNaked   int64 `json:"messages_naked"`
+	EventsPublished int64      `json:"events_published"`
+	EventsFailed    int64      `json:"events_failed"`
+	AlertsPublished int64      `json:"alerts_published"`
+	MessagesAcked   int64      `json:"messages_acked"`
+	MessagesNaked   int64      `json:"messages_naked"`
 }
 
 // NewEventBus creates a new EventBus. If cfg.Embedded is true, it starts an embedded NATS server.
 func NewEventBus(cfg *BusConfig, logger zerolog.Logger) (*EventBus, error) {
 	bus := &EventBus{
-		logger: logger.With().Str("component", "event_bus").Logger(),
-		subs:   make([]*nats.Subscription, 0),
+		logger:  logger.With().Str("component", "event_bus").Logger(),
+		subs:    make([]*nats.Subscription, 0),
 		metrics: &BusMetrics{},
 	}
 
@@ -313,4 +313,3 @@ func (b *EventBus) GetMetrics() map[string]int64 {
 		"messages_naked":   b.metrics.MessagesNaked,
 	}
 }
-

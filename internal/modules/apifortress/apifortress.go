@@ -798,30 +798,30 @@ type DataExposureDetector struct {
 	herokuPattern     *regexp.Regexp
 	genericSecretPat  *regexp.Regexp
 	// Wave 2: additional provider patterns from secrets-patterns-db research
-	facebookTokenPat  *regexp.Regexp
-	amazonMWSPat      *regexp.Regexp
-	mailgunPat        *regexp.Regexp
-	mailchimpPat      *regexp.Regexp
+	facebookTokenPat   *regexp.Regexp
+	amazonMWSPat       *regexp.Regexp
+	mailgunPat         *regexp.Regexp
+	mailchimpPat       *regexp.Regexp
 	paypalBraintreePat *regexp.Regexp
-	squareTokenPat    *regexp.Regexp
-	squareOAuthPat    *regexp.Regexp
-	passwordInURLPat  *regexp.Regexp
-	googleOAuthPat    *regexp.Regexp
-	gcpOAuthClientPat *regexp.Regexp
-	gcpServiceAcctPat *regexp.Regexp
-	cloudinaryPat     *regexp.Regexp
-	firebaseURLPat    *regexp.Regexp
-	firebaseSecretPat *regexp.Regexp
+	squareTokenPat     *regexp.Regexp
+	squareOAuthPat     *regexp.Regexp
+	passwordInURLPat   *regexp.Regexp
+	googleOAuthPat     *regexp.Regexp
+	gcpOAuthClientPat  *regexp.Regexp
+	gcpServiceAcctPat  *regexp.Regexp
+	cloudinaryPat      *regexp.Regexp
+	firebaseURLPat     *regexp.Regexp
+	firebaseSecretPat  *regexp.Regexp
 	databricksTokenPat *regexp.Regexp
-	shopifyTokenPat   *regexp.Regexp
-	vercelTokenPat    *regexp.Regexp
-	azureSASPat       *regexp.Regexp
-	supabaseKeyPat    *regexp.Regexp
-	datadogKeyPat     *regexp.Regexp
-	npmTokenPat       *regexp.Regexp
-	pypiTokenPat      *regexp.Regexp
-	nugetKeyPat       *regexp.Regexp
-	dockerHubTokenPat *regexp.Regexp
+	shopifyTokenPat    *regexp.Regexp
+	vercelTokenPat     *regexp.Regexp
+	azureSASPat        *regexp.Regexp
+	supabaseKeyPat     *regexp.Regexp
+	datadogKeyPat      *regexp.Regexp
+	npmTokenPat        *regexp.Regexp
+	pypiTokenPat       *regexp.Regexp
+	nugetKeyPat        *regexp.Regexp
+	dockerHubTokenPat  *regexp.Regexp
 }
 
 type DataExposureFinding struct {

@@ -1052,14 +1052,14 @@ func scanPDFTextStreams(data []byte) []MultimodalDetection {
 
 // pdfTextState tracks the current text rendering state while parsing a content stream.
 type pdfTextState struct {
-	fontSize      float64
-	renderMode    int     // 0=fill, 1=stroke, 2=fill+stroke, 3=invisible, 4-7=clip variants
-	fillColorR    float64 // RGB fill color
-	fillColorG    float64
-	fillColorB    float64
-	fillGray      float64 // grayscale fill
-	colorIsGray   bool
-	inTextBlock   bool
+	fontSize    float64
+	renderMode  int     // 0=fill, 1=stroke, 2=fill+stroke, 3=invisible, 4-7=clip variants
+	fillColorR  float64 // RGB fill color
+	fillColorG  float64
+	fillColorB  float64
+	fillGray    float64 // grayscale fill
+	colorIsGray bool
+	inTextBlock bool
 }
 
 func (s *pdfTextState) isInvisible() bool {
@@ -1089,9 +1089,9 @@ func analyzeTextStream(stream []byte) []MultimodalDetection {
 	var detections []MultimodalDetection
 
 	state := &pdfTextState{
-		fontSize:   12, // default
-		renderMode: 0,
-		fillGray:   0,
+		fontSize:    12, // default
+		renderMode:  0,
+		fillGray:    0,
 		colorIsGray: true,
 	}
 

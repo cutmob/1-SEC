@@ -37,7 +37,6 @@ func sanitizeShellArg(s string) string {
 	return s
 }
 
-
 // validateWebhookURL checks that a webhook URL is a valid HTTPS (or HTTP for
 // local dev) endpoint. Returns an error if the URL is empty, unparseable,
 // uses a dangerous scheme, or points to a private/loopback address (SSRF).
@@ -466,7 +465,7 @@ func (e *DisableUserExecutor) Execute(ctx context.Context, alert *Alert, rule Re
 // WebhookExecutor — sends alert + action context to a webhook URL
 // ---------------------------------------------------------------------------
 
-type WebhookExecutor struct{
+type WebhookExecutor struct {
 	Dispatcher *WebhookDispatcher
 }
 

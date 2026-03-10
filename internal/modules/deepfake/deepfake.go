@@ -110,20 +110,20 @@ func NewAudioAnalyzer() *AudioAnalyzer { return &AudioAnalyzer{} }
 
 // AudioResult holds the results of heuristic audio analysis.
 type AudioResult struct {
-	Score           float64
-	Entropy         float64
-	SpectralFlat    float64
-	SilenceRatio    float64
-	ZeroCrossRate   float64
-	BitrateStable   bool
-	PitchMean       float64
-	PitchStdDev     float64
-	Jitter          float64
-	Shimmer         float64
-	HNR             float64
-	MFCCSmoothness  float64
-	PhaseCoherence  float64
-	Indicators      []string
+	Score          float64
+	Entropy        float64
+	SpectralFlat   float64
+	SilenceRatio   float64
+	ZeroCrossRate  float64
+	BitrateStable  bool
+	PitchMean      float64
+	PitchStdDev    float64
+	Jitter         float64
+	Shimmer        float64
+	HNR            float64
+	MFCCSmoothness float64
+	PhaseCoherence float64
+	Indicators     []string
 }
 
 // Analyze performs heuristic analysis on raw audio bytes.
@@ -239,12 +239,12 @@ func (a *AudioAnalyzer) Analyze(raw []byte) AudioResult {
 
 // ProsodyResult holds prosodic feature values.
 type ProsodyResult struct {
-	Valid      bool
-	PitchMean  float64
+	Valid       bool
+	PitchMean   float64
 	PitchStdDev float64
-	Jitter     float64
-	Shimmer    float64
-	HNR        float64
+	Jitter      float64
+	Shimmer     float64
+	HNR         float64
 }
 
 // analyzeProsody extracts prosodic features from 16-bit PCM audio.
@@ -384,7 +384,7 @@ func estimateHNR(samples []float64, sampleRate float64) float64 {
 	}
 
 	// Use a central window
-	start := n/4
+	start := n / 4
 	end := start + 512
 	if end > n {
 		end = n
@@ -1749,13 +1749,13 @@ func decodePunycode(encoded string) string {
 // decodePunycodePart decodes a single Punycode label (without the xn-- prefix).
 func decodePunycodePart(input string) string {
 	const (
-		base         = 36
-		tmin         = 1
-		tmax         = 26
-		skew         = 38
-		damp         = 700
-		initialBias  = 72
-		initialN     = 128
+		base        = 36
+		tmin        = 1
+		tmax        = 26
+		skew        = 38
+		damp        = 700
+		initialBias = 72
+		initialN    = 128
 	)
 
 	// Find the last delimiter

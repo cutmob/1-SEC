@@ -218,7 +218,7 @@ func writeSARIF(w io.Writer, alerts []interface{}, ver string) {
 		Schema:  "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
 		Version: "2.1.0",
 		Runs: []sarifRun{{
-			Tool: sarifTool{Driver: sarifDriver{Name: "1sec", Version: ver}},
+			Tool:    sarifTool{Driver: sarifDriver{Name: "1sec", Version: ver}},
 			Results: results,
 		}},
 	}

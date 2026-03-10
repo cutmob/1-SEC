@@ -41,7 +41,7 @@ func (c *PfSenseCollector) Start(ctx context.Context, bus *core.EventBus, logger
 			return
 		}
 
-		action := fields[6]   // pass, block, reject
+		action := fields[6]    // pass, block, reject
 		direction := fields[7] // in, out
 		ipVersion := fields[8]
 

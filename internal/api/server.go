@@ -698,9 +698,9 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 // calls so all error responses are consistent JSON with error code.
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]interface{}{
-		"error":   message,
-		"code":    code,
-		"status":  status,
+		"error":  message,
+		"code":   code,
+		"status": status,
 	})
 }
 
@@ -712,16 +712,16 @@ func decodeJSONBody(r *http.Request, dst interface{}) error {
 
 // mutatingPaths lists URL path prefixes that require write-scope API keys.
 var mutatingPaths = map[string]bool{
-	"/api/v1/events":              true,
-	"/api/v1/alerts/clear":        true,
-	"/api/v1/shutdown":            true,
-	"/api/v1/config/reload":       true,
-	"/api/v1/enforce/policies/":   true,
-	"/api/v1/enforce/dry-run/":    true,
-	"/api/v1/enforce/test/":       true,
-	"/api/v1/enforce/approve/":    true,
-	"/api/v1/enforce/reject/":     true,
-	"/api/v1/enforce/rollback/":   true,
+	"/api/v1/events":                  true,
+	"/api/v1/alerts/clear":            true,
+	"/api/v1/shutdown":                true,
+	"/api/v1/config/reload":           true,
+	"/api/v1/enforce/policies/":       true,
+	"/api/v1/enforce/dry-run/":        true,
+	"/api/v1/enforce/test/":           true,
+	"/api/v1/enforce/approve/":        true,
+	"/api/v1/enforce/reject/":         true,
+	"/api/v1/enforce/rollback/":       true,
 	"/api/v1/enforce/webhooks/retry/": true,
 }
 

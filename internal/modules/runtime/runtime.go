@@ -983,6 +983,7 @@ func isSensitivePath(path string) bool {
 	}
 	return false
 }
+
 // isSensitiveCmdTarget checks if a command line string references sensitive system
 // paths, used for detecting symlink/link-following privilege escalation attacks
 // (CVE-2026-1731, Fortinet FortiClient LPE).

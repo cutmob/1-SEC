@@ -95,7 +95,6 @@ func boolStatus(v interface{}) string {
 	return dim(fmt.Sprintf("%v", v))
 }
 
-
 func renderDashboard(base, apiKey string, timeout time.Duration) {
 	clearScreen()
 
@@ -731,5 +730,3 @@ func renderDashboard(base, apiKey string, timeout time.Duration) {
 		dim("API:"), base,
 		dim("Refresh:"), dim("auto"))
 }
-
-

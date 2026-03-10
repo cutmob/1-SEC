@@ -230,8 +230,11 @@ async fn process_message(
         let norm_result = matcher.scan(&event.id, &norm_refs);
 
         // Merge normalized matches (deduplicate by pattern name)
-        let existing: std::collections::HashSet<String> =
-            result.matches.iter().map(|m| m.pattern_name.clone()).collect();
+        let existing: std::collections::HashSet<String> = result
+            .matches
+            .iter()
+            .map(|m| m.pattern_name.clone())
+            .collect();
         for m in norm_result.matches {
             if !existing.contains(&m.pattern_name) {
                 if m.severity > result.highest_severity {

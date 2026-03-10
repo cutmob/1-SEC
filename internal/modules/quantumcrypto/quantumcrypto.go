@@ -543,7 +543,7 @@ func classifyQuantumVulnerability(algorithm string, keySize int, purpose string)
 		// FIPS 204 — ML-DSA (digital signatures)
 		"ml-dsa": true, "ml-dsa-44": true, "ml-dsa-65": true, "ml-dsa-87": true,
 		// FIPS 205 — SLH-DSA (stateless hash-based signatures)
-		"slh-dsa": true,
+		"slh-dsa":            true,
 		"slh-dsa-shake-128s": true, "slh-dsa-shake-128f": true,
 		"slh-dsa-shake-192s": true, "slh-dsa-shake-192f": true,
 		"slh-dsa-shake-256s": true, "slh-dsa-shake-256f": true,
@@ -559,9 +559,9 @@ func classifyQuantumVulnerability(algorithm string, keySize int, purpose string)
 
 	// Algorithms not yet finalized — recognized but flagged as draft
 	pqcDraft := map[string]bool{
-		"falcon": true, "fn-dsa": true,     // FIPS 206 — expected late 2026/early 2027
-		"hqc": true,                         // Selected March 2025, draft expected 2026
-		"bike": true,                        // Round 4 candidate, NOT selected for standardization
+		"falcon": true, "fn-dsa": true, // FIPS 206 — expected late 2026/early 2027
+		"hqc":  true, // Selected March 2025, draft expected 2026
+		"bike": true, // Round 4 candidate, NOT selected for standardization
 	}
 
 	if pqcSafe[algoLower] {

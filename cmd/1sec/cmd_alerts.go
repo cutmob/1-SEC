@@ -344,4 +344,3 @@ func cmdAlertsDelete(args []string) {
 
 	fmt.Fprintf(os.Stdout, "%s Alert %s deleted.\n", green("✓"), alertID)
 }
-

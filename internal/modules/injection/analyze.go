@@ -409,11 +409,11 @@ func normalizeWhitespace(s string) string {
 	for _, r := range s {
 		switch r {
 		case '\t', '\n', '\r', '\v', '\f',
-			'\u00A0', // non-breaking space
+			'\u00A0',                               // non-breaking space
 			'\u2000', '\u2001', '\u2002', '\u2003', // en/em spaces
 			'\u2004', '\u2005', '\u2006', '\u2007',
 			'\u2008', '\u2009', '\u200A', // hair/thin spaces
-			'\u200B', // zero-width space
+			'\u200B',           // zero-width space
 			'\u200C', '\u200D', // zero-width non-joiner/joiner
 			'\u2028', '\u2029', // line/paragraph separator
 			'\u202F', // narrow no-break space

@@ -78,17 +78,28 @@ fn decode_url_percent(s: &str) -> String {
 fn decode_html_entities(s: &str) -> String {
     // Named entities
     let named: &[(&str, &str)] = &[
-        ("&lt;", "<"), ("&LT;", "<"),
-        ("&gt;", ">"), ("&GT;", ">"),
-        ("&amp;", "&"), ("&AMP;", "&"),
-        ("&quot;", "\""), ("&QUOT;", "\""),
-        ("&apos;", "'"), ("&APOS;", "'"),
-        ("&sol;", "/"), ("&bsol;", "\\"),
-        ("&lpar;", "("), ("&rpar;", ")"),
-        ("&semi;", ";"), ("&comma;", ","),
-        ("&equals;", "="), ("&plus;", "+"),
-        ("&num;", "#"), ("&excl;", "!"),
-        ("&colon;", ":"), ("&Tab;", "\t"),
+        ("&lt;", "<"),
+        ("&LT;", "<"),
+        ("&gt;", ">"),
+        ("&GT;", ">"),
+        ("&amp;", "&"),
+        ("&AMP;", "&"),
+        ("&quot;", "\""),
+        ("&QUOT;", "\""),
+        ("&apos;", "'"),
+        ("&APOS;", "'"),
+        ("&sol;", "/"),
+        ("&bsol;", "\\"),
+        ("&lpar;", "("),
+        ("&rpar;", ")"),
+        ("&semi;", ";"),
+        ("&comma;", ","),
+        ("&equals;", "="),
+        ("&plus;", "+"),
+        ("&num;", "#"),
+        ("&excl;", "!"),
+        ("&colon;", ":"),
+        ("&Tab;", "\t"),
         ("&NewLine;", "\n"),
     ];
 
@@ -106,7 +117,9 @@ fn decode_html_entities(s: &str) -> String {
             if let Some(end) = bytes[i..].iter().position(|&b| b == b';') {
                 if end > 0 && end < 10 {
                     let num_slice = &bytes[i + 2..i + end];
-                    let val = if !num_slice.is_empty() && (num_slice[0] == b'x' || num_slice[0] == b'X') {
+                    let val = if !num_slice.is_empty()
+                        && (num_slice[0] == b'x' || num_slice[0] == b'X')
+                    {
                         parse_hex(&num_slice[1..])
                     } else {
                         parse_decimal(num_slice)
@@ -129,7 +142,9 @@ fn parse_hex(bytes: &[u8]) -> i32 {
     let mut val: i32 = 0;
     for &b in bytes {
         let h = unhex(b);
-        if h < 0 { return -1; }
+        if h < 0 {
+            return -1;
+        }
         val = val * 16 + h;
     }
     val
@@ -138,7 +153,9 @@ fn parse_hex(bytes: &[u8]) -> i32 {
 fn parse_decimal(bytes: &[u8]) -> i32 {
     let mut val: i32 = 0;
     for &b in bytes {
-        if b < b'0' || b > b'9' { return -1; }
+        if b < b'0' || b > b'9' {
+            return -1;
+        }
         val = val * 10 + (b - b'0') as i32;
     }
     val
@@ -168,7 +185,10 @@ fn decode_backslash_escapes(s: &str) -> String {
                         let mut valid = true;
                         for j in 2..6 {
                             let h = unhex(bytes[i + j]);
-                            if h < 0 { valid = false; break; }
+                            if h < 0 {
+                                valid = false;
+                                break;
+                            }
                             val = val * 16 + h;
                         }
                         if valid && val < 128 {
@@ -178,13 +198,27 @@ fn decode_backslash_escapes(s: &str) -> String {
                         }
                     }
                 }
-                b'n' => { out.push(b'\n'); i += 2; continue; }
-                b'r' => { out.push(b'\r'); i += 2; continue; }
-                b't' => { out.push(b'\t'); i += 2; continue; }
+                b'n' => {
+                    out.push(b'\n');
+                    i += 2;
+                    continue;
+                }
+                b'r' => {
+                    out.push(b'\r');
+                    i += 2;
+                    continue;
+                }
+                b't' => {
+                    out.push(b'\t');
+                    i += 2;
+                    continue;
+                }
                 b'0' => {
                     if i + 3 < bytes.len()
-                        && bytes[i + 2] >= b'0' && bytes[i + 2] <= b'7'
-                        && bytes[i + 3] >= b'0' && bytes[i + 3] <= b'7'
+                        && bytes[i + 2] >= b'0'
+                        && bytes[i + 2] <= b'7'
+                        && bytes[i + 3] >= b'0'
+                        && bytes[i + 3] <= b'7'
                     {
                         let val = (bytes[i + 1] - b'0') as i32 * 64
                             + (bytes[i + 2] - b'0') as i32 * 8
@@ -230,12 +264,12 @@ fn normalize_whitespace(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
-            '\t' | '\n' | '\r' | '\x0B' | '\x0C'
-            | '\u{00A0}' | '\u{2000}' | '\u{2001}' | '\u{2002}' | '\u{2003}'
-            | '\u{2004}' | '\u{2005}' | '\u{2006}' | '\u{2007}' | '\u{2008}'
-            | '\u{2009}' | '\u{200A}' | '\u{200B}' | '\u{200C}' | '\u{200D}'
-            | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
-            | '\u{FEFF}' => out.push(' '),
+            '\t' | '\n' | '\r' | '\x0B' | '\x0C' | '\u{00A0}' | '\u{2000}' | '\u{2001}'
+            | '\u{2002}' | '\u{2003}' | '\u{2004}' | '\u{2005}' | '\u{2006}' | '\u{2007}'
+            | '\u{2008}' | '\u{2009}' | '\u{200A}' | '\u{200B}' | '\u{200C}' | '\u{200D}'
+            | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}' | '\u{FEFF}' => {
+                out.push(' ')
+            }
             _ => out.push(c),
         }
     }
@@ -243,49 +277,81 @@ fn normalize_whitespace(s: &str) -> String {
 }
 
 fn normalize_homoglyphs(s: &str) -> String {
-    lazy_static_homoglyphs().iter().fold(s.to_string(), |acc, (from, to)| {
-        acc.replace(from, to)
-    })
+    lazy_static_homoglyphs()
+        .iter()
+        .fold(s.to_string(), |acc, (from, to)| acc.replace(from, to))
 }
 
 fn lazy_static_homoglyphs() -> &'static Vec<(&'static str, &'static str)> {
     use std::sync::OnceLock;
     static MAP: OnceLock<Vec<(&str, &str)>> = OnceLock::new();
-    MAP.get_or_init(|| vec![
-        // Quotation marks
-        ("\u{2018}", "'"), ("\u{2019}", "'"),
-        ("\u{201C}", "\""), ("\u{201D}", "\""),
-        ("\u{0060}", "'"), ("\u{00B4}", "'"),
-        // Fullwidth punctuation
-        ("\u{FF08}", "("), ("\u{FF09}", ")"),
-        ("\u{FF3B}", "["), ("\u{FF3D}", "]"),
-        ("\u{FF5B}", "{"), ("\u{FF5D}", "}"),
-        ("\u{FF1C}", "<"), ("\u{FF1E}", ">"),
-        ("\u{FF0F}", "/"), ("\u{FF3C}", "\\"),
-        ("\u{2024}", "."), ("\u{FF0E}", "."),
-        ("\u{FF1A}", ":"), ("\u{FF1B}", ";"),
-        ("\u{FF0C}", ","), ("\u{FF01}", "!"),
-        ("\u{FF1D}", "="), ("\u{FF0B}", "+"),
-        ("\u{FF05}", "%"), ("\u{FF03}", "#"),
-        ("\u{FF20}", "@"), ("\u{FF06}", "&"),
-        ("\u{FF5C}", "|"), ("\u{FF3E}", "^"),
-        ("\u{FF5E}", "~"), ("\u{FF0D}", "-"),
-        ("\u{FF3F}", "_"), ("\u{FF04}", "$"),
-        ("\u{FF07}", "'"), ("\u{FF02}", "\""),
-        // Cyrillic lookalikes
-        ("\u{0410}", "A"), ("\u{0430}", "a"),
-        ("\u{0412}", "B"), ("\u{0432}", "b"),
-        ("\u{0421}", "C"), ("\u{0441}", "c"),
-        ("\u{0415}", "E"), ("\u{0435}", "e"),
-        ("\u{041D}", "H"), ("\u{043D}", "h"),
-        ("\u{041A}", "K"), ("\u{043A}", "k"),
-        ("\u{041C}", "M"), ("\u{043C}", "m"),
-        ("\u{041E}", "O"), ("\u{043E}", "o"),
-        ("\u{0420}", "P"), ("\u{0440}", "p"),
-        ("\u{0422}", "T"), ("\u{0442}", "t"),
-        ("\u{0425}", "X"), ("\u{0445}", "x"),
-        ("\u{0423}", "Y"), ("\u{0443}", "y"),
-    ])
+    MAP.get_or_init(|| {
+        vec![
+            // Quotation marks
+            ("\u{2018}", "'"),
+            ("\u{2019}", "'"),
+            ("\u{201C}", "\""),
+            ("\u{201D}", "\""),
+            ("\u{0060}", "'"),
+            ("\u{00B4}", "'"),
+            // Fullwidth punctuation
+            ("\u{FF08}", "("),
+            ("\u{FF09}", ")"),
+            ("\u{FF3B}", "["),
+            ("\u{FF3D}", "]"),
+            ("\u{FF5B}", "{"),
+            ("\u{FF5D}", "}"),
+            ("\u{FF1C}", "<"),
+            ("\u{FF1E}", ">"),
+            ("\u{FF0F}", "/"),
+            ("\u{FF3C}", "\\"),
+            ("\u{2024}", "."),
+            ("\u{FF0E}", "."),
+            ("\u{FF1A}", ":"),
+            ("\u{FF1B}", ";"),
+            ("\u{FF0C}", ","),
+            ("\u{FF01}", "!"),
+            ("\u{FF1D}", "="),
+            ("\u{FF0B}", "+"),
+            ("\u{FF05}", "%"),
+            ("\u{FF03}", "#"),
+            ("\u{FF20}", "@"),
+            ("\u{FF06}", "&"),
+            ("\u{FF5C}", "|"),
+            ("\u{FF3E}", "^"),
+            ("\u{FF5E}", "~"),
+            ("\u{FF0D}", "-"),
+            ("\u{FF3F}", "_"),
+            ("\u{FF04}", "$"),
+            ("\u{FF07}", "'"),
+            ("\u{FF02}", "\""),
+            // Cyrillic lookalikes
+            ("\u{0410}", "A"),
+            ("\u{0430}", "a"),
+            ("\u{0412}", "B"),
+            ("\u{0432}", "b"),
+            ("\u{0421}", "C"),
+            ("\u{0441}", "c"),
+            ("\u{0415}", "E"),
+            ("\u{0435}", "e"),
+            ("\u{041D}", "H"),
+            ("\u{043D}", "h"),
+            ("\u{041A}", "K"),
+            ("\u{043A}", "k"),
+            ("\u{041C}", "M"),
+            ("\u{043C}", "m"),
+            ("\u{041E}", "O"),
+            ("\u{043E}", "o"),
+            ("\u{0420}", "P"),
+            ("\u{0440}", "p"),
+            ("\u{0422}", "T"),
+            ("\u{0442}", "t"),
+            ("\u{0425}", "X"),
+            ("\u{0445}", "x"),
+            ("\u{0423}", "Y"),
+            ("\u{0443}", "y"),
+        ]
+    })
 }
 
 /// Fold Unicode fullwidth, halfwidth, and mathematical alphanumeric symbols

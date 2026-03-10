@@ -16,12 +16,12 @@ import (
 
 // ArchiveConfig holds cold archiver settings.
 type ArchiveConfig struct {
-	Enabled        bool              `yaml:"enabled"`
-	Dir            string            `yaml:"dir"`
-	RotateBytes    int64             `yaml:"rotate_bytes"`    // rotate file after N bytes (default 100MB)
-	RotateInterval string            `yaml:"rotate_interval"` // rotate after duration (default "1h")
-	Compress       bool              `yaml:"compress"`        // gzip compress (default true)
-	SampleRules    []SampleRule      `yaml:"sample_rules"`    // optional sampling for high-volume types
+	Enabled        bool         `yaml:"enabled"`
+	Dir            string       `yaml:"dir"`
+	RotateBytes    int64        `yaml:"rotate_bytes"`    // rotate file after N bytes (default 100MB)
+	RotateInterval string       `yaml:"rotate_interval"` // rotate after duration (default "1h")
+	Compress       bool         `yaml:"compress"`        // gzip compress (default true)
+	SampleRules    []SampleRule `yaml:"sample_rules"`    // optional sampling for high-volume types
 }
 
 // SampleRule defines a sampling rate for specific event types or severity levels.
@@ -63,7 +63,7 @@ type Archiver struct {
 	alertsArchived int64
 	filesRotated   int64
 	bytesWritten   int64
-	eventsSampled  int64 // events dropped by sampling
+	eventsSampled  int64            // events dropped by sampling
 	sampleCounters map[string]int64 // per-type counters for sampling
 }
 

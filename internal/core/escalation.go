@@ -32,10 +32,10 @@ type EscalationConfig struct {
 
 // EscalationTimer defines timeout and action for a severity level.
 type EscalationTimer struct {
-	Timeout       time.Duration `yaml:"timeout" json:"timeout"`
-	EscalateTo    string        `yaml:"escalate_to" json:"escalate_to"`       // target severity
-	ReNotify      bool          `yaml:"re_notify" json:"re_notify"`
-	MaxEscalations int          `yaml:"max_escalations" json:"max_escalations"`
+	Timeout        time.Duration `yaml:"timeout" json:"timeout"`
+	EscalateTo     string        `yaml:"escalate_to" json:"escalate_to"` // target severity
+	ReNotify       bool          `yaml:"re_notify" json:"re_notify"`
+	MaxEscalations int           `yaml:"max_escalations" json:"max_escalations"`
 }
 
 // DefaultEscalationConfig returns sane defaults.
@@ -52,12 +52,12 @@ func DefaultEscalationConfig() EscalationConfig {
 
 // EscalationEvent is emitted when an alert escalates.
 type EscalationEvent struct {
-	AlertID      string    `json:"alert_id"`
-	Module       string    `json:"module"`
-	OldSeverity  string    `json:"old_severity"`
-	NewSeverity  string    `json:"new_severity"`
-	EscalationN  int       `json:"escalation_number"`
-	Timestamp    time.Time `json:"timestamp"`
+	AlertID     string    `json:"alert_id"`
+	Module      string    `json:"module"`
+	OldSeverity string    `json:"old_severity"`
+	NewSeverity string    `json:"new_severity"`
+	EscalationN int       `json:"escalation_number"`
+	Timestamp   time.Time `json:"timestamp"`
 }
 
 // EscalationHandler is called when an alert escalates.

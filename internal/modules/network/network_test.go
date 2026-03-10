@@ -198,12 +198,12 @@ func TestIPReputation_AddAndCheck(t *testing.T) {
 func TestIPReputation_BogonDetection(t *testing.T) {
 	rep := NewIPReputation()
 	bogons := []string{
-		"0.0.0.1",       // 0.0.0.0/8
-		"100.64.0.1",    // 100.64.0.0/10
-		"192.0.2.1",     // 192.0.2.0/24 (TEST-NET-1)
-		"198.51.100.1",  // 198.51.100.0/24 (TEST-NET-2)
-		"203.0.113.1",   // 203.0.113.0/24 (TEST-NET-3)
-		"240.0.0.1",     // 240.0.0.0/4
+		"0.0.0.1",      // 0.0.0.0/8
+		"100.64.0.1",   // 100.64.0.0/10
+		"192.0.2.1",    // 192.0.2.0/24 (TEST-NET-1)
+		"198.51.100.1", // 198.51.100.0/24 (TEST-NET-2)
+		"203.0.113.1",  // 203.0.113.0/24 (TEST-NET-3)
+		"240.0.0.1",    // 240.0.0.0/4
 	}
 	for _, ip := range bogons {
 		if !rep.IsMalicious(ip) {

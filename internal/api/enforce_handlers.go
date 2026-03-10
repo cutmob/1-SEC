@@ -221,12 +221,12 @@ func (s *Server) handleEnforceTest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"module":          module,
-		"test_severity":   severity.String(),
-		"policy_enabled":  policy.Enabled,
-		"policy_dry_run":  policy.DryRun,
-		"actions":         matchingActions,
-		"total_matching":  len(matchingActions),
+		"module":         module,
+		"test_severity":  severity.String(),
+		"policy_enabled": policy.Enabled,
+		"policy_dry_run": policy.DryRun,
+		"actions":        matchingActions,
+		"total_matching": len(matchingActions),
 	})
 }
 
@@ -416,7 +416,6 @@ func (s *Server) handleEnforceRollback(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 }
-
 
 // handleEnforceApprovalsPending returns all pending approval gate actions.
 // URL pattern: GET /api/v1/enforce/approvals/pending
@@ -609,14 +608,14 @@ func (s *Server) handleEnforceConfigGet(w http.ResponseWriter, r *http.Request) 
 				})
 			}
 			policySummary = append(policySummary, map[string]interface{}{
-				"module":             module,
-				"enabled":            policy.Enabled,
-				"min_severity":       policy.MinSeverity.String(),
-				"dry_run":            policy.DryRun,
-				"cooldown_seconds":   int(policy.Cooldown.Seconds()),
+				"module":              module,
+				"enabled":             policy.Enabled,
+				"min_severity":        policy.MinSeverity.String(),
+				"dry_run":             policy.DryRun,
+				"cooldown_seconds":    int(policy.Cooldown.Seconds()),
 				"max_actions_per_min": policy.MaxActionsPerMin,
-				"allow_list":         policy.AllowList,
-				"actions":            actions,
+				"allow_list":          policy.AllowList,
+				"actions":             actions,
 			})
 		}
 	}

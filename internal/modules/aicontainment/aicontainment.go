@@ -23,13 +23,14 @@ const ModuleName = "ai_containment"
 // detection, cascading failure monitoring, and rogue agent detection.
 //
 // Aligned with OWASP Agentic AI Top 10 (2025-2026):
-//   ASI01 - Agent Goal Hijack
-//   ASI02 - Tool Misuse
-//   ASI03 - Identity Abuse (via privilege escalation tracking)
-//   ASI04 - Supply Chain Vulnerabilities (MCP rug pulls)
-//   ASI06 - Memory Poisoning
-//   ASI08 - Cascading Failures
-//   ASI10 - Rogue Agents
+//
+//	ASI01 - Agent Goal Hijack
+//	ASI02 - Tool Misuse
+//	ASI03 - Identity Abuse (via privilege escalation tracking)
+//	ASI04 - Supply Chain Vulnerabilities (MCP rug pulls)
+//	ASI06 - Memory Poisoning
+//	ASI08 - Cascading Failures
+//	ASI10 - Rogue Agents
 type Containment struct {
 	logger         zerolog.Logger
 	bus            *core.EventBus
@@ -45,10 +46,10 @@ type Containment struct {
 	memoryMonitor  *MemoryPoisonMonitor
 	cascadeMonitor *CascadeFailureMonitor
 	// Agentic web access monitors (2026)
-	webFetchMonitor    *AgentWebFetchMonitor
-	paymentMonitor     *AgentPaymentMonitor
-	markdownScanner    *MarkdownIngestionScanner
-	delegationTracker  *DelegationChainTracker
+	webFetchMonitor   *AgentWebFetchMonitor
+	paymentMonitor    *AgentPaymentMonitor
+	markdownScanner   *MarkdownIngestionScanner
+	delegationTracker *DelegationChainTracker
 }
 
 func New() *Containment { return &Containment{} }
@@ -1066,9 +1067,9 @@ func NewShadowAIDetector() *ShadowAIDetector {
 			// Major LLM providers
 			"api.openai.com": true, "api.anthropic.com": true,
 			"generativelanguage.googleapis.com": true,
-			"api.cohere.ai": true, "api.mistral.ai": true,
+			"api.cohere.ai":                     true, "api.mistral.ai": true,
 			"api-inference.huggingface.co": true,
-			"api.replicate.com": true, "api.together.xyz": true,
+			"api.replicate.com":            true, "api.together.xyz": true,
 			"api.groq.com": true, "api.perplexity.ai": true,
 			"api.deepseek.com": true,
 			// 2025-2026 additions
@@ -1124,8 +1125,8 @@ type agentProfile struct {
 	LastSeen    time.Time
 	CreatedAt   time.Time
 	// Rogue loop detection
-	LastAction string
-	LastTarget string
+	LastAction  string
+	LastTarget  string
 	RepeatCount int
 }
 
@@ -1269,15 +1270,15 @@ func (at *AgentTracker) RecordAction(agentID, action, tool, target string) Agent
 // ============================================================================
 
 // ToolIntegrityMonitor detects three classes of MCP tool attacks:
-//   1. Tool Poisoning: hidden adversarial instructions in tool descriptions
-//   2. Rug Pulls: post-approval description mutations
-//   3. Shadowing: cross-server tool name collisions that redirect agent actions
+//  1. Tool Poisoning: hidden adversarial instructions in tool descriptions
+//  2. Rug Pulls: post-approval description mutations
+//  3. Shadowing: cross-server tool name collisions that redirect agent actions
 //
 // Ref: arxiv.org/html/2512.06556v1, Invariant Labs April 2025
 type ToolIntegrityMonitor struct {
-	mu              sync.RWMutex
-	knownTools      *lru.Cache[string, *toolRecord]
-	poisonPatterns  []*regexp.Regexp
+	mu             sync.RWMutex
+	knownTools     *lru.Cache[string, *toolRecord]
+	poisonPatterns []*regexp.Regexp
 }
 
 type toolRecord struct {
@@ -1506,9 +1507,9 @@ func (gm *GoalHijackMonitor) IsDestructiveVsReadOnly(agentID, action, tool strin
 // ============================================================================
 
 type MemoryPoisonMonitor struct {
-	mu               sync.RWMutex
-	agents           *lru.Cache[string, *memoryState]
-	instructionPats  []*regexp.Regexp
+	mu              sync.RWMutex
+	agents          *lru.Cache[string, *memoryState]
+	instructionPats []*regexp.Regexp
 }
 
 type memoryState struct {
@@ -1618,10 +1619,10 @@ type CascadeFailureMonitor struct {
 }
 
 type agentErrorState struct {
-	ErrorCount  int
-	RetryCount  int
-	Window      time.Time
-	ErrorTypes  map[string]int
+	ErrorCount       int
+	RetryCount       int
+	Window           time.Time
+	ErrorTypes       map[string]int
 	DownstreamAgents []string
 }
 
@@ -1865,11 +1866,11 @@ type AgentPaymentMonitor struct {
 }
 
 type paymentProfile struct {
-	PaymentCount   int
-	TotalSpent     float64
-	PaymentWindow  time.Time
-	Recipients     map[string]bool
-	LastPayment    time.Time
+	PaymentCount  int
+	TotalSpent    float64
+	PaymentWindow time.Time
+	Recipients    map[string]bool
+	LastPayment   time.Time
 }
 
 type PaymentResult struct {
@@ -1977,9 +1978,9 @@ func parseFloat(s string) float64 {
 // data exfiltration links embedded in markdown content that agents ingest
 // from llms.txt endpoints, Accept: text/markdown responses, or web scraping.
 type MarkdownIngestionScanner struct {
-	injectionPatterns  []*regexp.Regexp
-	hiddenDirPatterns  []*regexp.Regexp
-	exfilLinkPatterns  []*regexp.Regexp
+	injectionPatterns []*regexp.Regexp
+	hiddenDirPatterns []*regexp.Regexp
+	exfilLinkPatterns []*regexp.Regexp
 }
 
 type MarkdownScanResult struct {
@@ -2081,11 +2082,11 @@ type delegationRecord struct {
 }
 
 type DelegationResult struct {
-	Expired          bool
-	ChainTooDeep     bool
-	ScopeEscalation  bool
-	NoAttestation    bool
-	ChainDepth       int
+	Expired         bool
+	ChainTooDeep    bool
+	ScopeEscalation bool
+	NoAttestation   bool
+	ChainDepth      int
 }
 
 func NewDelegationChainTracker() *DelegationChainTracker {

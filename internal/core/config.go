@@ -31,7 +31,7 @@ type CloudConfig struct {
 	APIURL              string `yaml:"api_url"`
 	APIKey              string `yaml:"api_key"`
 	HeartbeatInterval   int    `yaml:"heartbeat_interval"`    // seconds, 0 = disabled
-	CommandPollInterval int    `yaml:"command_poll_interval"`  // seconds, 0 = disabled, default 15
+	CommandPollInterval int    `yaml:"command_poll_interval"` // seconds, 0 = disabled, default 15
 }
 
 // EnforcementConfig holds the automated response / enforcement layer settings.
@@ -83,13 +83,13 @@ type ResponseRuleYAML struct {
 
 // ServerConfig holds API server settings.
 type ServerConfig struct {
-	Host          string   `yaml:"host"`
-	Port          int      `yaml:"port"`
-	APIKeys       []string `yaml:"api_keys"`
-	ReadOnlyKeys  []string `yaml:"read_only_keys"`
-	CORSOrigins   []string `yaml:"cors_origins"`
-	TLSCert       string   `yaml:"tls_cert"`       // path to TLS certificate file
-	TLSKey        string   `yaml:"tls_key"`         // path to TLS private key file
+	Host         string   `yaml:"host"`
+	Port         int      `yaml:"port"`
+	APIKeys      []string `yaml:"api_keys"`
+	ReadOnlyKeys []string `yaml:"read_only_keys"`
+	CORSOrigins  []string `yaml:"cors_origins"`
+	TLSCert      string   `yaml:"tls_cert"` // path to TLS certificate file
+	TLSKey       string   `yaml:"tls_key"`  // path to TLS private key file
 }
 
 // SyslogConfig holds syslog ingestion settings.

@@ -20,15 +20,15 @@ const ModuleName = "data_poisoning"
 // Guard is the Data Poisoning Guard module providing training data integrity,
 // RAG source verification, adversarial input detection, and model drift monitoring.
 type Guard struct {
-	logger       zerolog.Logger
-	bus          *core.EventBus
-	pipeline     *core.AlertPipeline
-	cfg          *core.Config
-	ctx          context.Context
-	cancel       context.CancelFunc
-	dataTracker  *DataIntegrityTracker
-	ragVerifier  *RAGVerifier
-	driftMonitor *ModelDriftMonitor
+	logger            zerolog.Logger
+	bus               *core.EventBus
+	pipeline          *core.AlertPipeline
+	cfg               *core.Config
+	ctx               context.Context
+	cancel            context.CancelFunc
+	dataTracker       *DataIntegrityTracker
+	ragVerifier       *RAGVerifier
+	driftMonitor      *ModelDriftMonitor
 	webContentTracker *WebContentIntegrityTracker
 }
 

@@ -206,12 +206,12 @@ func TestHasHighEntropy(t *testing.T) {
 		s    string
 		want bool
 	}{
-		{"abc12345678", true},  // >40% digits, len > 8
-		{"abcdefghij", false},  // no digits
-		{"a1b2c3d4e5", true},   // 50% digits
-		{"short1", false},      // too short (< 8)
-		{"abcdefgh", false},    // no digits
-		{"12345678901", true},  // all digits
+		{"abc12345678", true}, // >40% digits, len > 8
+		{"abcdefghij", false}, // no digits
+		{"a1b2c3d4e5", true},  // 50% digits
+		{"short1", false},     // too short (< 8)
+		{"abcdefgh", false},   // no digits
+		{"12345678901", true}, // all digits
 	}
 	for _, tc := range cases {
 		got := hasHighEntropy(tc.s)
@@ -251,12 +251,12 @@ func TestLooksGenerated(t *testing.T) {
 		name string
 		want bool
 	}{
-		{"User12345 Bot6789", true},  // digits > 2 in a part
-		{"Alice Smith", false},       // normal name
-		{"John Doe", false},          // normal name
-		{"Bot", false},               // single part
-		{"Test1234 Account", true},   // digits > 2
-		{"A B", false},               // short parts, no digits
+		{"User12345 Bot6789", true}, // digits > 2 in a part
+		{"Alice Smith", false},      // normal name
+		{"John Doe", false},         // normal name
+		{"Bot", false},              // single part
+		{"Test1234 Account", true},  // digits > 2
+		{"A B", false},              // short parts, no digits
 	}
 	for _, tc := range cases {
 		got := looksGenerated(tc.name)

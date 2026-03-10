@@ -531,7 +531,7 @@ type IPReputation struct {
 	// Dynamic threat scoring — IPs accumulate threat points from cross-module
 	// alerts and auto-promote to malicious when they exceed the threshold.
 	// This replaces the need for external threat intelligence feeds.
-	scores         map[string]*ipThreatScore
+	scores          map[string]*ipThreatScore
 	autoBlockThresh int
 }
 

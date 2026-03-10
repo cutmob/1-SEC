@@ -117,10 +117,10 @@ func exportAlerts(w *os.File, base, apiKey string, timeout time.Duration, outFmt
 		writeCSV(w, headers, rows)
 	default:
 		data, _ := json.MarshalIndent(map[string]interface{}{
-			"alerts":    alerts,
-			"total":     len(alerts),
-			"exported":  time.Now().UTC().Format(time.RFC3339),
-			"format":    "1sec-export-v1",
+			"alerts":   alerts,
+			"total":    len(alerts),
+			"exported": time.Now().UTC().Format(time.RFC3339),
+			"format":   "1sec-export-v1",
 		}, "", "  ")
 		fmt.Fprintln(w, string(data))
 	}

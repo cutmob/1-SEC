@@ -444,7 +444,6 @@ func TestNormalizeInput(t *testing.T) {
 	}
 }
 
-
 // ─── extractScanFields ────────────────────────────────────────────────────────
 
 func TestExtractScanFields(t *testing.T) {
@@ -820,10 +819,10 @@ func TestAnalyzeInput_UnicodeNFKC_PathTraversal(t *testing.T) {
 
 	// Fullwidth-encoded percent sequences that normalize to ../
 	maliciousInputs := []string{
-		"%ef%bc%8e%ef%bc%8e%ef%bc%8f",         // fullwidth ../ in percent encoding
-		"%uFF0E%uFF0E%uFF0F",                   // %uXXXX style fullwidth ../
-		"\uFF0E\uFF0E/etc/passwd",               // raw fullwidth dots + slash
-		"\uFF0E\uFF0E\uFF0F etc/passwd",         // raw fullwidth dots + fullwidth slash
+		"%ef%bc%8e%ef%bc%8e%ef%bc%8f",   // fullwidth ../ in percent encoding
+		"%uFF0E%uFF0E%uFF0F",            // %uXXXX style fullwidth ../
+		"\uFF0E\uFF0E/etc/passwd",       // raw fullwidth dots + slash
+		"\uFF0E\uFF0E\uFF0F etc/passwd", // raw fullwidth dots + fullwidth slash
 	}
 	for _, input := range maliciousInputs {
 		detections := s.AnalyzeInput(input, "path")

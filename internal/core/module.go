@@ -28,25 +28,25 @@ type Module interface {
 
 // ModuleRegistry manages module registration and lifecycle.
 type ModuleRegistry struct {
-	mu         sync.RWMutex
-	modules    map[string]Module
-	order      []string
-	logger     zerolog.Logger
-	typeIndex  map[string][]Module // event type → modules that handle it
-	catchAll   []Module            // modules that handle all events (nil EventTypes)
+	mu        sync.RWMutex
+	modules   map[string]Module
+	order     []string
+	logger    zerolog.Logger
+	typeIndex map[string][]Module // event type → modules that handle it
+	catchAll  []Module            // modules that handle all events (nil EventTypes)
 
 	// Metrics
-	metrics    *RegistryMetrics
+	metrics *RegistryMetrics
 }
 
 // RegistryMetrics tracks event routing performance.
 type RegistryMetrics struct {
-	mu               sync.Mutex       `json:"-"`
-	EventsRouted     int64            `json:"events_routed"`
-	EventsDropped    int64            `json:"events_dropped"`
-	EventsByType     map[string]int64 `json:"events_by_type"`
-	ModuleErrors     map[string]int64 `json:"module_errors"`
-	RoutingSkipped   int64            `json:"routing_skipped"` // events not matching any module
+	mu             sync.Mutex       `json:"-"`
+	EventsRouted   int64            `json:"events_routed"`
+	EventsDropped  int64            `json:"events_dropped"`
+	EventsByType   map[string]int64 `json:"events_by_type"`
+	ModuleErrors   map[string]int64 `json:"module_errors"`
+	RoutingSkipped int64            `json:"routing_skipped"` // events not matching any module
 }
 
 // NewModuleRegistry creates a new ModuleRegistry.

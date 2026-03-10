@@ -41,14 +41,14 @@ func DefaultAlertBatcherConfig() AlertBatcherConfig {
 
 // BatchedNotification is the summary emitted when a batch flushes.
 type BatchedNotification struct {
-	BatchID        string    `json:"batch_id"`
-	Module         string    `json:"module"`
-	SourceIP       string    `json:"source_ip"`
-	AlertCount     int       `json:"alert_count"`
-	HighestSev     Severity  `json:"highest_severity"`
-	FirstSeen      time.Time `json:"first_seen"`
-	LastSeen       time.Time `json:"last_seen"`
-	SampleAlertIDs []string  `json:"sample_alert_ids"`
+	BatchID        string         `json:"batch_id"`
+	Module         string         `json:"module"`
+	SourceIP       string         `json:"source_ip"`
+	AlertCount     int            `json:"alert_count"`
+	HighestSev     Severity       `json:"highest_severity"`
+	FirstSeen      time.Time      `json:"first_seen"`
+	LastSeen       time.Time      `json:"last_seen"`
+	SampleAlertIDs []string       `json:"sample_alert_ids"`
 	SeverityCounts map[string]int `json:"severity_counts"`
 }
 

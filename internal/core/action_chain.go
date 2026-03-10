@@ -27,13 +27,13 @@ import (
 
 // ChainStep defines a single step in an action chain.
 type ChainStep struct {
-	Name        string            `json:"name" yaml:"name"`
-	Action      ActionType        `json:"action" yaml:"action"`
-	Params      map[string]string `json:"params,omitempty" yaml:"params"`
-	OnSuccess   string            `json:"on_success,omitempty" yaml:"on_success"`     // next step name
-	OnFailure   string            `json:"on_failure,omitempty" yaml:"on_failure"`     // next step name on failure
-	MaxRetries  int               `json:"max_retries,omitempty" yaml:"max_retries"`
-	Timeout     time.Duration     `json:"timeout,omitempty" yaml:"timeout"`
+	Name       string            `json:"name" yaml:"name"`
+	Action     ActionType        `json:"action" yaml:"action"`
+	Params     map[string]string `json:"params,omitempty" yaml:"params"`
+	OnSuccess  string            `json:"on_success,omitempty" yaml:"on_success"` // next step name
+	OnFailure  string            `json:"on_failure,omitempty" yaml:"on_failure"` // next step name on failure
+	MaxRetries int               `json:"max_retries,omitempty" yaml:"max_retries"`
+	Timeout    time.Duration     `json:"timeout,omitempty" yaml:"timeout"`
 }
 
 // ActionChain defines a named sequence of conditional steps.
@@ -46,12 +46,12 @@ type ActionChain struct {
 
 // ChainExecutionRecord tracks the result of a chain execution.
 type ChainExecutionRecord struct {
-	ID         string              `json:"id"`
-	ChainName  string              `json:"chain_name"`
-	AlertID    string              `json:"alert_id"`
-	StartedAt  time.Time           `json:"started_at"`
-	FinishedAt time.Time           `json:"finished_at"`
-	Status     string              `json:"status"` // "completed", "failed", "partial"
+	ID         string                `json:"id"`
+	ChainName  string                `json:"chain_name"`
+	AlertID    string                `json:"alert_id"`
+	StartedAt  time.Time             `json:"started_at"`
+	FinishedAt time.Time             `json:"finished_at"`
+	Status     string                `json:"status"` // "completed", "failed", "partial"
 	Steps      []StepExecutionRecord `json:"steps"`
 }
 
@@ -69,11 +69,11 @@ type StepExecutionRecord struct {
 
 // ChainExecutor runs action chains against alerts.
 type ChainExecutor struct {
-	mu        sync.RWMutex
-	logger    zerolog.Logger
-	chains    map[string]*ActionChain
-	executors map[ActionType]ActionExecutor
-	records   []*ChainExecutionRecord
+	mu         sync.RWMutex
+	logger     zerolog.Logger
+	chains     map[string]*ActionChain
+	executors  map[ActionType]ActionExecutor
+	records    []*ChainExecutionRecord
 	maxRecords int
 }
 

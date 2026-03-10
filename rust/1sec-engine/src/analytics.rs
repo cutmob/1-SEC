@@ -47,7 +47,11 @@ pub fn consonant_ratio(s: &str) -> f64 {
             }
         }
     }
-    if alpha == 0 { 0.0 } else { consonants as f64 / alpha as f64 }
+    if alpha == 0 {
+        0.0
+    } else {
+        consonants as f64 / alpha as f64
+    }
 }
 
 // ─── IP Threat Scoring ──────────────────────────────────────────────────────
@@ -169,11 +173,13 @@ impl RateLimiter {
     /// Check if a request from this IP should be allowed.
     pub fn allow(&self, ip: &str) -> bool {
         let mut buckets = self.buckets.write().unwrap_or_else(|e| e.into_inner());
-        let bucket = buckets.entry(ip.to_string()).or_insert_with(|| TokenBucket {
-            tokens: self.burst as f64,
-            last_refill: Instant::now(),
-            request_count: 0,
-        });
+        let bucket = buckets
+            .entry(ip.to_string())
+            .or_insert_with(|| TokenBucket {
+                tokens: self.burst as f64,
+                last_refill: Instant::now(),
+                request_count: 0,
+            });
 
         // Refill tokens based on elapsed time
         let elapsed = bucket.last_refill.elapsed().as_secs_f64();
@@ -442,7 +448,7 @@ mod tests {
     fn test_blake3_hash() {
         let hash = blake3_hash(b"hello world");
         assert_eq!(hash.len(), 64); // 32 bytes = 64 hex chars
-        // blake3 is deterministic
+                                    // blake3 is deterministic
         assert_eq!(hash, blake3_hash(b"hello world"));
         // Different input = different hash
         assert_ne!(hash, blake3_hash(b"hello world!"));

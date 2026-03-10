@@ -15,34 +15,33 @@ import (
 // CloudReporter sends enforcement records, correlations, and heartbeats
 // to the 1SEC cloud dashboard via POST /api/v1/ingest.
 type CloudReporter struct {
-	cfg      *Config
-	engine   *Engine
-	logger   zerolog.Logger
-	ctx      context.Context
-	cancel   context.CancelFunc
+	cfg    *Config
+	engine *Engine
+	logger zerolog.Logger
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // CloudEnforcementRecord is the shape expected by the cloud dashboard's ingest API.
 type CloudEnforcementRecord struct {
-	ID                string `json:"id"`
-	Timestamp         string `json:"timestamp"`
-	Module            string `json:"module"`
-	Action            string `json:"action"`
-	Target            string `json:"target"`
-	Severity          string `json:"severity"`
-	AlertID           string `json:"alertId"`
-	Status            string `json:"status"`
-	DurationMs        int64  `json:"durationMs,omitempty"`
-	DryRun            bool   `json:"dryRun"`
-	Preset            string `json:"preset,omitempty"`
-	Reversible        bool   `json:"reversible,omitempty"`
-	RolledBack        bool   `json:"rolledBack,omitempty"`
-	MitreTactic       string `json:"mitreTactic,omitempty"`
-	MitreTechnique    string `json:"mitreTechnique,omitempty"`
-	InstanceID        string `json:"instanceId,omitempty"`
-	Hostname          string `json:"hostname,omitempty"`
+	ID             string `json:"id"`
+	Timestamp      string `json:"timestamp"`
+	Module         string `json:"module"`
+	Action         string `json:"action"`
+	Target         string `json:"target"`
+	Severity       string `json:"severity"`
+	AlertID        string `json:"alertId"`
+	Status         string `json:"status"`
+	DurationMs     int64  `json:"durationMs,omitempty"`
+	DryRun         bool   `json:"dryRun"`
+	Preset         string `json:"preset,omitempty"`
+	Reversible     bool   `json:"reversible,omitempty"`
+	RolledBack     bool   `json:"rolledBack,omitempty"`
+	MitreTactic    string `json:"mitreTactic,omitempty"`
+	MitreTechnique string `json:"mitreTechnique,omitempty"`
+	InstanceID     string `json:"instanceId,omitempty"`
+	Hostname       string `json:"hostname,omitempty"`
 }
-
 
 // CloudCorrelationRecord is the shape expected by the cloud dashboard's ingest API.
 type CloudCorrelationRecord struct {
@@ -62,22 +61,22 @@ type CloudCorrelationRecord struct {
 
 // CloudHeartbeat is the shape expected by the cloud dashboard's ingest API.
 type CloudHeartbeat struct {
-	InstanceID        string                       `json:"instanceId"`
-	Hostname          string                       `json:"hostname"`
-	Version           string                       `json:"version"`
-	Uptime            int64                        `json:"uptime"`
-	Timestamp         string                       `json:"timestamp"`
-	ModulesActive     int                          `json:"modulesActive"`
-	ModulesTotal      int                          `json:"modulesTotal"`
-	BusConnected      bool                         `json:"busConnected"`
-	RustEngine        bool                         `json:"rustEngine"`
-	ArchiveEnabled    bool                         `json:"archiveEnabled"`
-	CollectorsRunning []string                     `json:"collectorsRunning"`
-	AlertCount        int                          `json:"alertCount"`
-	EventsProcessed   int64                        `json:"eventsProcessed"`
-	EnforcementMode   string                       `json:"enforcementMode"`
-	Preset            string                       `json:"preset,omitempty"`
-	DisabledModules   []string                     `json:"disabledModules,omitempty"`
+	InstanceID        string   `json:"instanceId"`
+	Hostname          string   `json:"hostname"`
+	Version           string   `json:"version"`
+	Uptime            int64    `json:"uptime"`
+	Timestamp         string   `json:"timestamp"`
+	ModulesActive     int      `json:"modulesActive"`
+	ModulesTotal      int      `json:"modulesTotal"`
+	BusConnected      bool     `json:"busConnected"`
+	RustEngine        bool     `json:"rustEngine"`
+	ArchiveEnabled    bool     `json:"archiveEnabled"`
+	CollectorsRunning []string `json:"collectorsRunning"`
+	AlertCount        int      `json:"alertCount"`
+	EventsProcessed   int64    `json:"eventsProcessed"`
+	EnforcementMode   string   `json:"enforcementMode"`
+	Preset            string   `json:"preset,omitempty"`
+	DisabledModules   []string `json:"disabledModules,omitempty"`
 }
 
 // NewCloudReporter creates a new cloud reporter.
@@ -244,18 +243,18 @@ func (cr *CloudReporter) enforcementReporter() {
 				status := strings.ToLower(string(r.Status))
 				dryRun := r.Status == ActionStatusDryRun
 				cloudRecords = append(cloudRecords, CloudEnforcementRecord{
-					ID:             r.ID,
-					Timestamp:      r.Timestamp.Format(time.RFC3339),
-					Module:         r.Module,
-					Action:         string(r.Action),
-					Target:         r.Target,
-					Severity:       severity,
-					AlertID:        r.AlertID,
-					Status:         status,
-					DurationMs:     r.DurationMs,
-					DryRun:         dryRun,
-					InstanceID:     instanceID,
-					Hostname:       hostname,
+					ID:         r.ID,
+					Timestamp:  r.Timestamp.Format(time.RFC3339),
+					Module:     r.Module,
+					Action:     string(r.Action),
+					Target:     r.Target,
+					Severity:   severity,
+					AlertID:    r.AlertID,
+					Status:     status,
+					DurationMs: r.DurationMs,
+					DryRun:     dryRun,
+					InstanceID: instanceID,
+					Hostname:   hostname,
 				})
 			}
 

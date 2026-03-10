@@ -631,8 +631,14 @@ fn deserialization_patterns() -> Vec<PatternDef> {
             severity: Severity::Critical,
             regex: r"(?i)(ObjectInputStream|readObject|readUnshared|XMLDecoder|xstream|ysoserial|commons-collections|InvokerTransformer|ChainedTransformer|ConstantTransformer|LazyMap)",
             literals: &[
-                "ObjectInputStream", "readObject", "XMLDecoder", "xstream",
-                "ysoserial", "InvokerTransformer", "ChainedTransformer", "LazyMap",
+                "ObjectInputStream",
+                "readObject",
+                "XMLDecoder",
+                "xstream",
+                "ysoserial",
+                "InvokerTransformer",
+                "ChainedTransformer",
+                "LazyMap",
             ],
         },
         PatternDef {
@@ -641,8 +647,12 @@ fn deserialization_patterns() -> Vec<PatternDef> {
             severity: Severity::Critical,
             regex: r"(?i)(BinaryFormatter|ObjectStateFormatter|SoapFormatter|LosFormatter|NetDataContractSerializer|TypeNameHandling|JavaScriptSerializer)",
             literals: &[
-                "BinaryFormatter", "ObjectStateFormatter", "SoapFormatter",
-                "LosFormatter", "NetDataContractSerializer", "TypeNameHandling",
+                "BinaryFormatter",
+                "ObjectStateFormatter",
+                "SoapFormatter",
+                "LosFormatter",
+                "NetDataContractSerializer",
+                "TypeNameHandling",
             ],
         },
         PatternDef {
@@ -737,7 +747,14 @@ fn argbased_rce_patterns() -> Vec<PatternDef> {
             category: "cmdi",
             severity: Severity::Critical,
             regex: r"(?i)(yt-?dlp|youtube-?dl)\s+.*--(netrc-cmd|exec|exec-before-download|exec-after-download|alias-expand|plugin-dirs)\b",
-            literals: &["yt-dlp", "ytdlp", "youtube-dl", "--netrc-cmd", "--exec", "--alias-expand"],
+            literals: &[
+                "yt-dlp",
+                "ytdlp",
+                "youtube-dl",
+                "--netrc-cmd",
+                "--exec",
+                "--alias-expand",
+            ],
         },
         PatternDef {
             name: "ffmpeg_rce_filter",

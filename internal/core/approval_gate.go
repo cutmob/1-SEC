@@ -27,7 +27,7 @@ import (
 // ApprovalGateConfig controls which actions need human approval.
 type ApprovalGateConfig struct {
 	Enabled          bool          `yaml:"enabled" json:"enabled"`
-	RequireApproval  []string      `yaml:"require_approval" json:"require_approval"` // action types
+	RequireApproval  []string      `yaml:"require_approval" json:"require_approval"`                         // action types
 	AutoApproveAbove string        `yaml:"auto_approve_above,omitempty" json:"auto_approve_above,omitempty"` // severity threshold: auto-approve at or above this level
 	TTL              time.Duration `yaml:"ttl" json:"ttl"`
 	MaxPending       int           `yaml:"max_pending" json:"max_pending"`
@@ -45,18 +45,18 @@ func DefaultApprovalGateConfig() ApprovalGateConfig {
 
 // PendingApproval represents an action awaiting human approval.
 type PendingApproval struct {
-	ID          string       `json:"id"`
-	AlertID     string       `json:"alert_id"`
-	Module      string       `json:"module"`
-	Action      ActionType   `json:"action"`
-	Target      string       `json:"target"`
-	Rule        ResponseRule `json:"rule"`
-	Alert       *Alert       `json:"alert"`
-	CreatedAt   time.Time    `json:"created_at"`
-	ExpiresAt   time.Time    `json:"expires_at"`
-	Status      string       `json:"status"` // "pending", "approved", "rejected", "expired"
-	DecidedBy   string       `json:"decided_by,omitempty"`
-	DecidedAt   *time.Time   `json:"decided_at,omitempty"`
+	ID        string       `json:"id"`
+	AlertID   string       `json:"alert_id"`
+	Module    string       `json:"module"`
+	Action    ActionType   `json:"action"`
+	Target    string       `json:"target"`
+	Rule      ResponseRule `json:"rule"`
+	Alert     *Alert       `json:"alert"`
+	CreatedAt time.Time    `json:"created_at"`
+	ExpiresAt time.Time    `json:"expires_at"`
+	Status    string       `json:"status"` // "pending", "approved", "rejected", "expired"
+	DecidedBy string       `json:"decided_by,omitempty"`
+	DecidedAt *time.Time   `json:"decided_at,omitempty"`
 }
 
 // ApprovalHandler is called when an action is approved and should be executed.

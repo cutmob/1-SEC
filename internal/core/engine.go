@@ -13,26 +13,26 @@ import (
 
 // Engine is the main 1SEC engine that orchestrates all components.
 type Engine struct {
-	Config           *Config
-	Bus              *EventBus
-	Registry         *ModuleRegistry
-	Pipeline         *AlertPipeline
-	RustSidecar      *RustSidecar
-	Correlator       *ThreatCorrelator
-	ResponseEngine   *ResponseEngine
-	RustMatchBridge  *RustMatchBridge
-	Archiver         *Archiver
-	Dedup            *EventDedup
-	Logger           zerolog.Logger
-	CloudReporter    *CloudReporter
-	CommandPoller    *CommandPoller
-	Escalation       *EscalationManager
-	ctx            context.Context
-	cancel         context.CancelFunc
-	configPath     string
-	logBuffer      *LogRingBuffer
-	stopDedup      func()
-	startTime      time.Time
+	Config          *Config
+	Bus             *EventBus
+	Registry        *ModuleRegistry
+	Pipeline        *AlertPipeline
+	RustSidecar     *RustSidecar
+	Correlator      *ThreatCorrelator
+	ResponseEngine  *ResponseEngine
+	RustMatchBridge *RustMatchBridge
+	Archiver        *Archiver
+	Dedup           *EventDedup
+	Logger          zerolog.Logger
+	CloudReporter   *CloudReporter
+	CommandPoller   *CommandPoller
+	Escalation      *EscalationManager
+	ctx             context.Context
+	cancel          context.CancelFunc
+	configPath      string
+	logBuffer       *LogRingBuffer
+	stopDedup       func()
+	startTime       time.Time
 }
 
 // NewEngine creates a new 1SEC engine.

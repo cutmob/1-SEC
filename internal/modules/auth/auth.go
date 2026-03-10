@@ -211,6 +211,7 @@ func (f *Fortress) handleLoginAttempt(event *core.SecurityEvent) {
 			"lockout_violation")
 	}
 }
+
 // verifyPTR performs reverse DNS validation on an IP address and checks whether
 // the claimed hostname matches any PTR record. Detects CVE-2026-1490 style
 // authorization bypass via PTR record spoofing.
@@ -1005,14 +1006,14 @@ func (ps *PasswordSprayDetector) CleanupLoop(ctx context.Context) {
 // proxying the entire authentication flow.
 // Ref: keepnetlabs.com AitM research 2025, Silverfort FIDO downgrade 2025
 type AitMDetector struct {
-	mu                  sync.Mutex
+	mu                   sync.Mutex
 	passkeyRegistrations *lru.Cache[string, *passkeyRegRecord]
 	// Known AitM proxy TLS fingerprints and indicators
 	suspiciousFingerprints map[string]bool
 }
 
 type passkeyRegRecord struct {
-	Users    map[string]bool
+	Users     map[string]bool
 	FirstSeen time.Time
 }
 

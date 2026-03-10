@@ -788,7 +788,7 @@ func TestHandleEnforceConfig_POST_UpdateRequireApproval(t *testing.T) {
 func TestHandleEnforceConfig_POST_InvalidAction(t *testing.T) {
 	engine := testEngine()
 	engine.Config.Enforcement = &core.EnforcementConfig{
-		Enabled: true,
+		Enabled:      true,
 		ApprovalGate: core.ApprovalGateConfig{Enabled: true},
 	}
 

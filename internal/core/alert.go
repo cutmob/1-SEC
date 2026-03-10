@@ -200,6 +200,7 @@ func (p *AlertPipeline) ClearAlerts() int {
 	p.alerts = make([]*Alert, 0, p.maxStore)
 	return count
 }
+
 // DeleteAlert removes a single alert by ID and returns true if found.
 func (p *AlertPipeline) DeleteAlert(id string) bool {
 	p.mu.Lock()
