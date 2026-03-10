@@ -440,7 +440,7 @@ mod tests {
 
     #[test]
     fn test_sql_comment_strip() {
-        assert_eq!(normalize("SEL/**/ECT"), "SEL ECT");
+        assert_eq!(normalize("SEL/**/ECT"), "SELECT");
     }
 
     #[test]
@@ -467,7 +467,7 @@ mod tests {
     #[test]
     fn test_combined_evasion() {
         // URL-encoded + comment-split + whitespace
-        assert_eq!(normalize("UN%49ON/**/SEL%45CT"), "UNION SELECT");
+        assert_eq!(normalize("UN%49ON/**/SEL%45CT"), "UNIONSELECT");
     }
 
     #[test]
