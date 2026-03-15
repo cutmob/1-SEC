@@ -164,7 +164,9 @@ func cmdEnforceStatus(args []string) {
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&data)
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		errorf("decoding enforcement status: %v", err)
+	}
 
 	if parseFormat(*format) == FormatJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -234,7 +236,9 @@ func cmdEnforcePolicies(args []string) {
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&data)
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		errorf("decoding response: %v", err)
+	}
 
 	if parseFormat(*format) == FormatJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -306,7 +310,9 @@ func cmdEnforceHistory(args []string) {
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&data)
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		errorf("decoding response: %v", err)
+	}
 
 	if parseFormat(*format) == FormatJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -465,7 +471,9 @@ func cmdEnforceTest(args []string) {
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&data)
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		errorf("decoding response: %v", err)
+	}
 
 	if parseFormat(*format) == FormatJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -653,7 +661,9 @@ func cmdEnforceWebhooksStats(args []string) {
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&data)
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		errorf("decoding response: %v", err)
+	}
 
 	if parseFormat(*format) == FormatJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -693,7 +703,9 @@ func cmdEnforceWebhooksDeadLetters(args []string) {
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&data)
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		errorf("decoding response: %v", err)
+	}
 
 	if parseFormat(*format) == FormatJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -815,7 +827,9 @@ func cmdEnforceApprovalsPending(args []string) {
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&data)
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		errorf("decoding response: %v", err)
+	}
 
 	if parseFormat(*format) == FormatJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -926,7 +940,9 @@ func cmdEnforceApprovalsHistory(args []string) {
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&data)
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		errorf("decoding response: %v", err)
+	}
 
 	if parseFormat(*format) == FormatJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -997,7 +1013,9 @@ func cmdEnforceBatching(args []string) {
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&data)
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		errorf("decoding response: %v", err)
+	}
 
 	if parseFormat(*format) == FormatJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -1056,7 +1074,9 @@ func cmdEnforceEscalations(args []string) {
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&data)
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		errorf("decoding response: %v", err)
+	}
 
 	if parseFormat(*format) == FormatJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -1134,7 +1154,9 @@ func cmdEnforceChainsList(args []string) {
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&data)
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		errorf("decoding response: %v", err)
+	}
 
 	if parseFormat(*format) == FormatJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -1187,7 +1209,9 @@ func cmdEnforceChainsRecords(args []string) {
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&data)
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		errorf("decoding response: %v", err)
+	}
 
 	if parseFormat(*format) == FormatJSON {
 		enc := json.NewEncoder(os.Stdout)

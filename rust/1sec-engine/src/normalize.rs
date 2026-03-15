@@ -380,14 +380,14 @@ fn fold_unicode(s: &str) -> String {
 fn collapse_spaces(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_space = false;
-    for c in s.bytes() {
-        if c == b' ' {
+    for c in s.chars() {
+        if c == ' ' {
             if !prev_space {
                 out.push(' ');
             }
             prev_space = true;
         } else {
-            out.push(c as char);
+            out.push(c);
             prev_space = false;
         }
     }

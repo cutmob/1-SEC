@@ -510,10 +510,14 @@ func (re *ResponseEngine) recordAction(alert *Alert, rule ResponseRule, target s
 
 	// Publish to bus for external consumption
 	if re.bus != nil {
-		data, _ := json.Marshal(record)
-		subject := fmt.Sprintf("sec.responses.%s.%s", alert.Module, string(rule.Action))
-		if _, pubErr := re.bus.js.Publish(subject, data); pubErr != nil {
-			re.logger.Error().Err(pubErr).Msg("failed to publish response record")
+		data, err := json.Marshal(record)
+		if err != nil {
+			re.logger.Error().Err(err).Msg("failed to marshal response record for bus")
+		} else {
+			subject := fmt.Sprintf("sec.responses.%s.%s", alert.Module, string(rule.Action))
+			if _, pubErr := re.bus.js.Publish(subject, data); pubErr != nil {
+				re.logger.Error().Err(pubErr).Msg("failed to publish response record")
+			}
 		}
 	}
 }
