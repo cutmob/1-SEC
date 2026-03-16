@@ -71,7 +71,9 @@ func cmdArchiveStatus(args []string) {
 	defer resp.Body.Close()
 
 	var result map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		errorf("decoding archive status response: %v", err)
+	}
 
 	if enabled, ok := result["enabled"].(bool); ok && !enabled {
 		fmt.Printf("%s Archive is disabled. Enable it in config: archive.enabled: true\n", yellow("⚠"))

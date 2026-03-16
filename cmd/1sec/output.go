@@ -223,7 +223,11 @@ func writeSARIF(w io.Writer, alerts []interface{}, ver string) {
 		}},
 	}
 
-	data, _ := json.MarshalIndent(report, "", "  ")
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		fmt.Fprintf(w, "{\"error\": \"failed to marshal SARIF report: %s\"}\n", err)
+		return
+	}
 	fmt.Fprintln(w, string(data))
 }
 
