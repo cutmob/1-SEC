@@ -46,3 +46,6 @@ coverage/
 
 # Vuln report output
 reports/
+
+# GitLab AI Hackathon (separate submission, not part of 1-SEC OSS)
+gitlab-hackathon/

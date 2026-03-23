@@ -249,6 +249,29 @@ cloud:
   # api_key: "1sec_pro_your_key_here"
   heartbeat_interval: 60    # seconds between heartbeats (0 = disabled)
 
+# ── Auth0 Token Vault — Secure AI Agent Token Delegation ────────────────────
+# Token Vault is a sub-component of AI Containment (Module 11) that enables
+# AI agents to access third-party APIs (Google, GitHub, Slack, Salesforce, etc.)
+# on behalf of users via Auth0's OAuth 2.0 token exchange (RFC 8693).
+# Agents never handle raw credentials — Auth0 manages the full token lifecycle.
+#
+# OPT-IN: When disabled (default), AI Containment works without it. When enabled,
+# it adds token-aware security monitoring and a token exchange proxy endpoint.
+#
+# Requires an Auth0 tenant with Token Vault enabled:
+#   https://auth0.com/docs/secure/tokens/token-vault
+#
+# Environment variable overrides:
+#   AUTH0_DOMAIN        — your Auth0 tenant domain (e.g., yourapp.us.auth0.com)
+#   AUTH0_CLIENT_ID     — application client ID (first-party, confidential, OIDC-conformant)
+#   AUTH0_CLIENT_SECRET — application client secret
+
+token_vault:
+  enabled: false
+  # auth0_domain: "yourapp.us.auth0.com"
+  # auth0_client_id: "your-client-id"
+  # auth0_client_secret: "your-client-secret"
+
 archive:
   enabled: false              # enable cold archiver
   dir: "./data/archive"       # directory for archive files

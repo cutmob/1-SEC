@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/1sec-project/1sec/internal/core"
+	"github.com/1sec-project/1sec/internal/modules/aicontainment"
 	"github.com/1sec-project/1sec/internal/modules/network"
+	"github.com/1sec-project/1sec/internal/modules/tokenvault"
 	"github.com/rs/zerolog"
 )
 
@@ -57,6 +59,7 @@ func NewServer(engine *core.Engine) *Server {
 	mux.HandleFunc("/api/v1/event-schemas", s.handleEventSchemas)
 	mux.HandleFunc("/api/v1/archive/status", s.handleArchiveStatus)
 	mux.HandleFunc("/api/v1/escalation/status", s.handleEscalationStatus)
+	mux.HandleFunc("/api/v1/token-vault/status", s.handleTokenVaultStatus)
 	mux.HandleFunc("/health", s.handleHealth)
 
 	// ── Mutating endpoints (require write scope) ────────────────────
@@ -69,6 +72,7 @@ func NewServer(engine *core.Engine) *Server {
 	mux.HandleFunc("/api/v1/enforce/reject/", s.handleEnforceReject)
 	mux.HandleFunc("/api/v1/enforce/rollback/", s.handleEnforceRollback)
 	mux.HandleFunc("/api/v1/enforce/webhooks/retry/", s.handleEnforceWebhookRetry)
+	mux.HandleFunc("/api/v1/token-vault/exchange", s.handleTokenVaultExchange)
 	mux.HandleFunc("/api/v1/shutdown", s.handleShutdown)
 	mux.HandleFunc("/api/v1/config/reload", s.handleConfigReload)
 
@@ -723,6 +727,7 @@ var mutatingPaths = map[string]bool{
 	"/api/v1/enforce/reject/":         true,
 	"/api/v1/enforce/rollback/":       true,
 	"/api/v1/enforce/webhooks/retry/": true,
+	"/api/v1/token-vault/exchange":    true,
 }
 
 // isMutatingPath returns true if the request path requires write scope.
@@ -954,6 +959,114 @@ func corsMiddleware(next http.Handler, allowedOrigins []string) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Token Vault handlers
+// ---------------------------------------------------------------------------
+
+func (s *Server) getTokenVault() *tokenvault.TokenVault {
+	mod, ok := s.engine.Registry.Get("ai_containment")
+	if !ok {
+		return nil
+	}
+	c, ok := mod.(*aicontainment.Containment)
+	if !ok {
+		return nil
+	}
+	return c.TokenVault()
+}
+
+func (s *Server) handleTokenVaultStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	tv := s.getTokenVault()
+	if tv == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"enabled": false,
+			"message": "Token Vault is not enabled. Set token_vault.enabled: true in config.",
+		})
+		return
+	}
+
+	status := tv.GetStatus()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"enabled": true,
+		"status":  status,
+	})
+}
+
+func (s *Server) handleTokenVaultExchange(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	tv := s.getTokenVault()
+	if tv == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_enabled", "Token Vault is not enabled — set token_vault.enabled: true")
+		return
+	}
+
+	if !tv.IsConfigured() {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "Auth0 Token Vault credentials not configured")
+		return
+	}
+
+	var req struct {
+		SubjectToken     string `json:"subject_token"`
+		SubjectTokenType string `json:"subject_token_type"`
+		Connection       string `json:"connection"`
+		LoginHint        string `json:"login_hint,omitempty"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", "invalid JSON body")
+		return
+	}
+
+	if req.SubjectToken == "" || req.Connection == "" {
+		writeError(w, http.StatusBadRequest, "missing_params", "subject_token and connection are required")
+		return
+	}
+
+	// Default to refresh token type if not specified
+	if req.SubjectTokenType == "" {
+		req.SubjectTokenType = tokenvault.SubjectTokenTypeRefreshToken
+	}
+
+	// Validate subject_token_type
+	switch req.SubjectTokenType {
+	case tokenvault.SubjectTokenTypeRefreshToken, tokenvault.SubjectTokenTypeAccessToken:
+		// valid
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_token_type",
+			"subject_token_type must be urn:ietf:params:oauth:token-type:refresh_token or urn:ietf:params:oauth:token-type:access_token")
+		return
+	}
+
+	resp, err := tv.ExchangeToken(req.SubjectToken, req.SubjectTokenType, req.Connection, req.LoginHint)
+	if err != nil {
+		if resp != nil && resp.Error != "" {
+			// Auth0 returned a structured error
+			writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"error":             resp.Error,
+				"error_description": resp.ErrorDesc,
+			})
+			return
+		}
+		writeError(w, http.StatusBadGateway, "exchange_failed", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"access_token": resp.AccessToken,
+		"token_type":   resp.TokenType,
+		"expires_in":   resp.ExpiresIn,
+		"scope":        resp.Scope,
 	})
 }
 

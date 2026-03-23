@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/1sec-project/1sec/internal/core"
+	"github.com/1sec-project/1sec/internal/modules/tokenvault"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/rs/zerolog"
 )
@@ -50,6 +51,8 @@ type Containment struct {
 	paymentMonitor    *AgentPaymentMonitor
 	markdownScanner   *MarkdownIngestionScanner
 	delegationTracker *DelegationChainTracker
+	// Auth0 Token Vault — secure token delegation for AI agents (opt-in)
+	tokenVault *tokenvault.TokenVault
 }
 
 func New() *Containment { return &Containment{} }
@@ -70,10 +73,15 @@ func (c *Containment) EventTypes() []string {
 		"agent_web_fetch", "agent_markdown_ingest",
 		"agent_payment", "x402_payment",
 		"agent_identity_delegation", "llms_txt_access",
+		// Auth0 Token Vault events (opt-in)
+		"token_exchange", "token_exchange_request", "token_exchange_response",
+		"connected_account_link", "connected_account_unlink",
+		"connected_account_usage",
+		"oauth_grant", "oauth_consent", "oauth_token",
 	}
 }
 func (c *Containment) Description() string {
-	return "AI agent containment: action sandboxing, tool-use monitoring, MCP tool poisoning detection, goal hijacking detection, memory poisoning detection, cascading failure monitoring, shadow AI discovery, rogue agent detection, agentic web access monitoring (llms.txt, x402 payments, markdown ingestion, agent identity delegation) (OWASP Agentic AI Top 10)"
+	return "AI agent containment: action sandboxing, tool-use monitoring, MCP tool poisoning detection, goal hijacking detection, memory poisoning detection, cascading failure monitoring, shadow AI discovery, rogue agent detection, agentic web access monitoring, Auth0 Token Vault integration (OWASP Agentic AI Top 10)"
 }
 
 func (c *Containment) Start(ctx context.Context, bus *core.EventBus, pipeline *core.AlertPipeline, cfg *core.Config) error {
@@ -95,8 +103,21 @@ func (c *Containment) Start(ctx context.Context, bus *core.EventBus, pipeline *c
 	c.markdownScanner = NewMarkdownIngestionScanner()
 	c.delegationTracker = NewDelegationChainTracker()
 
-	c.logger.Info().Msg("AI agent containment started (OWASP Agentic AI Top 10 + agentic web access)")
+	// Initialize Auth0 Token Vault sub-component if enabled
+	if cfg.TokenVault.Enabled {
+		c.tokenVault = tokenvault.NewTokenVault(ctx, pipeline, cfg, c.logger)
+	}
+
+	c.logger.Info().
+		Bool("token_vault", c.tokenVault != nil).
+		Msg("AI agent containment started (OWASP Agentic AI Top 10 + agentic web access)")
 	return nil
+}
+
+// TokenVault returns the Token Vault sub-component, or nil if not enabled.
+// Used by the API server to expose Token Vault status and token exchange endpoints.
+func (c *Containment) TokenVault() *tokenvault.TokenVault {
+	return c.tokenVault
 }
 
 func (c *Containment) Stop() error {
@@ -135,6 +156,11 @@ func (c *Containment) HandleEvent(event *core.SecurityEvent) error {
 		c.handleAgentPayment(event)
 	case "agent_identity_delegation":
 		c.handleIdentityDelegation(event)
+	}
+	// Route to Token Vault sub-component if active — it handles token exchange,
+	// connected account, OAuth, and delegation events with token-aware context.
+	if c.tokenVault != nil {
+		c.tokenVault.HandleEvent(event)
 	}
 	return nil
 }

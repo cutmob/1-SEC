@@ -267,6 +267,14 @@ func CanonicalEventSchemas() []EventSchema {
 		{Type: "x402_payment", Category: "agentic_web", RequiredKeys: []string{"amount", "recipient"}, OptionalKeys: []string{"agent_id", "currency", "network", "status_code", "merchant_id", "wallet_id"}, Description: "HTTP 402 payment protocol transaction"},
 		{Type: "llms_txt_access", Category: "agentic_web", RequiredKeys: []string{"domain"}, OptionalKeys: []string{"agent_id", "endpoint_url", "content_hash", "response_size"}, Description: "Access to a site's llms.txt or llms-full.txt endpoint"},
 
+		// ── Token Vault (Auth0) ────────────────────────────────────────
+		{Type: "token_exchange", Category: "token_vault", RequiredKeys: []string{"connection"}, OptionalKeys: []string{"agent_id", "subject_token_type", "scopes", "user_id"}, Description: "Auth0 Token Vault token exchange request (RFC 8693)"},
+		{Type: "token_exchange_request", Category: "token_vault", RequiredKeys: []string{"connection"}, OptionalKeys: []string{"agent_id", "subject_token_type", "grant_type"}, Description: "Token exchange request initiated"},
+		{Type: "token_exchange_response", Category: "token_vault", RequiredKeys: []string{"connection", "success"}, OptionalKeys: []string{"error", "error_description", "scopes", "expires_in"}, Description: "Token exchange response received"},
+		{Type: "connected_account_link", Category: "token_vault", RequiredKeys: []string{"user_id", "connection"}, OptionalKeys: []string{"scopes", "access_type"}, Description: "User linked a third-party account via Auth0 Connected Accounts"},
+		{Type: "connected_account_unlink", Category: "token_vault", RequiredKeys: []string{"user_id", "connection"}, OptionalKeys: []string{}, Description: "User unlinked a third-party account"},
+		{Type: "connected_account_usage", Category: "token_vault", RequiredKeys: []string{"user_id", "connection"}, OptionalKeys: []string{"agent_id", "action", "scopes"}, Description: "Connected account token used by an agent or application"},
+
 		// ── Data Poisoning ──────────────────────────────────────────────
 		{Type: "training_update", Category: "data_poisoning", RequiredKeys: []string{"dataset_id"}, OptionalKeys: []string{"hash", "change_percent", "record_count", "source"}, Description: "Training data update"},
 		{Type: "dataset_update", Category: "data_poisoning", RequiredKeys: []string{"dataset_id"}, OptionalKeys: []string{"hash", "change_percent", "record_count"}, Description: "Dataset update"},

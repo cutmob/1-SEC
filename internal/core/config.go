@@ -22,7 +22,18 @@ type Config struct {
 	Enforcement *EnforcementConfig      `yaml:"enforcement,omitempty"`
 	Archive     ArchiveConfig           `yaml:"archive"`
 	Cloud       CloudConfig             `yaml:"cloud"`
+	TokenVault  TokenVaultConfig        `yaml:"token_vault"`
 	Escalation  EscalationConfig        `yaml:"escalation"`
+}
+
+// TokenVaultConfig holds settings for Auth0 Token Vault integration.
+// Token Vault is a sub-component of AI Containment (Module 11) that enables
+// secure OAuth 2.0 token delegation for AI agents via Auth0.
+type TokenVaultConfig struct {
+	Enabled           bool   `yaml:"enabled"`
+	Auth0Domain       string `yaml:"auth0_domain"`
+	Auth0ClientID     string `yaml:"auth0_client_id"`
+	Auth0ClientSecret string `yaml:"auth0_client_secret"`
 }
 
 // CloudConfig holds settings for reporting to the 1SEC cloud dashboard.
@@ -263,6 +274,18 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if envURL := os.Getenv("ONESEC_CLOUD_API_URL"); envURL != "" {
 		cfg.Cloud.APIURL = envURL
+	}
+
+	// Load Auth0 Token Vault config from environment
+	if env := os.Getenv("AUTH0_DOMAIN"); env != "" {
+		cfg.TokenVault.Auth0Domain = env
+		cfg.TokenVault.Enabled = true
+	}
+	if env := os.Getenv("AUTH0_CLIENT_ID"); env != "" {
+		cfg.TokenVault.Auth0ClientID = env
+	}
+	if env := os.Getenv("AUTH0_CLIENT_SECRET"); env != "" {
+		cfg.TokenVault.Auth0ClientSecret = env
 	}
 
 	// Load Rust engine toggle from environment (ONESEC_RUST_ENGINE=true|false)
