@@ -536,8 +536,8 @@ type exchangeRecord struct {
 type ExchangeTracker struct {
 	mu      sync.Mutex
 	records []exchangeRecord
-	byAgent map[string][]time.Time                 // agent_id → exchange timestamps
-	scopes  map[string]map[string]map[string]bool   // agent_id → connection → scopes seen
+	byAgent map[string][]time.Time                // agent_id → exchange timestamps
+	scopes  map[string]map[string]map[string]bool // agent_id → connection → scopes seen
 	stats   ExchangeStats
 }
 
