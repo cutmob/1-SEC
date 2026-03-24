@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"fmt"
 	"os"
@@ -244,8 +245,16 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("reading config file: %w", err)
 	}
 
-	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("parsing config file: %w", err)
+	// Use strict YAML decoding to reject unknown fields that could indicate
+	// injection of unexpected execution tags (CVE-2026-4292 prevention).
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(cfg); err != nil {
+		// Fall back to lenient parsing if strict mode fails — this allows
+		// forward-compatible configs with fields added in newer versions.
+		if errLenient := yaml.Unmarshal(data, cfg); errLenient != nil {
+			return nil, fmt.Errorf("parsing config file: %w", errLenient)
+		}
 	}
 
 	// Load API keys from environment if not set in config

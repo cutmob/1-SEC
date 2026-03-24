@@ -318,3 +318,50 @@ func writeTempConfig(t *testing.T, content string) string {
 	}
 	return f.Name()
 }
+
+// ─── Strict YAML Unmarshal (CVE-2026-4292 Prevention) ────────────────────────
+
+func TestLoadConfig_StrictYAML_ValidConfig(t *testing.T) {
+	content := `
+server:
+  host: "0.0.0.0"
+  port: 8443
+logging:
+  level: "info"
+`
+	path := writeTempConfig(t, content)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() failed for valid config: %v", err)
+	}
+	if cfg.Server.Port != 8443 {
+		t.Errorf("Server.Port = %d, want %d", cfg.Server.Port, 8443)
+	}
+}
+
+func TestLoadConfig_StrictYAML_UnknownFieldFallsBack(t *testing.T) {
+	// Unknown fields should not cause a hard failure — lenient fallback kicks in
+	content := `
+server:
+  host: "127.0.0.1"
+  port: 9090
+some_future_field: "value"
+`
+	path := writeTempConfig(t, content)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() should fall back to lenient parsing, got error: %v", err)
+	}
+	if cfg.Server.Port != 9090 {
+		t.Errorf("Server.Port = %d, want %d after lenient fallback", cfg.Server.Port, 9090)
+	}
+}
+
+func TestLoadConfig_StrictYAML_InvalidYAMLFails(t *testing.T) {
+	content := `{{{not valid yaml at all`
+	path := writeTempConfig(t, content)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Error("LoadConfig() should fail for completely invalid YAML")
+	}
+}

@@ -357,6 +357,16 @@ func (c *Containment) handleToolIntegrity(event *core.SecurityEvent) {
 				toolName, serverName, result.ShadowedTool),
 			"mcp_tool_shadowing")
 	}
+
+	if result.Unapproved {
+		c.raiseAlert(event, core.SeverityCritical,
+			"MCP Tool Hash Mismatch — Possible Tampering (ASI04)",
+			fmt.Sprintf("Tool %q from server %q has hash %s but approved registry expects %s. "+
+				"The tool definition has been modified from its approved version. "+
+				"This may indicate tool supply chain compromise.",
+				toolName, serverName, hash, result.ApprovedHash),
+			"mcp_tool_tamper")
+	}
 }
 
 // handleGoalMonitoring detects agent goal hijacking (ASI01).
@@ -1304,6 +1314,7 @@ func (at *AgentTracker) RecordAction(agentID, action, tool, target string) Agent
 type ToolIntegrityMonitor struct {
 	mu             sync.RWMutex
 	knownTools     *lru.Cache[string, *toolRecord]
+	approvedTools  map[string]string // tool_name -> approved SHA-256 hash
 	poisonPatterns []*regexp.Regexp
 }
 
@@ -1315,18 +1326,21 @@ type toolRecord struct {
 }
 
 type ToolIntegrityResult struct {
-	Poisoned     bool
-	RugPull      bool
-	Shadowing    bool
-	Reason       string
-	PreviousHash string
-	ShadowedTool string
+	Poisoned       bool
+	RugPull        bool
+	Shadowing      bool
+	Unapproved     bool   // tool registered but not in approved map, or hash mismatch
+	Reason         string
+	PreviousHash   string
+	ShadowedTool   string
+	ApprovedHash   string // the expected hash from the approved map
 }
 
 func NewToolIntegrityMonitor() *ToolIntegrityMonitor {
 	tCache, _ := lru.New[string, *toolRecord](10000)
 	return &ToolIntegrityMonitor{
-		knownTools: tCache,
+		knownTools:    tCache,
+		approvedTools: make(map[string]string),
 		poisonPatterns: []*regexp.Regexp{
 			// Hidden instructions embedded in tool descriptions
 			regexp.MustCompile(`(?i)(ignore\s+(previous|prior|all)\s+instructions?|override\s+safety|bypass\s+restrictions?)`),
@@ -1339,6 +1353,13 @@ func NewToolIntegrityMonitor() *ToolIntegrityMonitor {
 			regexp.MustCompile(`(?i)(after\s+\d+\s+(calls?|uses?|invocations?)|on\s+(the\s+)?(second|third|next)\s+(call|use|run))`),
 		},
 	}
+}
+
+// RegisterApprovedTool adds a tool to the approved registry with its expected hash.
+func (tm *ToolIntegrityMonitor) RegisterApprovedTool(toolName, hash string) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.approvedTools[toolName] = hash
 }
 
 func (tm *ToolIntegrityMonitor) Analyze(toolName, description, serverName, hash string) ToolIntegrityResult {
@@ -1375,6 +1396,16 @@ func (tm *ToolIntegrityMonitor) Analyze(toolName, description, serverName, hash 
 				result.ShadowedTool = rec.Server + "::" + rec.Name
 				break
 			}
+		}
+	}
+
+	// Check against approved tool registry — if we have an approved map and this
+	// tool's hash doesn't match, flag it as a potential tool poisoning attempt.
+	if hash != "" && len(tm.approvedTools) > 0 {
+		approvedHash, isRegistered := tm.approvedTools[toolName]
+		if isRegistered && approvedHash != hash {
+			result.Unapproved = true
+			result.ApprovedHash = approvedHash
 		}
 	}
 

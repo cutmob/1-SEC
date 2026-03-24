@@ -109,11 +109,12 @@ func safePreset() map[string]ResponsePolicyYAML {
 				{Action: "log_only", MinSeverity: "HIGH", Description: "Log all network threats"},
 			},
 		},
-		// Ransomware gets kill_process only on CRITICAL (confirmed mass encryption)
+		// Ransomware gets kill_process + block_ip on CRITICAL (confirmed mass encryption / wiper)
 		"ransomware": {
 			Enabled: true, MinSeverity: "HIGH", CooldownSeconds: 60, MaxActionsPerMin: 5,
 			Actions: []ResponseRuleYAML{
-				{Action: "kill_process", MinSeverity: "CRITICAL", Description: "Kill confirmed ransomware encryption process"},
+				{Action: "kill_process", MinSeverity: "CRITICAL", Description: "Kill confirmed ransomware/wiper process"},
+				{Action: "block_ip", MinSeverity: "CRITICAL", Description: "Block source of confirmed wiper/destructive activity", Params: map[string]string{"duration": "24h"}},
 				{Action: "webhook", MinSeverity: "HIGH", Description: "Notify on ransomware indicators", Params: map[string]string{"url": ""}},
 				{Action: "log_only", MinSeverity: "HIGH", Description: "Log ransomware indicators"},
 			},

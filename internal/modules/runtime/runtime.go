@@ -49,6 +49,7 @@ func (w *Watcher) EventTypes() []string {
 		"registry_run_key", "startup_item", "cron_job", "systemd_service",
 		"firmware_event", "uefi_event", "bootloader_change",
 		"fileless_execution", "powershell_exec", "wmi_exec", "mshta_exec",
+		"driver_load",
 	}
 }
 
@@ -102,6 +103,8 @@ func (w *Watcher) HandleEvent(event *core.SecurityEvent) error {
 		w.handleFirmwareEvent(event)
 	case "fileless_execution", "powershell_exec", "wmi_exec", "mshta_exec":
 		w.handleFilelessEvent(event)
+	case "driver_load":
+		w.handleDriverLoad(event)
 	}
 	return nil
 }
@@ -426,6 +429,46 @@ func (w *Watcher) handleFirmwareEvent(event *core.SecurityEvent) {
 				"MITRE ATT&CK T1542.",
 				component),
 			"boot_config_change")
+	}
+}
+
+// byovdBlocklist contains known vulnerable drivers abused in Bring Your Own
+// Vulnerable Driver (BYOVD) attacks to disable EDR/security tools from kernel space.
+// References: TeamPCP/OpenClaw campaigns, MITRE ATT&CK T1068.
+var byovdBlocklist = []string{
+	"huaweidriver.sys", "rtcore64.sys", "gdrv.sys", "procexp152.sys", "nal.sys",
+	"dbutil_2_3.sys", "asio64.sys", "mhyprot2.sys", "kprocesshacker.sys",
+	"viragt64.sys", "aswarpot.sys", "iomem64.sys", "zemana.sys",
+}
+
+// handleDriverLoad detects BYOVD attacks where threat actors load known-vulnerable
+// signed drivers to gain kernel access and disable security tools.
+func (w *Watcher) handleDriverLoad(event *core.SecurityEvent) {
+	driverName := strings.ToLower(getStringDetail(event, "driver_name"))
+	driverPath := strings.ToLower(getStringDetail(event, "path"))
+	processName := getStringDetail(event, "process_name")
+	driverHash := getStringDetail(event, "hash")
+
+	if driverName == "" && driverPath != "" {
+		// Extract filename from path
+		driverName = strings.ToLower(filepath.Base(driverPath))
+	}
+	if driverName == "" {
+		return
+	}
+
+	for _, blocked := range byovdBlocklist {
+		if driverName == blocked || strings.HasSuffix(driverPath, blocked) {
+			w.raiseAlert(event, core.SeverityCritical,
+				"BYOVD Attack — Vulnerable Driver Loaded [T1068]",
+				fmt.Sprintf("Known-vulnerable driver %q loaded by process %s. "+
+					"Path: %s. Hash: %s. "+
+					"Attackers use signed vulnerable drivers to gain kernel access and disable EDR. "+
+					"MITRE ATT&CK T1068: Exploitation for Privilege Escalation.",
+					driverName, processName, truncate(driverPath, 200), truncate(driverHash, 64)),
+				"byovd_driver_load")
+			return
+		}
 	}
 }
 

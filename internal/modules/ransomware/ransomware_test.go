@@ -1009,3 +1009,75 @@ func TestGetRansomwareMitigations_LinuxRansomware(t *testing.T) {
 		t.Errorf("expected at least 3 mitigations for linux_ransomware, got %d", len(m))
 	}
 }
+
+// ─── Wiper Response Escalation ───────────────────────────────────────────────
+
+func TestHandleWiperActivity_MBRWrite_RaisesAlert(t *testing.T) {
+	cp := makeCapturingPipeline()
+	i := startedModuleWithPipeline(t, cp)
+
+	ev := core.NewSecurityEvent("test", "mbr_write", core.SeverityCritical, "MBR overwrite")
+	ev.SourceIP = "10.0.0.66"
+	ev.Details["process_name"] = "wiper.exe"
+	ev.Details["target"] = "/dev/sda"
+	ev.Details["bytes_written"] = 512
+	ev.Details["offset"] = 0
+	i.HandleEvent(ev)
+	time.Sleep(10 * time.Millisecond)
+
+	if !cp.hasAlertType("mbr_overwrite") {
+		t.Error("expected mbr_overwrite alert for MBR write event")
+	}
+}
+
+func TestHandleWiperActivity_PartitionWrite_RaisesAlert(t *testing.T) {
+	cp := makeCapturingPipeline()
+	i := startedModuleWithPipeline(t, cp)
+
+	ev := core.NewSecurityEvent("test", "partition_write", core.SeverityCritical, "Partition destroy")
+	ev.SourceIP = "10.0.0.67"
+	ev.Details["process_name"] = "destroyer.exe"
+	ev.Details["target"] = "/dev/sda1"
+	ev.Details["bytes_written"] = 4096
+	ev.Details["offset"] = 100 // non-zero offset so it doesn't match MBR path
+	i.HandleEvent(ev)
+	time.Sleep(10 * time.Millisecond)
+
+	if !cp.hasAlertType("partition_destroy") {
+		t.Error("expected partition_destroy alert for partition write event")
+	}
+}
+
+func TestHandleWiperActivity_CumulativeEscalation(t *testing.T) {
+	cp := makeCapturingPipeline()
+	i := startedModuleWithPipeline(t, cp)
+
+	// Send 5 wiper events to trigger the >3 count escalation
+	for n := 0; n < 5; n++ {
+		ev := core.NewSecurityEvent("test", "disk_write", core.SeverityCritical, "wiper")
+		ev.SourceIP = "10.0.0.99"
+		ev.Details["process_name"] = "wiper.exe"
+		ev.Details["target"] = "/dev/sda"
+		ev.Details["bytes_written"] = 65536
+		ev.Details["offset"] = 1024 // non-zero to avoid MBR path
+		ev.Details["wiper_type"] = "zero_fill"
+		i.HandleEvent(ev)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	if !cp.hasAlertType("wiper_activity") {
+		t.Error("expected wiper_activity alert for cumulative wiper events")
+	}
+	// Check that escalation message is present in at least one alert
+	found := false
+	cp.mu.Lock()
+	for _, a := range cp.alerts {
+		if a.Type == "wiper_activity" && len(a.Description) > 0 {
+			found = true
+		}
+	}
+	cp.mu.Unlock()
+	if !found {
+		t.Error("expected escalated wiper_activity alert with response action")
+	}
+}

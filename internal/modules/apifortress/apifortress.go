@@ -53,6 +53,7 @@ func (f *Fortress) EventTypes() []string {
 		"jwt_validation", "token_event",
 		"api_config", "api_upstream_response",
 		"login_success", "auth_success",
+		"grpc_request",
 	}
 }
 
@@ -107,6 +108,8 @@ func (f *Fortress) HandleEvent(event *core.SecurityEvent) error {
 		f.checkUnsafeConsumption(event)
 	case "login_success", "auth_success":
 		f.recordAuthSuccess(event)
+	case "grpc_request":
+		f.handleGRPCRequest(event)
 	}
 	return nil
 }
@@ -160,6 +163,12 @@ func (f *Fortress) handleAPIRequest(event *core.SecurityEvent) {
 					userID, userRole, method, path, violation.RequiredRole, violation.Reason),
 				"bfla")
 		}
+	}
+
+	// ASP.NET PageMethod bypass detection — methods invoked via /page.aspx/MethodName
+	// bypass standard routing middleware and can expose unauthenticated backend logic.
+	if path != "" {
+		f.checkPageMethodBypass(event, path, userRole)
 	}
 
 	// Stateful API flow: admin endpoints require recent authentication (CVE-2026-20127)
@@ -315,6 +324,72 @@ func (f *Fortress) handleJWTEvent(event *core.SecurityEvent) {
 			finding.Title,
 			fmt.Sprintf("JWT issue from %s: %s", event.SourceIP, finding.Description),
 			finding.AlertType)
+	}
+}
+
+// pageMethodPattern detects ASP.NET PageMethod access that bypasses standard routing filters.
+var pageMethodPattern = regexp.MustCompile(`(?i)/[^/]+\.aspx/([a-zA-Z0-9_]+)`)
+
+// handleGRPCRequest detects gRPC requests missing authorization metadata,
+// which can indicate auth bypass on gRPC endpoints (CVE-2026-4064).
+func (f *Fortress) handleGRPCRequest(event *core.SecurityEvent) {
+	path := getStringDetail(event, "path")
+	contentType := getStringDetail(event, "content_type")
+	metadata := getStringDetail(event, "metadata")
+	authHeader := getStringDetail(event, "authorization")
+
+	// Verify this is actually a gRPC request
+	if !strings.Contains(strings.ToLower(contentType), "application/grpc") {
+		return
+	}
+
+	// Check for missing authorization in gRPC metadata
+	metaLower := strings.ToLower(metadata)
+	hasAuth := authHeader != "" ||
+		strings.Contains(metaLower, "authorization") ||
+		strings.Contains(metaLower, "x-api-key")
+
+	if !hasAuth {
+		f.raiseAlert(event, core.SeverityCritical,
+			"gRPC Missing Authorization [API2:2023]",
+			fmt.Sprintf("gRPC request to %s from %s has no authorization metadata. "+
+				"Content-Type: %s. Missing auth on gRPC endpoints allows RBAC bypass. "+
+				"OWASP API Top 10: API2 Broken Authentication.",
+				path, event.SourceIP, contentType),
+			"grpc_auth_bypass")
+	}
+
+	// Also check for BFLA on gRPC endpoints
+	userRole := getStringDetail(event, "user_role")
+	if userRole != "" {
+		result := f.bflaDetector.Check("", userRole, "POST", path, event.SourceIP)
+		if result != nil {
+			f.raiseAlert(event, core.SeverityHigh,
+				"gRPC BFLA — Unauthorized Function Access [API5:2023]",
+				fmt.Sprintf("User with role %q accessing privileged gRPC endpoint %s. %s. "+
+					"OWASP API Top 10: API5 Broken Function Level Authorization.",
+					userRole, path, result.Reason),
+				"grpc_bfla")
+		}
+	}
+}
+
+// checkPageMethodBypass detects ASP.NET PageMethod access attempts that bypass
+// standard middleware routing filters, allowing direct backend method invocation.
+func (f *Fortress) checkPageMethodBypass(event *core.SecurityEvent, path, userRole string) {
+	if match := pageMethodPattern.FindStringSubmatch(path); match != nil {
+		methodName := match[1]
+		severity := core.SeverityHigh
+		if userRole == "0" || userRole == "1" || userRole == "anonymous" || userRole == "" {
+			severity = core.SeverityCritical
+		}
+		f.raiseAlert(event, severity,
+			"ASP.NET PageMethod Bypass Detected [API5:2023]",
+			fmt.Sprintf("Request to %s invokes PageMethod %q which bypasses standard routing filters. "+
+				"Source: %s, Role: %s. Attackers use PageMethod suffixes to skip authentication middleware. "+
+				"OWASP API Top 10: API5 Broken Function Level Authorization.",
+				path, methodName, event.SourceIP, userRole),
+			"aspnet_pagemethod_bypass")
 	}
 }
 

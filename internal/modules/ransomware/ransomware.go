@@ -458,23 +458,26 @@ func (i *Interceptor) handleWiperActivity(event *core.SecurityEvent) {
 
 	i.wiperTracker.RecordEvent(event.SourceIP, processName, wiperType)
 
-	// MBR/GPT overwrites are always critical — offset 0 on a physical drive is the MBR
+	// MBR/GPT overwrites are always critical — offset 0 on a physical drive is the MBR.
+	// Active response: immediately kill the responsible process and block the source.
 	if event.Type == "mbr_write" || writeOffset == 0 {
 		i.raiseAlert(event, core.SeverityCritical,
 			"MBR/GPT Overwrite Detected [T1561.002]",
-			fmt.Sprintf("Master Boot Record or GPT overwrite detected. Process: %s, Target: %s, Bytes: %d, Offset: %d. MITRE ATT&CK T1561.002: Disk Structure Wipe. System will be unbootable.",
+			fmt.Sprintf("Master Boot Record or GPT overwrite detected. Process: %s, Target: %s, Bytes: %d, Offset: %d. MITRE ATT&CK T1561.002: Disk Structure Wipe. System will be unbootable. ACTIVE RESPONSE: kill_process + block_ip triggered.",
 				processName, target, bytesWritten, writeOffset),
 			"mbr_overwrite")
+		i.emitResponseAction(event, processName)
 		return
 	}
 
-	// Partition table destruction
+	// Partition table destruction — active response: kill + block
 	if event.Type == "partition_write" {
 		i.raiseAlert(event, core.SeverityCritical,
 			"Partition Table Destruction [T1561.002]",
-			fmt.Sprintf("Partition table modification detected. Process: %s, Target: %s, Bytes: %d. MITRE ATT&CK T1561.002: Disk Structure Wipe.",
+			fmt.Sprintf("Partition table modification detected. Process: %s, Target: %s, Bytes: %d. MITRE ATT&CK T1561.002: Disk Structure Wipe. ACTIVE RESPONSE: kill_process + block_ip triggered.",
 				processName, target, bytesWritten),
 			"partition_destroy")
+		i.emitResponseAction(event, processName)
 		return
 	}
 
@@ -493,14 +496,46 @@ func (i *Interceptor) handleWiperActivity(event *core.SecurityEvent) {
 		desc += fmt.Sprintf(". MITRE ATT&CK T1561: Disk Wipe.")
 	}
 
-	// Track cumulative wipe activity
+	// Track cumulative wipe activity — escalate to active response on rapid wiping
 	stats := i.wiperTracker.GetStats(event.SourceIP)
 	if stats.EventCount > 3 {
-		desc += fmt.Sprintf(" ESCALATION: %d wipe events from this host in %s — coordinated destruction campaign.",
+		desc += fmt.Sprintf(" ESCALATION: %d wipe events from this host in %s — coordinated destruction campaign. ACTIVE RESPONSE: kill_process + block_ip triggered.",
 			stats.EventCount, stats.Duration.String())
+		i.raiseAlert(event, severity, title, desc, "wiper_activity")
+		i.emitResponseAction(event, processName)
+		return
 	}
 
 	i.raiseAlert(event, severity, title, desc, "wiper_activity")
+}
+
+// emitResponseAction publishes kill_process and block_ip response events for
+// confirmed destructive activity (wipers, MBR overwrites, partition destruction).
+func (i *Interceptor) emitResponseAction(event *core.SecurityEvent, processName string) {
+	if i.bus == nil {
+		return
+	}
+	// Emit kill_process
+	killEvent := core.NewSecurityEvent(ModuleName, "response_action", core.SeverityCritical,
+		fmt.Sprintf("Kill process %s — confirmed wiper/destructive activity", processName))
+	killEvent.SourceIP = event.SourceIP
+	killEvent.Details["action"] = string(core.ActionKillProcess)
+	killEvent.Details["process_name"] = processName
+	killEvent.Details["reason"] = "wiper_active_response"
+	killEvent.Details["original_event_id"] = event.ID
+	_ = i.bus.PublishEvent(killEvent)
+
+	// Emit block_ip
+	if event.SourceIP != "" {
+		blockEvent := core.NewSecurityEvent(ModuleName, "response_action", core.SeverityCritical,
+			fmt.Sprintf("Block IP %s — confirmed wiper/destructive activity", event.SourceIP))
+		blockEvent.SourceIP = event.SourceIP
+		blockEvent.Details["action"] = string(core.ActionBlockIP)
+		blockEvent.Details["duration"] = "24h"
+		blockEvent.Details["reason"] = "wiper_active_response"
+		blockEvent.Details["original_event_id"] = event.ID
+		_ = i.bus.PublishEvent(blockEvent)
+	}
 }
 
 // checkCompoundAttack detects when multiple pre-ransomware indicators fire together,

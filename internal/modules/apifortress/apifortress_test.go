@@ -1038,3 +1038,83 @@ func TestStatefulAuth_AdminAfterLogin(t *testing.T) {
 		t.Error("should NOT alert for admin access after recent login_success")
 	}
 }
+
+// ─── gRPC Auth Detection ─────────────────────────────────────────────────────
+
+func TestHandleGRPCRequest_MissingAuth(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := core.NewSecurityEvent("test", "grpc_request", core.SeverityInfo, "gRPC request")
+	ev.Details["path"] = "/powershell.rpc.Management/Execute"
+	ev.Details["content_type"] = "application/grpc"
+	ev.Details["metadata"] = ""
+	ev.SourceIP = "10.0.0.50"
+	f.HandleEvent(ev)
+	time.Sleep(10 * time.Millisecond)
+
+	if !cp.hasAlertType("grpc_auth_bypass") {
+		t.Error("expected grpc_auth_bypass alert for gRPC request without authorization metadata")
+	}
+}
+
+func TestHandleGRPCRequest_WithAuth(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := core.NewSecurityEvent("test", "grpc_request", core.SeverityInfo, "gRPC request")
+	ev.Details["path"] = "/api.Service/List"
+	ev.Details["content_type"] = "application/grpc"
+	ev.Details["authorization"] = "Bearer token123"
+	ev.SourceIP = "10.0.0.50"
+	f.HandleEvent(ev)
+	time.Sleep(10 * time.Millisecond)
+
+	if cp.hasAlertType("grpc_auth_bypass") {
+		t.Error("should NOT alert for gRPC request with authorization header")
+	}
+}
+
+func TestHandleGRPCRequest_NonGRPCIgnored(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := core.NewSecurityEvent("test", "grpc_request", core.SeverityInfo, "gRPC request")
+	ev.Details["path"] = "/api/endpoint"
+	ev.Details["content_type"] = "application/json"
+	ev.SourceIP = "10.0.0.50"
+	f.HandleEvent(ev)
+	time.Sleep(10 * time.Millisecond)
+
+	if cp.hasAlertType("grpc_auth_bypass") {
+		t.Error("should NOT alert for non-gRPC content type")
+	}
+}
+
+// ─── ASP.NET PageMethod Bypass ───────────────────────────────────────────────
+
+func TestPageMethodBypass_Detected(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := makeAPIRequest("/Admin/Dashboard.aspx/GetSensitiveData", "POST", "user1", "", "anonymous")
+	f.HandleEvent(ev)
+	time.Sleep(10 * time.Millisecond)
+
+	if !cp.hasAlertType("aspnet_pagemethod_bypass") {
+		t.Error("expected aspnet_pagemethod_bypass alert for PageMethod access")
+	}
+}
+
+func TestPageMethodBypass_NormalASPX(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := makeAPIRequest("/Admin/Dashboard.aspx", "GET", "user1", "", "admin")
+	f.HandleEvent(ev)
+	time.Sleep(10 * time.Millisecond)
+
+	if cp.hasAlertType("aspnet_pagemethod_bypass") {
+		t.Error("should NOT alert for normal .aspx access without PageMethod suffix")
+	}
+}

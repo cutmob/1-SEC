@@ -1040,3 +1040,57 @@ func TestLibraryPathHijack_SafeSystemPath(t *testing.T) {
 		}
 	}
 }
+
+// ─── BYOVD Driver Load Detection ────────────────────────────────────────────
+
+func TestHandleDriverLoad_BlockedDriver(t *testing.T) {
+	cp := makeCapturingPipeline()
+	w := startedModuleWithPipeline(t, cp)
+
+	for _, driver := range []string{"rtcore64.sys", "procexp152.sys", "huaweidriver.sys", "gdrv.sys", "nal.sys"} {
+		cp.mu.Lock()
+		cp.alerts = nil
+		cp.mu.Unlock()
+
+		ev := core.NewSecurityEvent("test", "driver_load", core.SeverityInfo, "driver load")
+		ev.Details["driver_name"] = driver
+		ev.Details["process_name"] = "malware.exe"
+		ev.Details["path"] = `C:\Windows\System32\drivers\` + driver
+		w.HandleEvent(ev)
+		time.Sleep(10 * time.Millisecond)
+
+		if cp.count() == 0 {
+			t.Errorf("expected BYOVD alert for driver %q, got none", driver)
+		}
+	}
+}
+
+func TestHandleDriverLoad_SafeDriver(t *testing.T) {
+	cp := makeCapturingPipeline()
+	w := startedModuleWithPipeline(t, cp)
+
+	ev := core.NewSecurityEvent("test", "driver_load", core.SeverityInfo, "driver load")
+	ev.Details["driver_name"] = "ntfs.sys"
+	ev.Details["process_name"] = "windows"
+	w.HandleEvent(ev)
+	time.Sleep(10 * time.Millisecond)
+
+	if cp.count() > 0 {
+		t.Error("should NOT alert for legitimate driver ntfs.sys")
+	}
+}
+
+func TestHandleDriverLoad_PathExtraction(t *testing.T) {
+	cp := makeCapturingPipeline()
+	w := startedModuleWithPipeline(t, cp)
+
+	ev := core.NewSecurityEvent("test", "driver_load", core.SeverityInfo, "driver load")
+	ev.Details["path"] = `/tmp/exploit/mhyprot2.sys`
+	ev.Details["process_name"] = "loader"
+	w.HandleEvent(ev)
+	time.Sleep(10 * time.Millisecond)
+
+	if cp.count() == 0 {
+		t.Error("expected BYOVD alert when driver name extracted from path")
+	}
+}
