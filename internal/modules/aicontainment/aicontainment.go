@@ -1326,14 +1326,14 @@ type toolRecord struct {
 }
 
 type ToolIntegrityResult struct {
-	Poisoned       bool
-	RugPull        bool
-	Shadowing      bool
-	Unapproved     bool   // tool registered but not in approved map, or hash mismatch
-	Reason         string
-	PreviousHash   string
-	ShadowedTool   string
-	ApprovedHash   string // the expected hash from the approved map
+	Poisoned     bool
+	RugPull      bool
+	Shadowing    bool
+	Unapproved   bool // tool registered but not in approved map, or hash mismatch
+	Reason       string
+	PreviousHash string
+	ShadowedTool string
+	ApprovedHash string // the expected hash from the approved map
 }
 
 func NewToolIntegrityMonitor() *ToolIntegrityMonitor {
