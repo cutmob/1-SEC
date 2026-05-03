@@ -3,6 +3,7 @@ package aicontainment
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
@@ -17,6 +18,47 @@ import (
 )
 
 const ModuleName = "ai_containment"
+
+// Heuristic detectors for hostile content inside structured tool payloads (prompt
+// injection / tool-integration abuse). Regex-only — aligns with zero-external-deps
+// architecture — not a semantic SQL or shell parser.
+
+var (
+	agentToolShellPrimitiveRX = regexp.MustCompile(
+		`(?is)(?:bash|\bsh\b|zsh|dash)\s+-c|` +
+			`/bin/(?:bash|sh|dash|zsh)\b|` +
+			`/usr/bin/(?:bash|sh|dash|zsh)\b|` +
+			`powershell(?:\.exe)?|` +
+			`\bpwsh\.exe|` +
+			`cmd\.exe|` +
+			`invoke-expression|\biex\b|` +
+			`(?:^|[^\w])(?:-enc|--encoded(?:command)?|--e\s)` +
+			`|` +
+			`\b(?:os\.system|subprocess|Popen)\b|` +
+			`\bspawn\s*\(|` +
+			`(?:^|[^\w])(?:child_process(?:\.\w+)?|require\s*\(\s*['"]child_process['"]\))|` +
+			`Process\.Start|` +
+			`python(?:3)?\s+-c|` +
+			`perl\s+-e|` +
+			`ruby\s+-e|` +
+			`php\s+-r`,
+	)
+
+	agentToolDangerPipeRX = regexp.MustCompile(
+		`(?is)\|\s*(?:curl|wget|nc\b|netcat|bash|/\w*bin/sh|powershell|socat\b|perl|python\d?\s+|ruby\s+)\b`)
+
+	agentToolDestructiveSQLRX = regexp.MustCompile(
+		`(?is);\s*\b(?:drop|truncate|alter\s+role|grant\s|revoke\s|execute\s+|exec\s+)(?:[^\n;]{1,480})`)
+
+	agentToolHeavySubshellRX = regexp.MustCompile(
+		`\$\([^)]{4,440}\)`, // command substitution payloads
+	)
+
+	agentToolSubshellInnerRiskRX = regexp.MustCompile(
+		`(?is)(?:curl|wget|powershell|/\w*bin/sh|\bbash\b|\bsh\b|nc\b|netcat|` +
+			`perl\b|python\d?\s+|ruby\b|chmod\b|chown\b|\brm\s+-|mkfifo)`,
+	)
+)
 
 // Containment is the AI Agent Containment module providing action sandboxing,
 // tool-use monitoring, autonomous behavior detection, shadow AI detection,
@@ -248,6 +290,94 @@ func (c *Containment) handleAgentAction(event *core.SecurityEvent) {
 					agentID, action, tool),
 				"agent_goal_misalignment")
 		}
+	}
+
+	if sev, reason, matched := classifyAgentToolPayloadInjection(collectStructuredToolStrings(event)...); matched {
+		c.raiseAlert(event, sev,
+			"Suspicious Agent Tool Invocation Payload",
+			fmt.Sprintf("Agent %s invoked tool %q with arguments that resemble OS command "+
+				"execution, hostile shell pipelines, chained destructive SQL, or heavyweight "+
+				"command substitution. Heuristic classification: %s",
+				agentID, tool, reason),
+			"agent_tool_payload_injection")
+	}
+}
+
+// classifyAgentToolPayloadInjection inspects blobs commonly carrying tool payloads.
+func classifyAgentToolPayloadInjection(blob ...string) (core.Severity, string, bool) {
+	for _, s := range blob {
+		if len(s) < 8 {
+			continue
+		}
+		if agentToolShellPrimitiveRX.MatchString(s) || agentToolDangerPipeRX.MatchString(s) {
+			return core.SeverityCritical, "shell or interpreter primitive in tool arguments", true
+		}
+		if agentToolHeavySubshellRX.MatchString(s) &&
+			agentToolSubshellInnerRiskRX.MatchString(s) {
+			return core.SeverityCritical, "command substitution referencing network or shell utilities", true
+		}
+		if looksSQLLike(s) && agentToolDestructiveSQLRX.MatchString(s) {
+			return core.SeverityHigh, "chained destructive SQL statements in tool arguments", true
+		}
+	}
+	return 0, "", false
+}
+
+func looksSQLLike(s string) bool {
+	sl := strings.ToLower(s)
+	if strings.Contains(sl, "select ") || strings.Contains(sl, "insert ") ||
+		strings.Contains(sl, "update ") || strings.Contains(sl, "delete from") {
+		return true
+	}
+	return strings.Contains(sl, " from ") && strings.Contains(sl, " where ")
+}
+
+// collectStructuredToolStrings pulls likely tool-argument fields from event details.
+func collectStructuredToolStrings(event *core.SecurityEvent) []string {
+	if event == nil || event.Details == nil {
+		return nil
+	}
+	keys := []string{
+		"tool_args", "arguments", "args", "params", "payload", "input",
+		"query", "tool_input", "message", "content", "command", "code", "script", "body",
+	}
+	seen := make(map[string]struct{}, len(keys))
+	var out []string
+	for _, k := range keys {
+		val, ok := event.Details[k]
+		if !ok {
+			continue
+		}
+		s := strings.TrimSpace(detailToString(val))
+		if len(s) < 8 {
+			continue
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
+func detailToString(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	switch x := v.(type) {
+	case string:
+		return x
+	case []byte:
+		return string(x)
+	case json.RawMessage:
+		return string(x)
+	default:
+		b, err := json.Marshal(x)
+		if err != nil {
+			return ""
+		}
+		return string(b)
 	}
 }
 
