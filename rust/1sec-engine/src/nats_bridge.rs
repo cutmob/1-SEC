@@ -313,11 +313,10 @@ fn extract_json_strings(
     }
 
     match value {
-        serde_json::Value::String(s) => {
-            if s.len() > 1 && s.len() < 100_000 {
-                out.push((prefix.to_string(), s.clone()));
-            }
+        serde_json::Value::String(s) if s.len() > 1 && s.len() < 100_000 => {
+            out.push((prefix.to_string(), s.clone()));
         }
+        serde_json::Value::String(_) => {}
         serde_json::Value::Object(map) => {
             for (key, val) in map {
                 let field_name = format!("{}.{}", prefix, key);

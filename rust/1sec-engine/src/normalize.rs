@@ -166,34 +166,30 @@ fn decode_backslash_escapes(s: &str) -> String {
     while i < bytes.len() {
         if bytes[i] == b'\\' && i + 1 < bytes.len() {
             match bytes[i + 1] {
-                b'x' | b'X' => {
-                    if i + 3 < bytes.len() {
-                        let hi = unhex(bytes[i + 2]);
-                        let lo = unhex(bytes[i + 3]);
-                        if hi >= 0 && lo >= 0 {
-                            out.push((hi << 4 | lo) as u8);
-                            i += 4;
-                            continue;
-                        }
+                b'x' | b'X' if i + 3 < bytes.len() => {
+                    let hi = unhex(bytes[i + 2]);
+                    let lo = unhex(bytes[i + 3]);
+                    if hi >= 0 && lo >= 0 {
+                        out.push((hi << 4 | lo) as u8);
+                        i += 4;
+                        continue;
                     }
                 }
-                b'u' | b'U' => {
-                    if i + 5 < bytes.len() {
-                        let mut val = 0i32;
-                        let mut valid = true;
-                        for j in 2..6 {
-                            let h = unhex(bytes[i + j]);
-                            if h < 0 {
-                                valid = false;
-                                break;
-                            }
-                            val = val * 16 + h;
+                b'u' | b'U' if i + 5 < bytes.len() => {
+                    let mut val = 0i32;
+                    let mut valid = true;
+                    for j in 2..6 {
+                        let h = unhex(bytes[i + j]);
+                        if h < 0 {
+                            valid = false;
+                            break;
                         }
-                        if valid && val < 128 {
-                            out.push(val as u8);
-                            i += 6;
-                            continue;
-                        }
+                        val = val * 16 + h;
+                    }
+                    if valid && val < 128 {
+                        out.push(val as u8);
+                        i += 6;
+                        continue;
                     }
                 }
                 b'n' => {
