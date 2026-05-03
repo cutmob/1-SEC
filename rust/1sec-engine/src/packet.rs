@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 /// Anomaly detection thresholds
 const SUSPICIOUS_PORT_SCAN_THRESHOLD: usize = 20;
-const MAX_PAYLOAD_PREVIEW: usize = 256;
+const MAX_PAYLOAD_PREVIEW: usize = 2048;
 const STATS_INTERVAL_SECS: u64 = 60;
 
 /// Per-source tracking for anomaly detection.
@@ -271,6 +271,7 @@ pub fn validate_magic(data: &[u8], extension: &str) -> Option<String> {
         ("jpeg", &[&[0xFF, 0xD8, 0xFF]]),
         ("gif", &[b"GIF8"]),
         ("pdf", &[b"%PDF"]),
+        ("jp2", &[&[0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20]]),
         ("zip", &[b"PK\x03\x04", b"PK\x05\x06"]),
         ("gz", &[&[0x1F, 0x8B]]),
         ("bz2", &[b"BZ"]),
@@ -436,11 +437,11 @@ mod packet_util_tests {
 
     #[test]
     fn test_extract_text_preview_long_payload_truncated() {
-        let long_payload: Vec<u8> = "hello world ".repeat(30).into_bytes();
+        let long_payload: Vec<u8> = "hello world ".repeat(300).into_bytes();
         let preview = extract_text_preview(&long_payload);
         assert!(
-            preview.len() <= 256,
-            "Preview should be capped at MAX_PAYLOAD_PREVIEW=256"
+            preview.len() <= MAX_PAYLOAD_PREVIEW,
+            "Preview should be capped at MAX_PAYLOAD_PREVIEW"
         );
     }
 
@@ -476,6 +477,17 @@ mod packet_util_tests {
         assert!(
             validate_magic(data, "pdf").is_none(),
             "Valid PDF should pass"
+        );
+    }
+
+    #[test]
+    fn test_validate_magic_valid_jp2() {
+        let data = [
+            0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A,
+        ];
+        assert!(
+            validate_magic(&data, "jp2").is_none(),
+            "Valid JP2 signature should pass"
         );
     }
 

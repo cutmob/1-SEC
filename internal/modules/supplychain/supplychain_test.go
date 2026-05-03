@@ -459,6 +459,26 @@ func TestSentinel_HandleEvent_ArtifactEvent_MissingProvenance(t *testing.T) {
 	}
 }
 
+func TestSentinel_HandleEvent_ArtifactDangerousDefault(t *testing.T) {
+	cp := newCapPipeline()
+	s := startedSentinel(t, cp.pipeline)
+
+	ev := core.NewSecurityEvent("test", "build_artifact", core.SeverityInfo, "artifact built")
+	ev.Details["artifact_name"] = "generated-client.py"
+	ev.Details["signature"] = "valid-sig"
+	ev.Details["provenance"] = "github-actions"
+	ev.Details["artifact_content"] = `session.verify = False`
+	ev.SourceIP = "10.0.0.1"
+
+	if err := s.HandleEvent(ev); err != nil {
+		t.Fatalf("HandleEvent() error: %v", err)
+	}
+
+	if !cp.hasAlertType("dangerous_code_default") {
+		t.Error("expected dangerous_code_default alert for insecure generated artifact")
+	}
+}
+
 func TestSentinel_HandleEvent_CICDEvent(t *testing.T) {
 	cp := newCapPipeline()
 	s := startedSentinel(t, cp.pipeline)
@@ -478,6 +498,66 @@ func TestSentinel_HandleEvent_CICDEvent(t *testing.T) {
 	}
 	if !cp.hasAlertType("suspicious_cicd_step") {
 		t.Error("expected suspicious_cicd_step alert type")
+	}
+}
+
+func TestSentinel_HandleEvent_CICDDangerousDefault(t *testing.T) {
+	cp := newCapPipeline()
+	s := startedSentinel(t, cp.pipeline)
+
+	ev := core.NewSecurityEvent("test", "pipeline_config_change", core.SeverityInfo, "pipeline changed")
+	ev.Details["action"] = "update template"
+	ev.Details["pipeline_name"] = "deploy-prod"
+	ev.Details["user"] = "builder"
+	ev.Details["pipeline_config"] = `tlsConfig: { InsecureSkipVerify: true }`
+	ev.SourceIP = "10.0.0.1"
+
+	if err := s.HandleEvent(ev); err != nil {
+		t.Fatalf("HandleEvent() error: %v", err)
+	}
+
+	if !cp.hasAlertType("dangerous_code_default") {
+		t.Error("expected dangerous_code_default alert for insecure pipeline template")
+	}
+}
+
+func TestSentinel_HandleEvent_ArtifactLegacyTLSDefault(t *testing.T) {
+	cp := newCapPipeline()
+	s := startedSentinel(t, cp.pipeline)
+
+	ev := core.NewSecurityEvent("test", "build_artifact", core.SeverityInfo, "artifact built")
+	ev.Details["artifact_name"] = "generated-client.java"
+	ev.Details["signature"] = "valid-sig"
+	ev.Details["provenance"] = "github-actions"
+	ev.Details["artifact_content"] = `SSLContext.getInstance("TLSv1.1")`
+	ev.SourceIP = "10.0.0.1"
+
+	if err := s.HandleEvent(ev); err != nil {
+		t.Fatalf("HandleEvent() error: %v", err)
+	}
+
+	if !cp.hasAlertType("dangerous_code_default") {
+		t.Error("expected dangerous_code_default alert for legacy TLS default")
+	}
+}
+
+func TestSentinel_HandleEvent_ArtifactEmbeddedLiveToken(t *testing.T) {
+	cp := newCapPipeline()
+	s := startedSentinel(t, cp.pipeline)
+
+	ev := core.NewSecurityEvent("test", "build_artifact", core.SeverityInfo, "artifact built")
+	ev.Details["artifact_name"] = "sample.js"
+	ev.Details["signature"] = "valid-sig"
+	ev.Details["provenance"] = "github-actions"
+	ev.Details["artifact_content"] = `const token = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij";`
+	ev.SourceIP = "10.0.0.1"
+
+	if err := s.HandleEvent(ev); err != nil {
+		t.Fatalf("HandleEvent() error: %v", err)
+	}
+
+	if !cp.hasAlertType("dangerous_code_default") {
+		t.Error("expected dangerous_code_default alert for embedded live token")
 	}
 }
 

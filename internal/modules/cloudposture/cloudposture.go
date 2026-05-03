@@ -2,6 +2,7 @@ package cloudposture
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"regexp"
 	"strings"
@@ -27,6 +28,8 @@ type Manager struct {
 	driftTracker  *DriftTracker
 	secretScanner *SecretScanner
 	policyEngine  *CloudPolicyEngine
+	restoreMu     sync.Mutex
+	restoreState  map[string]string
 }
 
 func New() *Manager { return &Manager{} }
@@ -57,6 +60,7 @@ func (m *Manager) Start(ctx context.Context, bus *core.EventBus, pipeline *core.
 	m.driftTracker = NewDriftTracker()
 	m.secretScanner = NewSecretScanner()
 	m.policyEngine = NewCloudPolicyEngine()
+	m.restoreState = make(map[string]string)
 
 	m.logger.Info().Msg("cloud posture manager started")
 	return nil
@@ -273,6 +277,9 @@ func (m *Manager) handleKubernetesEvent(event *core.SecurityEvent) {
 				"k8s_host_namespace")
 		}
 
+		m.checkRestoreAdmission(event, namespace, resource, user)
+		m.checkAdmissionProfiles(event, namespace, resource)
+
 	case "k8s_network_policy":
 		// Detect missing or overly permissive network policies
 		policyAction := getStringDetail(event, "policy_action")
@@ -285,6 +292,209 @@ func (m *Manager) handleKubernetesEvent(event *core.SecurityEvent) {
 				"k8s_netpol_deleted")
 		}
 	}
+}
+
+func (m *Manager) checkRestoreAdmission(event *core.SecurityEvent, namespace, resource, user string) {
+	key := admissionBaselineKey(namespace, resource)
+	if key == "" {
+		return
+	}
+
+	current := fingerprintAdmission(event)
+	if !isRestoreAdmission(event) {
+		m.restoreMu.Lock()
+		m.restoreState[key] = current
+		m.restoreMu.Unlock()
+		return
+	}
+
+	m.restoreMu.Lock()
+	previous := m.restoreState[key]
+	m.restoreMu.Unlock()
+
+	privileged := getStringDetail(event, "privileged") == "true"
+	hostNetwork := getStringDetail(event, "host_network") == "true"
+	hostPID := getStringDetail(event, "host_pid") == "true"
+	dangerousCaps := hasDangerousCapability(getStringDetail(event, "capabilities"))
+
+	if previous != "" && previous != current && (privileged || hostNetwork || hostPID || dangerousCaps) {
+		m.raiseAlert(event, core.SeverityCritical,
+			"Kubernetes Restore Drift Introduced Host Escape Risk",
+			fmt.Sprintf("Restore-style admission for %s/%s by %s changed the pod security baseline and introduced privileged or host-level access. Backup/restore hooks must preserve the original hardened security context.",
+				namespace, resource, user),
+			"k8s_restore_privilege_escalation")
+		return
+	}
+
+	if previous == "" && (privileged || hostNetwork || hostPID || dangerousCaps) {
+		m.raiseAlert(event, core.SeverityHigh,
+			"Restore Admission Added Sensitive Container Permissions",
+			fmt.Sprintf("Restore-style admission for %s/%s by %s requested privileged settings without a known baseline. Review backup/restore automation for security-context drift.",
+				namespace, resource, user),
+			"k8s_restore_privilege_escalation")
+	}
+}
+
+func (m *Manager) checkAdmissionProfiles(event *core.SecurityEvent, namespace, resource string) {
+	weaknesses := collectProfileWeaknesses(event)
+	for _, weakness := range weaknesses {
+		m.raiseAlert(event, weakness.Severity,
+			weakness.Title,
+			fmt.Sprintf("Workload %s/%s uses a container profile that remains bypassable: %s",
+				namespace, resource, weakness.Description),
+			weakness.AlertType)
+	}
+}
+
+type profileWeakness struct {
+	Title       string
+	Description string
+	Severity    core.Severity
+	AlertType   string
+}
+
+func collectProfileWeaknesses(event *core.SecurityEvent) []profileWeakness {
+	apparmor := strings.ToLower(getStringDetail(event, "apparmor_profile") + "\n" + getStringDetail(event, "apparmor_policy"))
+	seccomp := strings.ToLower(getStringDetail(event, "seccomp_profile") + "\n" + getStringDetail(event, "seccomp_policy"))
+
+	var weaknesses []profileWeakness
+	if strings.Contains(apparmor, "unconfined") {
+		weaknesses = append(weaknesses, profileWeakness{
+			Title:       "AppArmor Unconfined Workload",
+			Description: "AppArmor is set to unconfined, which removes the LSM barrier entirely for this workload.",
+			Severity:    core.SeverityCritical,
+			AlertType:   "container_profile_bypass",
+		})
+	}
+	if strings.Contains(apparmor, "mount,") && !strings.Contains(apparmor, "deny mount") {
+		weaknesses = append(weaknesses, profileWeakness{
+			Title:       "AppArmor Mount Evasion Gap",
+			Description: "Profile allows mount operations without an explicit deny rule, enabling denylist-style AppArmor bypass and container breakout staging.",
+			Severity:    core.SeverityHigh,
+			AlertType:   "container_profile_bypass",
+		})
+	}
+	if allowsBindRemount(apparmor) && !hasReadonlyRemountGuard(apparmor) {
+		weaknesses = append(weaknesses, profileWeakness{
+			Title:       "AppArmor Remount Bind Escape Gap",
+			Description: "Profile allows bind/remount-style mount operations without enforcing read-only remount protections, enabling denylist evasion similar to recent container breakout research.",
+			Severity:    core.SeverityCritical,
+			AlertType:   "container_profile_bypass",
+		})
+	}
+	if strings.Contains(apparmor, "ptrace") && !strings.Contains(apparmor, "deny ptrace") {
+		weaknesses = append(weaknesses, profileWeakness{
+			Title:       "AppArmor Ptrace Escape Gap",
+			Description: "Profile references ptrace controls without an explicit deny, leaving room for denylist evasion through process introspection.",
+			Severity:    core.SeverityHigh,
+			AlertType:   "container_profile_bypass",
+		})
+	}
+	if strings.Contains(seccomp, "scmp_act_allow") {
+		sensitiveSyscalls := []string{"mount", "umount2", "move_mount", "open_tree", "fsopen", "fsmount", "mount_setattr", "pivot_root", "ptrace", "bpf", "clone3", "unshare", "setns", "perf_event_open", "keyctl", "init_module", "finit_module"}
+		for _, syscall := range sensitiveSyscalls {
+			if strings.Contains(seccomp, syscall) {
+				weaknesses = append(weaknesses, profileWeakness{
+					Title:       "Permissive Seccomp Sensitive Syscall",
+					Description: fmt.Sprintf("Seccomp profile defaults to allow while still exposing %s, which weakens breakout prevention during restore or rollout workflows.", syscall),
+					Severity:    core.SeverityHigh,
+					AlertType:   "container_profile_bypass",
+				})
+				break
+			}
+		}
+	}
+	return dedupeProfileWeaknesses(weaknesses)
+}
+
+func dedupeProfileWeaknesses(in []profileWeakness) []profileWeakness {
+	if len(in) < 2 {
+		return in
+	}
+	seen := make(map[string]bool, len(in))
+	out := make([]profileWeakness, 0, len(in))
+	for _, weakness := range in {
+		key := weakness.Title + ":" + weakness.AlertType
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, weakness)
+	}
+	return out
+}
+
+func admissionBaselineKey(namespace, resource string) string {
+	if namespace == "" && resource == "" {
+		return ""
+	}
+	return strings.ToLower(namespace + "/" + resource)
+}
+
+func fingerprintAdmission(event *core.SecurityEvent) string {
+	payload := strings.Join([]string{
+		getStringDetail(event, "privileged"),
+		getStringDetail(event, "host_network"),
+		getStringDetail(event, "host_pid"),
+		getStringDetail(event, "capabilities"),
+		getStringDetail(event, "service_account"),
+		getStringDetail(event, "apparmor_profile"),
+		getStringDetail(event, "apparmor_policy"),
+		getStringDetail(event, "seccomp_profile"),
+		getStringDetail(event, "seccomp_policy"),
+	}, "|")
+	sum := sha256.Sum256([]byte(payload))
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func isRestoreAdmission(event *core.SecurityEvent) bool {
+	restoreSignals := []string{
+		getStringDetail(event, "action"),
+		getStringDetail(event, "operation"),
+		getStringDetail(event, "restore_name"),
+		getStringDetail(event, "backup_name"),
+		getStringDetail(event, "annotations"),
+		event.Summary,
+	}
+	for _, signal := range restoreSignals {
+		lower := strings.ToLower(signal)
+		if strings.Contains(lower, "restore") || strings.Contains(lower, "velero.io/restore") || strings.Contains(lower, "backup") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDangerousCapability(capabilities string) bool {
+	lower := strings.ToLower(capabilities)
+	for _, cap := range []string{"sys_admin", "sys_ptrace", "net_admin", "net_raw", "sys_module", "dac_override"} {
+		if strings.Contains(lower, cap) {
+			return true
+		}
+	}
+	return false
+}
+
+func allowsBindRemount(apparmor string) bool {
+	return (strings.Contains(apparmor, "mount options=") || strings.Contains(apparmor, "mount,")) &&
+		(strings.Contains(apparmor, "bind") || strings.Contains(apparmor, "remount"))
+}
+
+func hasReadonlyRemountGuard(apparmor string) bool {
+	guards := []string{
+		"ro,remount",
+		"remount,ro",
+		"deny remount",
+		"deny mount options=(rw,bind)",
+		"deny mount options=(bind,rw)",
+		"options in (ro,remount)",
+	}
+	for _, guard := range guards {
+		if strings.Contains(apparmor, guard) {
+			return true
+		}
+	}
+	return false
 }
 
 // handleContainerPosture detects container security misconfigurations.

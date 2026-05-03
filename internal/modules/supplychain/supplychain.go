@@ -28,6 +28,7 @@ type Sentinel struct {
 	pkgTracker   *PackageTracker
 	cicdMonitor  *CICDMonitor
 	typosquatDet *TyposquatDetector
+	codeScanner  *DangerousDefaultScanner
 }
 
 func New() *Sentinel { return &Sentinel{} }
@@ -55,6 +56,7 @@ func (s *Sentinel) Start(ctx context.Context, bus *core.EventBus, pipeline *core
 	s.pkgTracker = NewPackageTracker()
 	s.cicdMonitor = NewCICDMonitor()
 	s.typosquatDet = NewTyposquatDetector()
+	s.codeScanner = NewDangerousDefaultScanner()
 
 	s.logger.Info().Msg("supply chain sentinel started")
 	return nil
@@ -155,6 +157,18 @@ func (s *Sentinel) handleArtifactEvent(event *core.SecurityEvent) {
 			fmt.Sprintf("Artifact %s has no provenance attestation. Cannot verify build origin.", artifactName),
 			"missing_provenance")
 	}
+
+	for _, finding := range s.codeScanner.Scan(strings.Join([]string{
+		getStringDetail(event, "artifact_preview"),
+		getStringDetail(event, "artifact_content"),
+		getStringDetail(event, "code_snippet"),
+		getStringDetail(event, "build_log"),
+		event.Summary,
+	}, "\n")) {
+		s.raiseAlert(event, finding.Severity, finding.Title,
+			fmt.Sprintf("Artifact %s contains insecure implementation guidance: %s", artifactName, finding.Description),
+			finding.AlertType)
+	}
 }
 
 func (s *Sentinel) handleCICDEvent(event *core.SecurityEvent) {
@@ -188,6 +202,19 @@ func (s *Sentinel) handleCICDEvent(event *core.SecurityEvent) {
 			"Secret Exposure in CI/CD",
 			fmt.Sprintf("Pipeline %q may be exposing secrets in logs or artifacts.", pipelineName),
 			"cicd_secret_exposure")
+	}
+
+	for _, finding := range s.codeScanner.Scan(strings.Join([]string{
+		action,
+		getStringDetail(event, "pipeline_config"),
+		getStringDetail(event, "script"),
+		getStringDetail(event, "diff"),
+		getStringDetail(event, "build_log"),
+		event.Summary,
+	}, "\n")) {
+		s.raiseAlert(event, finding.Severity, finding.Title,
+			fmt.Sprintf("Pipeline %q contains insecure code or config defaults: %s", pipelineName, finding.Description),
+			finding.AlertType)
 	}
 }
 
@@ -231,6 +258,87 @@ type PackageTracker struct {
 	mu        sync.RWMutex
 	packages  map[string]*PackageRecord
 	malicious map[string]bool
+}
+
+type DangerousDefaultScanner struct {
+	patterns []DangerousDefaultPattern
+}
+
+type DangerousDefaultPattern struct {
+	Title       string
+	Description string
+	Severity    core.Severity
+	AlertType   string
+	Regex       *regexp.Regexp
+}
+
+func NewDangerousDefaultScanner() *DangerousDefaultScanner {
+	return &DangerousDefaultScanner{
+		patterns: []DangerousDefaultPattern{
+			{
+				Title:       "TLS Verification Disabled in Generated Code",
+				Description: "code disables certificate validation or hostname verification, which turns HTTPS into plaintext-with-extra-steps",
+				Severity:    core.SeverityCritical,
+				AlertType:   "dangerous_code_default",
+				Regex:       regexp.MustCompile(`(?i)(insecureskipverify\s*:\s*true|verify\s*=\s*false|rejectunauthorized\s*:\s*false|curl\s+-k\b|ssl\._create_unverified_context)`),
+			},
+			{
+				Title:       "Hardcoded Default Credential in Artifact",
+				Description: "artifact includes a static password, token, or bootstrap secret that AI assistants frequently emit as a placeholder and teams forget to rotate",
+				Severity:    core.SeverityHigh,
+				AlertType:   "dangerous_code_default",
+				Regex:       regexp.MustCompile(`(?i)((password|passwd|token|api[_-]?key|secret)\s*[:=]\s*["'](?:admin|changeme|password|secret|test123|default|root)["'])`),
+			},
+			{
+				Title:       "Weak Cryptographic Default in Artifact",
+				Description: "artifact relies on legacy or collision-prone cryptography that should never be used as a default implementation",
+				Severity:    core.SeverityHigh,
+				AlertType:   "dangerous_code_default",
+				Regex:       regexp.MustCompile(`(?i)(hashlib\.md5|md5\s*\(|sha1\s*\(|createHash\(["']md5["']\)|createHash\(["']sha1["']\)|cipher\.getinstance\(["'](?:des|rc4)["'])`),
+			},
+			{
+				Title:       "Legacy TLS Version Default in Artifact",
+				Description: "artifact pins TLSv1.0/TLSv1.1 or similarly deprecated protocol defaults that modern deployments should reject",
+				Severity:    core.SeverityHigh,
+				AlertType:   "dangerous_code_default",
+				Regex:       regexp.MustCompile(`(?i)(tlsv1[\._](?:0|1)|sslcontext\.getinstance\(["']tlsv1\.[01]["']\)|securityprotocoltype\.(?:tls|tls11)\b)`),
+			},
+			{
+				Title:       "Zeroed Key Material Placeholder",
+				Description: "artifact includes all-zero or trivially initialized key bytes that often originate from generated placeholder crypto examples",
+				Severity:    core.SeverityHigh,
+				AlertType:   "dangerous_code_default",
+				Regex:       regexp.MustCompile(`(?i)(new\s+byte\s*\[\s*\]\s*\{\s*0\s*(?:,\s*0\s*){7,}\}|bytes?\(\s*\[\s*0\s*(?:,\s*0\s*){7,}\])`),
+			},
+			{
+				Title:       "Permissive CORS With Credentials",
+				Description: "artifact combines wildcard origins with credentialed requests, a common insecure default in generated backend examples",
+				Severity:    core.SeverityHigh,
+				AlertType:   "dangerous_code_default",
+				Regex:       regexp.MustCompile(`(?is)(access-control-allow-origin\s*[:=]\s*["']\*["'].*access-control-allow-credentials\s*[:=]\s*["']?true|allowcredentials\s*[:=]\s*true.*alloworigin[s]?\s*[:=]\s*["']\*["'])`),
+			},
+			{
+				Title:       "Live Token Embedded in Artifact",
+				Description: "artifact contains a real-looking provider token, suggesting generated sample code leaked production-style credentials directly into source or build output",
+				Severity:    core.SeverityCritical,
+				AlertType:   "dangerous_code_default",
+				Regex:       regexp.MustCompile(`(?i)(sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{40,}|xox[baprs]-[0-9A-Za-z-]{20,})`),
+			},
+		},
+	}
+}
+
+func (s *DangerousDefaultScanner) Scan(content string) []DangerousDefaultPattern {
+	if strings.TrimSpace(content) == "" {
+		return nil
+	}
+	var findings []DangerousDefaultPattern
+	for _, pattern := range s.patterns {
+		if pattern.Regex.MatchString(content) {
+			findings = append(findings, pattern)
+		}
+	}
+	return findings
 }
 
 type PackageRecord struct {

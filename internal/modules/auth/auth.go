@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"math"
 	"net"
@@ -33,6 +34,7 @@ type Fortress struct {
 	oauthMon     *OAuthMonitor
 	sprayDet     *PasswordSprayDetector
 	aitmDet      *AitMDetector
+	revokedJTIs  *lru.Cache[string, time.Time]
 }
 
 func New() *Fortress { return &Fortress{} }
@@ -46,10 +48,12 @@ func (f *Fortress) EventTypes() []string {
 		"login_attempt", "auth_attempt",
 		"login_success", "auth_success",
 		"login_failure", "auth_failure",
+		"logout", "token_revocation",
 		"session_activity",
 		"mfa_attempt",
 		"oauth_grant", "oauth_consent", "oauth_token",
 		"token_usage", "api_key_usage",
+		"jwt_validation", "token_event",
 		"password_spray", "distributed_auth",
 		"passkey_register", "passkey_auth", "webauthn_ceremony",
 		"auth_downgrade",
@@ -73,6 +77,7 @@ func (f *Fortress) Start(ctx context.Context, bus *core.EventBus, pipeline *core
 	f.oauthMon = NewOAuthMonitor()
 	f.sprayDet = NewPasswordSprayDetector()
 	f.aitmDet = NewAitMDetector()
+	f.revokedJTIs, _ = lru.New[string, time.Time](50000)
 
 	go f.oauthMon.CleanupLoop(f.ctx)
 	go f.sprayDet.CleanupLoop(f.ctx)
@@ -99,6 +104,8 @@ func (f *Fortress) HandleEvent(event *core.SecurityEvent) error {
 		f.handleLoginSuccess(event)
 	case "login_failure", "auth_failure":
 		f.handleLoginFailure(event)
+	case "logout", "token_revocation":
+		f.handleTokenRevocation(event)
 	case "session_activity":
 		f.handleSessionActivity(event)
 	case "mfa_attempt":
@@ -107,6 +114,8 @@ func (f *Fortress) HandleEvent(event *core.SecurityEvent) error {
 		f.handleOAuthEvent(event)
 	case "token_usage", "api_key_usage":
 		f.handleTokenUsage(event)
+	case "jwt_validation", "token_event":
+		f.handleJWTValidation(event)
 	case "password_spray", "distributed_auth":
 		f.handlePasswordSpray(event)
 	case "passkey_register", "passkey_auth", "webauthn_ceremony":
@@ -120,6 +129,7 @@ func (f *Fortress) HandleEvent(event *core.SecurityEvent) error {
 func (f *Fortress) handleLoginFailure(event *core.SecurityEvent) {
 	ip := event.SourceIP
 	username := getStringDetail(event, "username")
+	f.maybeRecordRevokedToken(event)
 
 	// Also feed into spray detector
 	f.sprayDet.RecordFailure(ip, username)
@@ -343,6 +353,10 @@ func (f *Fortress) handleOAuthEvent(event *core.SecurityEvent) {
 
 // handleTokenUsage detects stolen token replay and API key abuse.
 func (f *Fortress) handleTokenUsage(event *core.SecurityEvent) {
+	if f.handleRevokedTokenReuse(event, "token_reuse_post_logout") {
+		return
+	}
+
 	tokenID := getStringDetail(event, "token_id")
 	ip := event.SourceIP
 	user := getStringDetail(event, "username")
@@ -372,6 +386,47 @@ func (f *Fortress) handleTokenUsage(event *core.SecurityEvent) {
 				truncate(tokenID, 16), user, action, ip),
 			"anomalous_token_activity")
 	}
+}
+
+func (f *Fortress) handleJWTValidation(event *core.SecurityEvent) {
+	f.handleRevokedTokenReuse(event, "token_reuse_post_logout")
+}
+
+func (f *Fortress) handleTokenRevocation(event *core.SecurityEvent) {
+	jti := extractTokenIdentifier(event)
+	if jti == "" || f.revokedJTIs == nil {
+		return
+	}
+	f.revokedJTIs.Add(jti, time.Now())
+}
+
+func (f *Fortress) maybeRecordRevokedToken(event *core.SecurityEvent) {
+	reason := strings.ToLower(getStringDetail(event, "reason"))
+	action := strings.ToLower(getStringDetail(event, "action"))
+	status := strings.ToLower(getStringDetail(event, "status"))
+	if strings.Contains(reason, "revoked") || strings.Contains(reason, "logout") ||
+		strings.Contains(action, "revoke") || strings.Contains(action, "logout") ||
+		strings.Contains(status, "revoked") {
+		f.handleTokenRevocation(event)
+	}
+}
+
+func (f *Fortress) handleRevokedTokenReuse(event *core.SecurityEvent, alertType string) bool {
+	jti := extractTokenIdentifier(event)
+	if jti == "" || f.revokedJTIs == nil {
+		return false
+	}
+	if _, ok := f.revokedJTIs.Get(jti); !ok {
+		return false
+	}
+
+	f.raiseAlert(event, core.SeverityCritical,
+		"Revoked JWT Reused After Logout",
+		fmt.Sprintf("Token identifier %q was observed after explicit revocation/logout. "+
+			"This indicates stateful JWT non-invalidation or token replay after session termination.",
+			truncate(jti, 24)),
+		alertType)
+	return true
 }
 
 // handlePasswordSpray handles explicit password spray events from external detectors.
@@ -1213,6 +1268,61 @@ func getStringDetail(event *core.SecurityEvent, key string) string {
 		return val
 	}
 	return ""
+}
+
+func extractTokenIdentifier(event *core.SecurityEvent) string {
+	if jti := getStringDetail(event, "jti"); jti != "" {
+		return jti
+	}
+	if tokenID := getStringDetail(event, "token_id"); tokenID != "" {
+		return tokenID
+	}
+	if claims := getStringDetail(event, "claims"); claims != "" {
+		if jti := extractJSONField(claims, "jti"); jti != "" {
+			return jti
+		}
+	}
+	if token := getStringDetail(event, "token"); token != "" {
+		if jti := extractJWTJTI(token); jti != "" {
+			return jti
+		}
+	}
+	return ""
+}
+
+func extractJSONField(jsonLike, key string) string {
+	needle := `"` + key + `"`
+	idx := strings.Index(jsonLike, needle)
+	if idx < 0 {
+		return ""
+	}
+	rest := jsonLike[idx+len(needle):]
+	colon := strings.Index(rest, ":")
+	if colon < 0 {
+		return ""
+	}
+	rest = strings.TrimSpace(rest[colon+1:])
+	if !strings.HasPrefix(rest, `"`) {
+		return ""
+	}
+	rest = rest[1:]
+	end := strings.Index(rest, `"`)
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
+}
+
+func extractJWTJTI(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	return extractJSONField(string(payload), "jti")
 }
 
 func getIntSetting(settings map[string]interface{}, key string, defaultVal int) int {

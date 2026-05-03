@@ -37,10 +37,13 @@ var knownMagic = map[string][]byte{
 	"bmp":   {0x42, 0x4D},
 	"tiff":  {0x49, 0x49, 0x2A, 0x00}, // little-endian TIFF
 	"webp":  {0x52, 0x49, 0x46, 0x46}, // RIFF header
+	"jp2":   {0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A},
 	"exe":   {0x4D, 0x5A},             // MZ header
 	"elf":   {0x7F, 0x45, 0x4C, 0x46}, // ELF
 	"class": {0xCA, 0xFE, 0xBA, 0xBE}, // Java class
 }
+
+const deepHeaderWindow = 2048
 
 // shellcodeSignatures are byte patterns commonly found in shellcode payloads.
 var shellcodeSignatures = []struct {
@@ -63,27 +66,35 @@ func (fs *FileSentinel) Analyze(data []byte, declaredExt, contentType string) []
 	}
 
 	var findings []FileFinding
+	headerWindow := data
+	if len(headerWindow) > deepHeaderWindow {
+		headerWindow = headerWindow[:deepHeaderWindow]
+	}
 
 	// 1. Magic byte mismatch — polyglot detection
-	if f := fs.checkMagicMismatch(data, declaredExt, contentType); f != nil {
+	if f := fs.checkMagicMismatch(headerWindow, declaredExt, contentType); f != nil {
 		findings = append(findings, *f)
 	}
 
 	// 2. Embedded executable detection
-	if f := fs.checkEmbeddedExecutable(data, declaredExt); f != nil {
+	if f := fs.checkEmbeddedExecutable(headerWindow, declaredExt); f != nil {
 		findings = append(findings, *f)
 	}
 
 	// 3. Shellcode signature scan
-	findings = append(findings, fs.checkShellcode(data)...)
+	findings = append(findings, fs.checkShellcode(headerWindow)...)
 
 	// 4. Entropy anomaly — high entropy in non-compressed files suggests encryption/packing
-	if f := fs.checkEntropyAnomaly(data, declaredExt); f != nil {
+	if f := fs.checkEntropyAnomaly(headerWindow, declaredExt); f != nil {
 		findings = append(findings, *f)
 	}
 
 	// 5. Oversized header fields — common in heap overflow exploits
-	if f := fs.checkOversizedHeaders(data, declaredExt); f != nil {
+	if f := fs.checkOversizedHeaders(headerWindow, declaredExt); f != nil {
+		findings = append(findings, *f)
+	}
+
+	if f := fs.checkDeepHeaderConsistency(headerWindow, declaredExt); f != nil {
 		findings = append(findings, *f)
 	}
 
@@ -137,6 +148,20 @@ func (fs *FileSentinel) checkArchiveTraversal(data []byte, declaredExt string) *
 		offset = pos + 30 + fnLen
 	}
 	return nil
+}
+
+func (fs *FileSentinel) checkDeepHeaderConsistency(data []byte, declaredExt string) *FileFinding {
+	ext := strings.ToLower(strings.TrimPrefix(declaredExt, "."))
+	switch ext {
+	case "pdf":
+		return fs.checkPDFHeaderConsistency(data)
+	case "docx":
+		return fs.checkDOCXHeaderConsistency(data)
+	case "jp2", "jpx", "j2k":
+		return fs.checkJP2HeaderConsistency(data)
+	default:
+		return nil
+	}
 }
 
 // checkMagicMismatch detects polyglot files where the declared type doesn't
@@ -327,6 +352,75 @@ func (fs *FileSentinel) checkGIFHeaders(data []byte) *FileFinding {
 			Type:        "oversized_header",
 			Description: "GIF with extreme dimensions — potential parser exploit",
 			Severity:    core.SeverityMedium,
+		}
+	}
+	return nil
+}
+
+func (fs *FileSentinel) checkPDFHeaderConsistency(data []byte) *FileFinding {
+	if len(data) < 16 || string(data[:5]) != "%PDF-" {
+		return nil
+	}
+	lengthIdx := bytesIndex(data, []byte("/Length "))
+	if lengthIdx < 0 {
+		return nil
+	}
+	start := lengthIdx + len("/Length ")
+	length := 0
+	for start < len(data) && data[start] >= '0' && data[start] <= '9' {
+		length = length*10 + int(data[start]-'0')
+		start++
+	}
+	if length > len(data)*32 || length > 10*1024*1024 {
+		return &FileFinding{
+			Type:        "deep_header_anomaly",
+			Description: "PDF stream length is wildly larger than the inspected header buffer — possible parser confusion or heap corruption trigger",
+			Severity:    core.SeverityHigh,
+		}
+	}
+	return nil
+}
+
+func (fs *FileSentinel) checkDOCXHeaderConsistency(data []byte) *FileFinding {
+	if len(data) < 30 || data[0] != 0x50 || data[1] != 0x4B || data[2] != 0x03 || data[3] != 0x04 {
+		return nil
+	}
+	compressed := binary.LittleEndian.Uint32(data[18:22])
+	uncompressed := binary.LittleEndian.Uint32(data[22:26])
+	nameLen := int(binary.LittleEndian.Uint16(data[26:28]))
+	if compressed > uint32(len(data))*64 || uncompressed > uint32(len(data))*64 {
+		return &FileFinding{
+			Type:        "deep_header_anomaly",
+			Description: "DOCX ZIP local header advertises implausibly large entry sizes relative to the inspected buffer — possible archive parser exploit",
+			Severity:    core.SeverityHigh,
+		}
+	}
+	if nameLen > 0 && 30+nameLen <= len(data) {
+		name := string(data[30 : 30+nameLen])
+		if strings.Contains(name, "../") || strings.Contains(name, "..\\") {
+			return &FileFinding{
+				Type:        "deep_header_anomaly",
+				Description: "DOCX local header contains traversal-style entry name, indicating malformed Office archive structure",
+				Severity:    core.SeverityCritical,
+			}
+		}
+	}
+	return nil
+}
+
+func (fs *FileSentinel) checkJP2HeaderConsistency(data []byte) *FileFinding {
+	if len(data) < 16 {
+		return nil
+	}
+	boxLen := binary.BigEndian.Uint32(data[0:4])
+	if string(data[4:8]) != "jP  " {
+		return nil
+	}
+	if boxLen == 0 || boxLen > uint32(len(data))*64 {
+		return &FileFinding{
+			Type:        "deep_header_anomaly",
+			Description: "JP2 signature box length is inconsistent with the inspected buffer — possible JPEG 2000 parser exploit",
+			Severity:    core.SeverityHigh,
 		}
 	}
 	return nil

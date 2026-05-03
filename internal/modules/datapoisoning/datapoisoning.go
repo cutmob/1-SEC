@@ -3,6 +3,7 @@ package datapoisoning
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"math"
@@ -578,6 +579,206 @@ func (g *Guard) handleModelSupplyChain(event *core.SecurityEvent) {
 				modelName, registry),
 			"malicious_model_name")
 	}
+
+	if likely, distance := findLikelyModelImpersonation(modelName); likely != "" &&
+		strings.EqualFold(hash, "") && (downloads < 1000 || createdDaysAgo < 30) {
+		g.raiseAlert(event, core.SeverityHigh,
+			"Model Slopsquatting / Typosquatting Candidate",
+			fmt.Sprintf("Model %s on %s closely resembles trusted model %s (distance=%d) but is newly created or low-download. Review author %s and require strong integrity verification before use.",
+				modelName, registry, likely, distance, author),
+			"model_slopsquatting")
+	}
+
+	if finding := detectSuspiciousModelPayload(event); finding != "" {
+		g.raiseAlert(event, core.SeverityCritical,
+			"Suspicious Pickle Model Payload",
+			fmt.Sprintf("Model %s from %s contains pickle/deserialization indicators associated with arbitrary code execution: %s",
+				modelName, registry, finding),
+			"model_pickle_rce")
+	}
+
+	if finding := validateModelArtifactStructure(event); finding != "" {
+		g.raiseAlert(event, core.SeverityHigh,
+			"Suspicious Model Artifact Structure",
+			fmt.Sprintf("Model %s from %s failed structural validation: %s",
+				modelName, registry, finding),
+			"model_artifact_structure")
+	}
+}
+
+func findLikelyModelImpersonation(modelName string) (string, int) {
+	normalized := normalizeModelName(modelName)
+	if normalized == "" {
+		return "", 0
+	}
+	popularModels := []string{
+		"llama3", "llama31", "mistral7b", "mixtral8x7b", "deepseekr1", "deepseekv3",
+		"qwen25", "qwen3", "gemma2", "phi4", "whisperlargev3", "bgebaseen",
+	}
+	bestName := ""
+	bestDistance := 99
+	for _, candidate := range popularModels {
+		if normalized == candidate {
+			return "", 0
+		}
+		distance := levenshtein(normalized, candidate)
+		if distance < bestDistance {
+			bestDistance = distance
+			bestName = candidate
+		}
+	}
+	if bestDistance <= 2 {
+		return bestName, bestDistance
+	}
+	return "", 0
+}
+
+func normalizeModelName(name string) string {
+	name = strings.ToLower(name)
+	replacer := strings.NewReplacer("-", "", "_", "", ".", "", "/", "", " ", "")
+	return replacer.Replace(name)
+}
+
+func detectSuspiciousModelPayload(event *core.SecurityEvent) string {
+	text := strings.ToLower(strings.Join([]string{
+		getStringDetail(event, "artifact_preview"),
+		getStringDetail(event, "content"),
+		getStringDetail(event, "model_preview"),
+		getStringDetail(event, "model_config"),
+	}, "\n"))
+	rawPreview := strings.ToLower(string(modelScanWindow(event.RawData)))
+	combined := text + "\n" + rawPreview
+	indicators := []struct {
+		pattern string
+		label   string
+	}{
+		{pattern: "cposix\nsystem\n", label: "pickle GLOBAL posix.system"},
+		{pattern: "cos\nsystem\n", label: "pickle GLOBAL os.system"},
+		{pattern: "csubprocess\npopen\n", label: "pickle subprocess gadget"},
+		{pattern: "__reduce__", label: "pickle __reduce__ gadget"},
+		{pattern: "builtins\neval\n", label: "pickle eval gadget"},
+		{pattern: "yaml.unsafe_load", label: "unsafe loader reference in model payload"},
+	}
+	for _, indicator := range indicators {
+		if strings.Contains(combined, indicator.pattern) {
+			return indicator.label
+		}
+	}
+	if len(event.RawData) >= 4 && event.RawData[0] == 0x80 && (event.RawData[1] == 0x04 || event.RawData[1] == 0x05) &&
+		(strings.Contains(rawPreview, "reduce") || strings.Contains(rawPreview, "global")) {
+		return "pickle binary stream with GLOBAL/REDUCE opcodes"
+	}
+	return ""
+}
+
+func validateModelArtifactStructure(event *core.SecurityEvent) string {
+	filename := strings.ToLower(getStringDetail(event, "filename") + getStringDetail(event, "artifact_name"))
+	data := modelScanWindow(event.RawData)
+	if len(data) == 0 {
+		return ""
+	}
+
+	switch {
+	case strings.HasSuffix(filename, ".safetensors"):
+		return validateSafeTensors(data)
+	case strings.HasSuffix(filename, ".pkl"), strings.HasSuffix(filename, ".pickle"), strings.HasSuffix(filename, ".pt"):
+		return validatePickleLikeArtifact(data)
+	default:
+		return ""
+	}
+}
+
+func modelScanWindow(data []byte) []byte {
+	const maxModelScanBytes = 1 << 20
+	if len(data) > maxModelScanBytes {
+		return data[:maxModelScanBytes]
+	}
+	return data
+}
+
+func validateSafeTensors(data []byte) string {
+	if len(data) < 10 {
+		return "safetensors artifact is too small to contain a valid header"
+	}
+	headerLen := binary.LittleEndian.Uint64(data[:8])
+	if headerLen == 0 {
+		return "safetensors header length is zero"
+	}
+	if headerLen > 512*1024 {
+		return "safetensors header length is implausibly large for the inspected window"
+	}
+	if int(headerLen)+8 > len(data) {
+		return "safetensors header length exceeds available bytes in the inspected buffer"
+	}
+	header := strings.ToLower(string(data[8 : 8+headerLen]))
+	if !strings.HasPrefix(strings.TrimSpace(header), "{") || !strings.HasSuffix(strings.TrimSpace(header), "}") {
+		return "safetensors header is not valid JSON-like object data"
+	}
+	if strings.Contains(header, "__reduce__") || strings.Contains(header, "pickle") ||
+		strings.Contains(header, "os.system") || strings.Contains(header, "subprocess") ||
+		strings.Contains(header, "builtins.eval") {
+		return "safetensors metadata references pickle or execution primitives"
+	}
+	return ""
+}
+
+func validatePickleLikeArtifact(data []byte) string {
+	if len(data) < 2 {
+		return "pickle-like artifact is truncated"
+	}
+	if data[0] != 0x80 {
+		return "pickle-like artifact does not begin with a binary pickle protocol marker"
+	}
+	if data[1] < 0x02 || data[1] > 0x05 {
+		return "pickle-like artifact uses an unexpected protocol version"
+	}
+	if len(data) < 16 {
+		return "pickle-like artifact is too small to safely inspect"
+	}
+	return ""
+}
+
+func levenshtein(a, b string) int {
+	if a == b {
+		return 0
+	}
+	if len(a) == 0 {
+		return len(b)
+	}
+	if len(b) == 0 {
+		return len(a)
+	}
+	prev := make([]int, len(b)+1)
+	curr := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		curr[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 0
+			if a[i-1] != b[j-1] {
+				cost = 1
+			}
+			curr[j] = minInt(
+				curr[j-1]+1,
+				prev[j]+1,
+				prev[j-1]+cost,
+			)
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(b)]
+}
+
+func minInt(values ...int) int {
+	best := values[0]
+	for _, v := range values[1:] {
+		if v < best {
+			best = v
+		}
+	}
+	return best
 }
 
 // ===========================================================================

@@ -484,6 +484,47 @@ func TestFortress_HandleEvent_MFAFatigue(t *testing.T) {
 	}
 }
 
+func TestFortress_HandleEvent_RevokedJWTReuse(t *testing.T) {
+	cp := makeCapturingPipeline()
+	f := startedModuleWithPipeline(t, cp)
+	defer f.Stop()
+
+	logout := core.NewSecurityEvent("test", "logout", core.SeverityInfo, "logout")
+	logout.Details["jti"] = "revoked-jti-1"
+	logout.Details["username"] = "alice"
+	f.HandleEvent(logout)
+
+	reuse := core.NewSecurityEvent("test", "jwt_validation", core.SeverityInfo, "jwt validation")
+	reuse.Details["jti"] = "revoked-jti-1"
+	reuse.Details["username"] = "alice"
+	reuse.SourceIP = "10.0.0.1"
+	f.HandleEvent(reuse)
+
+	if !cp.hasAlertType("token_reuse_post_logout") {
+		t.Error("expected token_reuse_post_logout alert for reused revoked JWT")
+	}
+}
+
+func TestFortress_HandleEvent_AuthFailureRevokesToken(t *testing.T) {
+	cp := makeCapturingPipeline()
+	f := startedModuleWithPipeline(t, cp)
+	defer f.Stop()
+
+	fail := core.NewSecurityEvent("test", "auth_failure", core.SeverityInfo, "token revoked")
+	fail.Details["reason"] = "session revoked after logout"
+	fail.Details["claims"] = `{"sub":"alice","jti":"claims-jti-7"}`
+	f.HandleEvent(fail)
+
+	reuse := core.NewSecurityEvent("test", "token_usage", core.SeverityInfo, "token replay")
+	reuse.Details["claims"] = `{"sub":"alice","jti":"claims-jti-7"}`
+	reuse.SourceIP = "10.0.0.8"
+	f.HandleEvent(reuse)
+
+	if !cp.hasAlertType("token_reuse_post_logout") {
+		t.Error("expected token_reuse_post_logout alert after revocation-signaled auth failure")
+	}
+}
+
 // ─── Utility Functions ────────────────────────────────────────────────────────
 
 func TestHaversineDistance(t *testing.T) {

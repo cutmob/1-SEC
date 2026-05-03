@@ -722,6 +722,45 @@ func TestFileSentinel_CleanArchive(t *testing.T) {
 	}
 }
 
+func TestFileSentinel_CheckPDFHeaderConsistency(t *testing.T) {
+	fs := &FileSentinel{}
+	data := []byte("%PDF-1.7\n1 0 obj\n<< /Length 99999999 >>\nstream\nAAAA")
+
+	findings := fs.Analyze(data, ".pdf", "application/pdf")
+	found := false
+	for _, f := range findings {
+		if f.Type == "deep_header_anomaly" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected deep_header_anomaly for implausible PDF stream length")
+	}
+}
+
+func TestFileSentinel_CheckJP2HeaderConsistency(t *testing.T) {
+	fs := &FileSentinel{}
+	data := []byte{
+		0x00, 0x10, 0x00, 0x00, // implausibly large box length relative to buffer
+		0x6A, 0x50, 0x20, 0x20,
+		0x0D, 0x0A, 0x87, 0x0A,
+		0x00, 0x00, 0x00, 0x14,
+	}
+
+	findings := fs.Analyze(data, ".jp2", "image/jp2")
+	found := false
+	for _, f := range findings {
+		if f.Type == "deep_header_anomaly" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected deep_header_anomaly for inconsistent JP2 box length")
+	}
+}
+
 // ─── Canary Token / Leaked Credential Detection ──────────────────────────────
 
 func TestAnalyzeInput_Canary_AWSKey(t *testing.T) {

@@ -407,6 +407,94 @@ func TestGuard_HandleEvent_ModelUpdate_Tampering(t *testing.T) {
 	}
 }
 
+func TestGuard_HandleEvent_ModelDownload_Slopsquatting(t *testing.T) {
+	cp := makeCapturingPipeline()
+	g := startedModuleWithPipeline(t, cp)
+	defer g.Stop()
+
+	ev := core.NewSecurityEvent("test", "model_download", core.SeverityInfo, "model download")
+	ev.Details["model_name"] = "llamma-3"
+	ev.Details["registry"] = "huggingface"
+	ev.Details["author"] = "random-user"
+	ev.Details["created_days_ago"] = 1
+	ev.Details["download_count"] = 12
+	ev.SourceIP = "10.0.0.1"
+
+	if err := g.HandleEvent(ev); err != nil {
+		t.Fatalf("HandleEvent() error: %v", err)
+	}
+
+	if !cp.hasAlertType("model_slopsquatting") {
+		t.Error("expected model_slopsquatting alert type")
+	}
+}
+
+func TestGuard_HandleEvent_ModelDownload_PickleRCE(t *testing.T) {
+	cp := makeCapturingPipeline()
+	g := startedModuleWithPipeline(t, cp)
+	defer g.Stop()
+
+	ev := core.NewSecurityEvent("test", "model_download", core.SeverityInfo, "model download")
+	ev.Details["model_name"] = "helper-model"
+	ev.Details["registry"] = "huggingface"
+	ev.Details["author"] = "attacker"
+	ev.Details["signature"] = "sig"
+	ev.Details["artifact_name"] = "weights.pkl"
+	ev.RawData = []byte{0x80, 0x04, 'c', 'o', 's', '\n', 's', 'y', 's', 't', 'e', 'm', '\n', 'R'}
+	ev.SourceIP = "10.0.0.1"
+
+	if err := g.HandleEvent(ev); err != nil {
+		t.Fatalf("HandleEvent() error: %v", err)
+	}
+
+	if !cp.hasAlertType("model_pickle_rce") {
+		t.Error("expected model_pickle_rce alert type")
+	}
+}
+
+func TestGuard_HandleEvent_ModelDownload_InvalidSafeTensors(t *testing.T) {
+	cp := makeCapturingPipeline()
+	g := startedModuleWithPipeline(t, cp)
+	defer g.Stop()
+
+	ev := core.NewSecurityEvent("test", "model_download", core.SeverityInfo, "model download")
+	ev.Details["model_name"] = "broken-safe"
+	ev.Details["registry"] = "huggingface"
+	ev.Details["author"] = "builder"
+	ev.Details["artifact_name"] = "weights.safetensors"
+	ev.RawData = []byte{0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, '{', '"', 'a', '"', ':', '1', '}'}
+	ev.SourceIP = "10.0.0.1"
+
+	if err := g.HandleEvent(ev); err != nil {
+		t.Fatalf("HandleEvent() error: %v", err)
+	}
+
+	if !cp.hasAlertType("model_artifact_structure") {
+		t.Error("expected model_artifact_structure alert for invalid safetensors header")
+	}
+}
+
+func TestGuard_HandleEvent_ModelDownload_TruncatedPickle(t *testing.T) {
+	cp := makeCapturingPipeline()
+	g := startedModuleWithPipeline(t, cp)
+	defer g.Stop()
+
+	ev := core.NewSecurityEvent("test", "model_download", core.SeverityInfo, "model download")
+	ev.Details["model_name"] = "tiny-pickle"
+	ev.Details["registry"] = "registry"
+	ev.Details["artifact_name"] = "weights.pkl"
+	ev.RawData = []byte{0x80, 0x04}
+	ev.SourceIP = "10.0.0.1"
+
+	if err := g.HandleEvent(ev); err != nil {
+		t.Fatalf("HandleEvent() error: %v", err)
+	}
+
+	if !cp.hasAlertType("model_artifact_structure") {
+		t.Error("expected model_artifact_structure alert for truncated pickle artifact")
+	}
+}
+
 // Compile-time interface check
 var _ core.Module = (*Guard)(nil)
 

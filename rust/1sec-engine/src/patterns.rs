@@ -19,7 +19,7 @@ pub struct PatternDef {
 
 /// Returns all pattern definitions across all categories.
 pub fn all_patterns() -> Vec<PatternDef> {
-    let mut patterns = Vec::with_capacity(128);
+    let mut patterns = Vec::with_capacity(144);
     patterns.extend(sqli_patterns());
     patterns.extend(xss_patterns());
     patterns.extend(cmdi_patterns());
@@ -33,6 +33,8 @@ pub fn all_patterns() -> Vec<PatternDef> {
     patterns.extend(auth_patterns());
     patterns.extend(exfiltration_patterns());
     patterns.extend(deserialization_patterns());
+    patterns.extend(dangerous_default_patterns());
+    patterns.extend(webhook_abuse_patterns());
     patterns.extend(canary_token_patterns());
     patterns.extend(zipslip_patterns());
     patterns.extend(argbased_rce_patterns());
@@ -675,6 +677,115 @@ fn deserialization_patterns() -> Vec<PatternDef> {
             severity: Severity::Critical,
             regex: r"(?i)(pickle\.loads|cPickle\.loads|yaml\.load\s*\(|yaml\.unsafe_load|__reduce__|__reduce_ex__)",
             literals: &["pickle.loads", "cPickle.loads", "yaml.load", "__reduce__"],
+        },
+        PatternDef {
+            name: "deser_pickle_gadget",
+            category: "deserialization",
+            severity: Severity::Critical,
+            regex: r"(?is)(c(?:posix|os)\nsystem\n|csubprocess\npopen\n|cbuiltins\neval\n|global.*(?:posix|os|subprocess).*(?:system|popen)|\x80[\x04\x05].{0,64}(?:reduce|global))",
+            literals: &[
+                "cposix\nsystem\n",
+                "cos\nsystem\n",
+                "csubprocess\npopen\n",
+                "cbuiltins\neval\n",
+            ],
+        },
+    ]
+}
+
+fn dangerous_default_patterns() -> Vec<PatternDef> {
+    vec![
+        PatternDef {
+            name: "dangerous_tls_disable_verify",
+            category: "dangerous_default",
+            severity: Severity::Critical,
+            regex: r#"(?i)(InsecureSkipVerify\s*:\s*true|rejectUnauthorized\s*:\s*false|verify\s*=\s*False|ssl\._create_unverified_context|curl\s+-k\b)"#,
+            literals: &[
+                "InsecureSkipVerify",
+                "rejectUnauthorized",
+                "verify = False",
+                "_create_unverified_context",
+                "curl -k",
+            ],
+        },
+        PatternDef {
+            name: "dangerous_default_credential",
+            category: "dangerous_default",
+            severity: Severity::High,
+            regex: r#"(?i)((password|passwd|token|api[_-]?key|secret)\s*[:=]\s*["'](?:admin|changeme|password|secret|test123|default|root)["'])"#,
+            literals: &["password", "changeme", "api_key", "api-key", "secret"],
+        },
+        PatternDef {
+            name: "dangerous_cors_wildcard_credentials",
+            category: "dangerous_default",
+            severity: Severity::High,
+            regex: r#"(?is)(Access-Control-Allow-Origin\s*[:=]\s*["']\*["'].*Access-Control-Allow-Credentials\s*[:=]\s*["']?true|allowCredentials\s*[:=]\s*true.*allowOrigin[s]?\s*[:=]\s*["']\*["'])"#,
+            literals: &[
+                "Access-Control-Allow-Origin",
+                "Access-Control-Allow-Credentials",
+                "allowCredentials",
+                "allowOrigin",
+            ],
+        },
+        PatternDef {
+            name: "dangerous_legacy_tls_version",
+            category: "dangerous_default",
+            severity: Severity::High,
+            regex: r#"(?i)(TLSv1[\._](?:0|1)|SSLContext\.getInstance\(["']TLSv1\.[01]["']\)|SecurityProtocolType\.(?:Tls|Tls11)\b)"#,
+            literals: &[
+                "TLSv1.0",
+                "TLSv1.1",
+                "SSLContext.getInstance",
+                "SecurityProtocolType.Tls",
+            ],
+        },
+        PatternDef {
+            name: "dangerous_zero_key_material",
+            category: "dangerous_default",
+            severity: Severity::High,
+            regex: r#"(?i)(new\s+byte\s*\[\s*\]\s*\{\s*0\s*(?:,\s*0\s*){7,}\}|bytes?\(\s*\[\s*0\s*(?:,\s*0\s*){7,}\])"#,
+            literals: &["new byte[]{0", "new byte []{0", "bytes([0"],
+        },
+        PatternDef {
+            name: "dangerous_embedded_live_token",
+            category: "dangerous_default",
+            severity: Severity::Critical,
+            regex: r#"(?i)(sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{40,}|xox[baprs]-[0-9A-Za-z-]{20,})"#,
+            literals: &["sk-", "ghp_", "github_pat_", "xoxb-"],
+        },
+    ]
+}
+
+fn webhook_abuse_patterns() -> Vec<PatternDef> {
+    vec![
+        PatternDef {
+            name: "webhook_command_delivery",
+            category: "webhook_abuse",
+            severity: Severity::Critical,
+            regex: r#"(?is)(webhook|callback|hook|x-github-event|x-slack-signature|x-hub-signature).{0,200}(curl\s+https?://|wget\s+https?://|powershell(?:\.exe)?\b|invoke-webrequest|cmd\.exe\b|/bin/sh\b|bash\s+-c|python\s+-c)"#,
+            literals: &[
+                "webhook",
+                "callback",
+                "x-github-event",
+                "x-slack-signature",
+                "curl ",
+                "wget ",
+                "powershell",
+            ],
+        },
+        PatternDef {
+            name: "webhook_infra_pivot",
+            category: "webhook_abuse",
+            severity: Severity::Critical,
+            regex: r#"(?is)(webhook|callback|hook).{0,200}(169\.254\.169\.254|metadata\.google\.internal|/var/run/secrets/kubernetes\.io/serviceaccount|docker\.sock|/etc/shadow)"#,
+            literals: &[
+                "webhook",
+                "callback",
+                "169.254.169.254",
+                "metadata.google.internal",
+                "serviceaccount",
+                "/etc/shadow",
+            ],
         },
     ]
 }

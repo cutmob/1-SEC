@@ -2,7 +2,9 @@ package apifortress
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 	"sync"
@@ -37,6 +39,8 @@ type Fortress struct {
 	ssrfDetector     *SSRFViaAPIDetector
 	responseAnalyzer *ResponseAnomalyAnalyzer
 	authFlowTracker  *lru.Cache[string, time.Time] // tracks recent login_success per session/IP
+	webhookScanner   *InboundWebhookScanner
+	revokedJTIs      *lru.Cache[string, time.Time]
 }
 
 func New() *Fortress { return &Fortress{} }
@@ -51,6 +55,7 @@ func (f *Fortress) EventTypes() []string {
 		"http_response", "api_response",
 		"graphql_request",
 		"jwt_validation", "token_event",
+		"logout", "token_revocation", "auth_failure",
 		"api_config", "api_upstream_response",
 		"login_success", "auth_success",
 		"grpc_request",
@@ -77,6 +82,8 @@ func (f *Fortress) Start(ctx context.Context, bus *core.EventBus, pipeline *core
 	f.ssrfDetector = NewSSRFViaAPIDetector()
 	f.responseAnalyzer = NewResponseAnomalyAnalyzer()
 	f.authFlowTracker, _ = lru.New[string, time.Time](50000)
+	f.webhookScanner = NewInboundWebhookScanner()
+	f.revokedJTIs, _ = lru.New[string, time.Time](50000)
 
 	// BOLA, BFLA, rateLimiter, and responseAnalyzer now use LRU caches internally, so no external cleanup loops are needed.
 
@@ -102,6 +109,10 @@ func (f *Fortress) HandleEvent(event *core.SecurityEvent) error {
 		f.handleGraphQLRequest(event)
 	case "jwt_validation", "token_event":
 		f.handleJWTEvent(event)
+	case "logout", "token_revocation":
+		f.handleTokenRevocation(event)
+	case "auth_failure":
+		f.maybeRecordRevokedToken(event)
 	case "api_config":
 		f.checkSecurityMisconfiguration(event)
 	case "api_upstream_response":
@@ -134,6 +145,8 @@ func (f *Fortress) handleAPIRequest(event *core.SecurityEvent) {
 	body := getStringDetail(event, "body")
 	contentType := getStringDetail(event, "content_type")
 	statusCode := getIntDetail(event, "status_code")
+	headers := getStringDetail(event, "headers")
+	webhookProvider := getStringDetail(event, "webhook_provider")
 
 	// BOLA detection — user accessing resources they don't own
 	if resourceID != "" && userID != "" {
@@ -169,6 +182,20 @@ func (f *Fortress) handleAPIRequest(event *core.SecurityEvent) {
 	// bypass standard routing middleware and can expose unauthenticated backend logic.
 	if path != "" {
 		f.checkPageMethodBypass(event, path, userRole)
+	}
+
+	if findings := f.webhookScanner.Check(path, method, body, headers, contentType, webhookProvider, event.UserAgent); len(findings) > 0 {
+		for _, finding := range findings {
+			f.raiseAlert(event, finding.Severity,
+				finding.Title,
+				fmt.Sprintf("Inbound webhook request %s %s from %s: %s",
+					method, path, event.SourceIP, finding.Description),
+				finding.AlertType)
+		}
+	}
+
+	if f.checkRevokedJWTRequest(event, path, method) {
+		return
 	}
 
 	// Stateful API flow: admin endpoints require recent authentication (CVE-2026-20127)
@@ -325,6 +352,52 @@ func (f *Fortress) handleJWTEvent(event *core.SecurityEvent) {
 			fmt.Sprintf("JWT issue from %s: %s", event.SourceIP, finding.Description),
 			finding.AlertType)
 	}
+
+	if jti := extractAPIJWTIdentifier(event); jti != "" && f.revokedJTIs != nil {
+		if _, ok := f.revokedJTIs.Get(jti); ok {
+			f.raiseAlert(event, core.SeverityCritical,
+				"Revoked JWT Reused After Logout",
+				fmt.Sprintf("JWT validation event from %s presented revoked token identifier %q after logout/revocation.",
+					event.SourceIP, truncateStr(jti, 24)),
+				"token_reuse_post_logout")
+		}
+	}
+}
+
+func (f *Fortress) handleTokenRevocation(event *core.SecurityEvent) {
+	jti := extractAPIJWTIdentifier(event)
+	if jti == "" || f.revokedJTIs == nil {
+		return
+	}
+	f.revokedJTIs.Add(jti, time.Now())
+}
+
+func (f *Fortress) maybeRecordRevokedToken(event *core.SecurityEvent) {
+	reason := strings.ToLower(getStringDetail(event, "reason"))
+	action := strings.ToLower(getStringDetail(event, "action"))
+	status := strings.ToLower(getStringDetail(event, "status"))
+	if strings.Contains(reason, "revoked") || strings.Contains(reason, "logout") ||
+		strings.Contains(action, "revoke") || strings.Contains(action, "logout") ||
+		strings.Contains(status, "revoked") {
+		f.handleTokenRevocation(event)
+	}
+}
+
+func (f *Fortress) checkRevokedJWTRequest(event *core.SecurityEvent, path, method string) bool {
+	jti := extractAPIJWTIdentifier(event)
+	if jti == "" || f.revokedJTIs == nil {
+		return false
+	}
+	if _, ok := f.revokedJTIs.Get(jti); !ok {
+		return false
+	}
+	f.raiseAlert(event, core.SeverityCritical,
+		"Revoked JWT Reused on API Request",
+		fmt.Sprintf("API request %s %s from %s presented revoked token identifier %q after logout/revocation. "+
+			"This closes the gap where reused JWTs only surface on request paths.",
+			method, path, event.SourceIP, truncateStr(jti, 24)),
+		"token_reuse_post_logout")
+	return true
 }
 
 // pageMethodPattern detects ASP.NET PageMethod access that bypasses standard routing filters.
@@ -1540,6 +1613,244 @@ type JWTFinding struct {
 	Description string
 	Severity    core.Severity
 	AlertType   string
+}
+
+type InboundWebhookScanner struct {
+	routePattern             *regexp.Regexp
+	providerFingerprint      *regexp.Regexp
+	dangerousCommandPattern  *regexp.Regexp
+	infrastructurePivotRegex *regexp.Regexp
+	encodedBlobPattern       *regexp.Regexp
+	encodedExecPattern       *regexp.Regexp
+}
+
+type WebhookFinding struct {
+	Title       string
+	Description string
+	Severity    core.Severity
+	AlertType   string
+}
+
+func NewInboundWebhookScanner() *InboundWebhookScanner {
+	return &InboundWebhookScanner{
+		routePattern:             regexp.MustCompile(`(?i)(/webhook[s]?/|/hooks?/|/integrations?/|/callbacks?/|/automation/)`),
+		providerFingerprint:      regexp.MustCompile(`(?i)(slack|github|gitlab|stripe|shopify|zapier|n8n|make\.com|pipedream|twilio|pagerduty|workato)`),
+		dangerousCommandPattern:  regexp.MustCompile(`(?i)(curl\s+https?://|wget\s+https?://|powershell(?:\.exe)?\b|invoke-webrequest|cmd\.exe\b|/bin/sh\b|bash\s+-c|certutil\b|mshta\b|python\s+-c)`),
+		infrastructurePivotRegex: regexp.MustCompile(`(?i)(169\.254\.169\.254|metadata\.google\.internal|/var/run/secrets/kubernetes\.io/serviceaccount|/etc/shadow|docker\.sock|kubelet|apiVersion:\s*v1|kind:\s*Pod)`),
+		encodedBlobPattern:       regexp.MustCompile(`(?:[A-Za-z0-9+/]{160,}={0,2}|[A-Za-z0-9_-]{180,}\.[A-Za-z0-9_-]{40,}\.[A-Za-z0-9_-]{20,})`),
+		encodedExecPattern:       regexp.MustCompile(`(?i)(powershell(?:\.exe)?\b.*(?:-enc|-encodedcommand)\b|frombase64string|bash\s+-c\s+["']?(?:base64|echo)|cmd\.exe\s+/c|eval\s*\(\s*atob)`),
+	}
+}
+
+func (s *InboundWebhookScanner) Check(path, method, body, headers, contentType, provider, userAgent string) []WebhookFinding {
+	var findings []WebhookFinding
+	if !s.looksLikeWebhook(path, headers, provider, userAgent) {
+		return nil
+	}
+
+	lowerHeaders := strings.ToLower(headers)
+	hasEncodedExec := s.encodedExecPattern.MatchString(body)
+	hasLargeEncodedBlob := s.encodedBlobPattern.MatchString(body)
+	if s.dangerousCommandPattern.MatchString(body) {
+		findings = append(findings, WebhookFinding{
+			Title:       "Inbound Webhook Command Delivery",
+			Description: "Webhook payload contains shell or process-spawning command content commonly used to pivot automation systems into RCE.",
+			Severity:    core.SeverityCritical,
+			AlertType:   "webhook_infra_abuse",
+		})
+	}
+	if s.infrastructurePivotRegex.MatchString(body) {
+		findings = append(findings, WebhookFinding{
+			Title:       "Inbound Webhook Infrastructure Pivot",
+			Description: "Webhook payload references cloud metadata, Kubernetes service-account, or host secret paths that indicate infrastructure abuse rather than normal business events.",
+			Severity:    core.SeverityCritical,
+			AlertType:   "webhook_infra_abuse",
+		})
+	}
+	if hasEncodedExec {
+		findings = append(findings, WebhookFinding{
+			Title:       "Obfuscated Webhook Execution Payload",
+			Description: "Webhook payload includes encoded execution patterns such as PowerShell -enc, base64 staging, or cmd.exe /c chains commonly used to evade trusted SaaS origin scrutiny.",
+			Severity:    core.SeverityCritical,
+			AlertType:   "webhook_infra_abuse",
+		})
+	}
+	if hasLargeEncodedBlob && !strings.Contains(lowerHeaders, "x-signature") && !strings.Contains(lowerHeaders, "x-hub-signature") && !strings.Contains(lowerHeaders, "x-slack-signature") {
+		findings = append(findings, WebhookFinding{
+			Title:       "Unsigned Webhook Payload Smuggling",
+			Description: "Webhook endpoint received a large encoded blob without a provider signature header, which is consistent with staged payload smuggling through automation hooks.",
+			Severity:    core.SeverityHigh,
+			AlertType:   "webhook_payload_smuggling",
+		})
+	}
+	if hasEncodedExec && hasLargeEncodedBlob {
+		findings = append(findings, WebhookFinding{
+			Title:       "Encoded Webhook Payload Smuggling",
+			Description: "Webhook body combines encoded execution primitives with a large staged blob, which is strong evidence of smuggled automation abuse even before full decoding.",
+			Severity:    core.SeverityHigh,
+			AlertType:   "webhook_payload_smuggling",
+		})
+	}
+	if segment, entropy := largestEncodedSegment(body); len(segment) >= 180 && entropy >= 4.3 {
+		findings = append(findings, WebhookFinding{
+			Title:       "High-Entropy Webhook Payload",
+			Description: fmt.Sprintf("Webhook body contains a large encoded segment with Shannon entropy %.2f, which is atypical for normal event notifications and consistent with obfuscated payload delivery.", entropy),
+			Severity:    core.SeverityHigh,
+			AlertType:   "webhook_payload_smuggling",
+		})
+	}
+	if strings.Contains(strings.ToLower(contentType), "application/octet-stream") || strings.Contains(strings.ToLower(contentType), "multipart/form-data") {
+		findings = append(findings, WebhookFinding{
+			Title:       "Webhook Binary Drop Attempt",
+			Description: fmt.Sprintf("Webhook endpoint received %s content via %s, which is atypical for signed event notifications and often used to stage tooling or malware.", contentType, method),
+			Severity:    core.SeverityHigh,
+			AlertType:   "webhook_binary_drop",
+		})
+	}
+
+	return dedupeWebhookFindings(findings)
+}
+
+func (s *InboundWebhookScanner) looksLikeWebhook(path, headers, provider, userAgent string) bool {
+	return s.routePattern.MatchString(path) ||
+		s.providerFingerprint.MatchString(headers) ||
+		s.providerFingerprint.MatchString(provider) ||
+		s.providerFingerprint.MatchString(userAgent)
+}
+
+func dedupeWebhookFindings(findings []WebhookFinding) []WebhookFinding {
+	if len(findings) < 2 {
+		return findings
+	}
+	seen := make(map[string]bool, len(findings))
+	deduped := make([]WebhookFinding, 0, len(findings))
+	for _, finding := range findings {
+		key := finding.AlertType + ":" + finding.Title
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		deduped = append(deduped, finding)
+	}
+	return deduped
+}
+
+func extractAPIJWTIdentifier(event *core.SecurityEvent) string {
+	if jti := getStringDetail(event, "jti"); jti != "" {
+		return jti
+	}
+	if tokenID := getStringDetail(event, "token_id"); tokenID != "" {
+		return tokenID
+	}
+	if claims := getStringDetail(event, "claims"); claims != "" {
+		if jti := extractJSONField(claims, "jti"); jti != "" {
+			return jti
+		}
+	}
+	tokenCandidates := []string{
+		getStringDetail(event, "token"),
+		getStringDetail(event, "authorization"),
+		extractBearerToken(getStringDetail(event, "headers")),
+	}
+	for _, candidate := range tokenCandidates {
+		if token := extractBearerToken(candidate); token != "" {
+			if jti := extractJWTJTI(token); jti != "" {
+				return jti
+			}
+		}
+		if jti := extractJWTJTI(candidate); jti != "" {
+			return jti
+		}
+	}
+	return ""
+}
+
+func extractBearerToken(input string) string {
+	if input == "" {
+		return ""
+	}
+	lower := strings.ToLower(input)
+	idx := strings.Index(lower, "bearer ")
+	if idx < 0 {
+		return ""
+	}
+	token := strings.TrimSpace(input[idx+7:])
+	if newline := strings.IndexAny(token, "\r\n"); newline >= 0 {
+		token = token[:newline]
+	}
+	if comma := strings.Index(token, ","); comma >= 0 {
+		token = token[:comma]
+	}
+	return strings.TrimSpace(token)
+}
+
+func extractJSONField(jsonLike, key string) string {
+	needle := `"` + key + `"`
+	idx := strings.Index(jsonLike, needle)
+	if idx < 0 {
+		return ""
+	}
+	rest := jsonLike[idx+len(needle):]
+	colon := strings.Index(rest, ":")
+	if colon < 0 {
+		return ""
+	}
+	rest = strings.TrimSpace(rest[colon+1:])
+	if !strings.HasPrefix(rest, `"`) {
+		return ""
+	}
+	rest = rest[1:]
+	end := strings.Index(rest, `"`)
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
+}
+
+func extractJWTJTI(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	return extractJSONField(string(payload), "jti")
+}
+
+func largestEncodedSegment(body string) (string, float64) {
+	matches := regexp.MustCompile(`[A-Za-z0-9+/=_-]{80,}`).FindAllString(body, -1)
+	bestSegment := ""
+	bestEntropy := 0.0
+	for _, match := range matches {
+		entropy := shannonEntropy(match)
+		if len(match) > len(bestSegment) || (len(match) == len(bestSegment) && entropy > bestEntropy) {
+			bestSegment = match
+			bestEntropy = entropy
+		}
+	}
+	return bestSegment, bestEntropy
+}
+
+func shannonEntropy(input string) float64 {
+	if input == "" {
+		return 0
+	}
+	var freq [256]float64
+	for i := 0; i < len(input); i++ {
+		freq[input[i]]++
+	}
+	n := float64(len(input))
+	entropy := 0.0
+	for _, f := range freq {
+		if f == 0 {
+			continue
+		}
+		p := f / n
+		entropy -= p * math.Log2(p)
+	}
+	return entropy
 }
 
 func NewJWTValidator() *JWTValidator {
