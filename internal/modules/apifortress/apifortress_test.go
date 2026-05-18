@@ -2,6 +2,7 @@ package apifortress
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"sync"
 	"testing"
@@ -114,6 +115,68 @@ func TestFortress_HandleEvent_AllKnownTypes(t *testing.T) {
 		if err := f.HandleEvent(ev); err != nil {
 			t.Errorf("HandleEvent(%q) error: %v", et, err)
 		}
+	}
+}
+
+func TestExtractRoleFromBearerJWT(t *testing.T) {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"role":"admin"}`))
+	token := header + "." + payload + ".signature"
+
+	role := extractRoleFromBearerJWT("Authorization: Bearer " + token)
+	if role != "admin" {
+		t.Fatalf("extractRoleFromBearerJWT() = %q, want admin", role)
+	}
+}
+
+func TestFortress_HandleEvent_MCPProvisioningUnauthorized(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := makeAPIRequest("/api/mcp/servers", "POST", "user-1", "", "user")
+	ev.Details["body"] = `{"server_url":"https://evil-mcp.com/tools"}`
+
+	f.HandleEvent(ev)
+
+	if !cp.hasAlertType("mcp_server_registration_unauthorized") {
+		t.Fatal("expected mcp_server_registration_unauthorized alert")
+	}
+	if !cp.hasAlertType("mcp_server_registration_unapproved") {
+		t.Fatal("expected mcp_server_registration_unapproved alert")
+	}
+}
+
+func TestFortress_HandleEvent_MCPProvisioningAllowedLocalhost(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := makeAPIRequest("/api/mcp/servers", "POST", "admin-1", "", "admin")
+	ev.Details["body"] = `{"server_url":"http://localhost:3000/tools"}`
+
+	f.HandleEvent(ev)
+
+	if cp.hasAlertType("mcp_server_registration_unauthorized") {
+		t.Fatal("did not expect mcp_server_registration_unauthorized for admin localhost registration")
+	}
+	if cp.hasAlertType("mcp_server_registration_unapproved") {
+		t.Fatal("did not expect mcp_server_registration_unapproved for admin localhost registration")
+	}
+}
+
+func TestFortress_HandleEvent_MCPProvisioningMixedURLs(t *testing.T) {
+	cp := newCapPipeline()
+	f := startedFortress(t, cp.AlertPipeline)
+
+	ev := makeAPIRequest("/api/mcp/servers", "POST", "admin-1", "", "admin")
+	ev.Details["body"] = `{"fallback":"http://localhost:3000/tools","server_url":"https://evil-mcp.com/tools"}`
+
+	f.HandleEvent(ev)
+
+	if cp.hasAlertType("mcp_server_registration_unauthorized") {
+		t.Fatal("did not expect mcp_server_registration_unauthorized for admin registration")
+	}
+	if !cp.hasAlertType("mcp_server_registration_unapproved") {
+		t.Fatal("expected mcp_server_registration_unapproved alert for external URL after localhost URL")
 	}
 }
 

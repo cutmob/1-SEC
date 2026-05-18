@@ -3,8 +3,10 @@ package apifortress
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -183,6 +185,8 @@ func (f *Fortress) handleAPIRequest(event *core.SecurityEvent) {
 	if path != "" {
 		f.checkPageMethodBypass(event, path, userRole)
 	}
+
+	f.checkMCPServerProvisioning(event, path, method, userRole, body, headers)
 
 	if findings := f.webhookScanner.Check(path, method, body, headers, contentType, webhookProvider, event.UserAgent); len(findings) > 0 {
 		for _, finding := range findings {
@@ -403,6 +407,12 @@ func (f *Fortress) checkRevokedJWTRequest(event *core.SecurityEvent, path, metho
 // pageMethodPattern detects ASP.NET PageMethod access that bypasses standard routing filters.
 var pageMethodPattern = regexp.MustCompile(`(?i)/[^/]+\.aspx/([a-zA-Z0-9_]+)`)
 
+var (
+	mcpProvisioningPathPattern = regexp.MustCompile(`(?i)(?:^|/)(?:mcp|model-context-protocol)(?:/|[-_])(?:servers?|registry|register|provision)(?:/|$)`)
+	httpURLPattern             = regexp.MustCompile(`https?://[^\s"'<>]+`)
+	authorizationBearerPattern = regexp.MustCompile(`(?i)authorization\s*:\s*bearer\s+([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)|bearer\s+([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)`)
+)
+
 // handleGRPCRequest detects gRPC requests missing authorization metadata,
 // which can indicate auth bypass on gRPC endpoints (CVE-2026-4064).
 func (f *Fortress) handleGRPCRequest(event *core.SecurityEvent) {
@@ -463,6 +473,40 @@ func (f *Fortress) checkPageMethodBypass(event *core.SecurityEvent, path, userRo
 				"OWASP API Top 10: API5 Broken Function Level Authorization.",
 				path, methodName, event.SourceIP, userRole),
 			"aspnet_pagemethod_bypass")
+	}
+}
+
+func (f *Fortress) checkMCPServerProvisioning(event *core.SecurityEvent, path, method, userRole, body, headers string) {
+	if !mcpProvisioningPathPattern.MatchString(path) {
+		return
+	}
+	if method != "POST" && method != "PUT" && method != "PATCH" {
+		return
+	}
+
+	role := strings.TrimSpace(userRole)
+	if role == "" {
+		role = extractRoleFromBearerJWT(headers)
+	}
+
+	if !isPrivilegedMCPRole(role) {
+		f.raiseAlert(event, core.SeverityCritical,
+			"Unauthorized MCP Server Registration Attempt",
+			fmt.Sprintf("Request %s %s attempted MCP server provisioning without an admin-equivalent role. "+
+				"Resolved role: %q. Dynamic MCP server registration must be limited to trusted operators.",
+				method, path, role),
+			"mcp_server_registration_unauthorized")
+	}
+
+	for _, serverURL := range extractMCPServerURLs(event, body) {
+		if !isAllowedMCPServerURL(serverURL) {
+			f.raiseAlert(event, core.SeverityHigh,
+				"Unapproved External MCP Server Registration",
+				fmt.Sprintf("Request %s %s attempted to register MCP server %s. "+
+					"Only localhost, 127.0.0.1, ::1, and internal-mcp.svc.cluster.local are allowed by default.",
+					method, path, truncateStr(serverURL, 200)),
+				"mcp_server_registration_unapproved")
+		}
 	}
 }
 
@@ -540,6 +584,20 @@ func getAPIMitigations(alertType string) []string {
 			"Use API gateway to enforce that only documented endpoints are accessible",
 			"Implement automated API discovery and compare against documentation",
 			"Remove or restrict access to debug, test, and legacy endpoints",
+		}
+	case "mcp_server_registration_unauthorized":
+		return []string{
+			"Require admin-equivalent roles for all MCP server registration or update endpoints",
+			"Bind MCP server provisioning to authenticated control-plane workflows instead of general API sessions",
+			"Log and review every failed MCP registration attempt for follow-on abuse",
+			"Treat bearer token role claims as mandatory input for MCP provisioning decisions",
+		}
+	case "mcp_server_registration_unapproved":
+		return []string{
+			"Allow MCP servers only from localhost or explicitly approved internal gateway hostnames",
+			"Reject remote MCP server URLs by default and require explicit review before onboarding",
+			"Normalize and validate MCP server URLs before storing or forwarding them downstream",
+			"Monitor for repeated attempts to register public MCP endpoints from agent-facing applications",
 		}
 	case "schema_violation":
 		return []string{
@@ -2335,6 +2393,110 @@ func getIntDetail(event *core.SecurityEvent, key string) int {
 		return int(v)
 	}
 	return 0
+}
+
+func extractRoleFromBearerJWT(headers string) string {
+	matches := authorizationBearerPattern.FindStringSubmatch(headers)
+	if len(matches) == 0 {
+		return ""
+	}
+
+	token := ""
+	for _, candidate := range matches[1:] {
+		if candidate != "" {
+			token = candidate
+			break
+		}
+	}
+	if token == "" {
+		return ""
+	}
+
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+
+	for _, key := range []string{"role", "user_role", "jwt_role"} {
+		if val, ok := claims[key].(string); ok && val != "" {
+			return val
+		}
+	}
+	if roles, ok := claims["roles"].([]interface{}); ok {
+		for _, role := range roles {
+			if roleStr, ok := role.(string); ok && roleStr != "" {
+				return roleStr
+			}
+		}
+	}
+	for _, key := range []string{"scope", "scp"} {
+		if scope, ok := claims[key].(string); ok {
+			lower := strings.ToLower(scope)
+			if strings.Contains(lower, "admin") {
+				return "admin"
+			}
+			if strings.Contains(lower, "root") {
+				return "root"
+			}
+		}
+	}
+
+	return ""
+}
+
+func isPrivilegedMCPRole(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "3", "4", "admin", "root", "owner", "maintainer", "security_admin":
+		return true
+	default:
+		return false
+	}
+}
+
+func extractMCPServerURLs(event *core.SecurityEvent, body string) []string {
+	seen := make(map[string]bool)
+	var urls []string
+
+	for _, blob := range []string{
+		getStringDetail(event, "server_url"),
+		getStringDetail(event, "mcp_server_url"),
+		getStringDetail(event, "target_url"),
+		getStringDetail(event, "endpoint"),
+		getStringDetail(event, "url_param"),
+		body,
+	} {
+		for _, match := range httpURLPattern.FindAllString(blob, -1) {
+			if !seen[match] {
+				seen[match] = true
+				urls = append(urls, match)
+			}
+		}
+	}
+	return urls
+}
+
+func isAllowedMCPServerURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Hostname() == "" {
+		return false
+	}
+
+	switch strings.ToLower(parsed.Hostname()) {
+	case "localhost", "127.0.0.1", "::1", "internal-mcp.svc.cluster.local":
+		return parsed.Scheme == "http" || parsed.Scheme == "https"
+	default:
+		return false
+	}
 }
 
 // ===========================================================================

@@ -2,9 +2,12 @@ package llmfirewall
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/zlib"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math"
 	"regexp"
 	"strconv"
@@ -1039,7 +1042,7 @@ func scanPDFTextStreams(data []byte) []MultimodalDetection {
 		// Limit stream size we'll parse
 		streamData := data[sStart:sEnd]
 		if len(streamData) > 0 && len(streamData) < 1048576 { // 1MB limit
-			findings := analyzeTextStream(streamData)
+			findings := analyzePDFStream(data, pos+idx, streamData)
 			detections = append(detections, findings...)
 		}
 
@@ -1048,6 +1051,73 @@ func scanPDFTextStreams(data []byte) []MultimodalDetection {
 	}
 
 	return detections
+}
+
+func analyzePDFStream(pdfData []byte, streamOffset int, streamData []byte) []MultimodalDetection {
+	if isPDFFlateDecodeStream(pdfData, streamOffset) {
+		if decompressed, ok := decompressPDFFlateStream(streamData); ok {
+			var detections []MultimodalDetection
+			detections = append(detections, analyzeTextStream(decompressed)...)
+			detections = append(detections, detectSuspiciousFlatePlaintext(decompressed)...)
+			return detections
+		}
+	}
+
+	return analyzeTextStream(streamData)
+}
+
+func isPDFFlateDecodeStream(pdfData []byte, streamOffset int) bool {
+	start := streamOffset - 512
+	if start < 0 {
+		start = 0
+	}
+	window := pdfData[start:streamOffset]
+	return bytes.Contains(window, []byte("/FlateDecode"))
+}
+
+func decompressPDFFlateStream(streamData []byte) ([]byte, bool) {
+	if len(streamData) == 0 {
+		return nil, false
+	}
+
+	readAll := func(r io.ReadCloser) ([]byte, bool) {
+		defer r.Close()
+		data, err := io.ReadAll(io.LimitReader(r, 2*1024*1024))
+		if err != nil || len(data) == 0 {
+			return nil, false
+		}
+		return data, true
+	}
+
+	if zr, err := zlib.NewReader(bytes.NewReader(streamData)); err == nil {
+		if decoded, ok := readAll(zr); ok {
+			return decoded, true
+		}
+	}
+
+	fr := flate.NewReader(bytes.NewReader(streamData))
+	if decoded, ok := readAll(fr); ok {
+		return decoded, true
+	}
+
+	return nil, false
+}
+
+func detectSuspiciousFlatePlaintext(decompressed []byte) []MultimodalDetection {
+	plain := strings.TrimSpace(string(decompressed))
+	if len(plain) == 0 || !isPrintableText(plain) || !isSuspiciousHiddenText(plain) {
+		return nil
+	}
+
+	return []MultimodalDetection{
+		{
+			Layer:       "pdf_hidden",
+			Technique:   "pdf_flate_decode_plaintext",
+			Content:     truncateStr(plain, 300),
+			Severity:    core.SeverityCritical,
+			Description: "Prompt injection found in decompressed PDF FlateDecode stream",
+		},
+	}
 }
 
 // pdfTextState tracks the current text rendering state while parsing a content stream.

@@ -131,6 +131,22 @@ func (s *Sentinel) handlePackageEvent(event *core.SecurityEvent) {
 			fmt.Sprintf("Package %s@%s is flagged as malicious. Remove immediately.", pkgName, pkgVersion),
 			"malicious_package")
 	}
+
+	packageContext := strings.Join([]string{
+		getStringDetail(event, "install_script"),
+		getStringDetail(event, "preinstall_script"),
+		getStringDetail(event, "postinstall_script"),
+		getStringDetail(event, "package_json"),
+		getStringDetail(event, "build_log"),
+		event.Summary,
+	}, "\n")
+	if result := s.cicdMonitor.AnalyzeContent(packageContext); result.MaliciousInstallHook {
+		s.raiseAlert(event, core.SeverityCritical,
+			"Malicious Install Hook Detected",
+			fmt.Sprintf("Package %s@%s contains a suspicious preinstall/postinstall script or build log pattern that can fetch and execute remote payloads.",
+				pkgName, pkgVersion),
+			"malicious_build_artifact")
+	}
 }
 
 func (s *Sentinel) handleArtifactEvent(event *core.SecurityEvent) {
@@ -175,12 +191,21 @@ func (s *Sentinel) handleCICDEvent(event *core.SecurityEvent) {
 	action := getStringDetail(event, "action")
 	pipelineName := getStringDetail(event, "pipeline_name")
 	user := getStringDetail(event, "user")
+	pipelineContext := strings.Join([]string{
+		action,
+		getStringDetail(event, "pipeline_config"),
+		getStringDetail(event, "script"),
+		getStringDetail(event, "diff"),
+		getStringDetail(event, "build_log"),
+		event.Summary,
+	}, "\n")
 
-	if action == "" {
+	if action == "" && strings.TrimSpace(pipelineContext) == "" {
 		return
 	}
 
 	result := s.cicdMonitor.Analyze(action, pipelineName, user, event.SourceIP)
+	contentResult := s.cicdMonitor.AnalyzeContent(pipelineContext)
 
 	if result.UnauthorizedChange {
 		s.raiseAlert(event, core.SeverityCritical,
@@ -190,28 +215,27 @@ func (s *Sentinel) handleCICDEvent(event *core.SecurityEvent) {
 			"unauthorized_cicd_change")
 	}
 
-	if result.SuspiciousStep {
+	if contentResult.MaliciousInstallHook {
+		s.raiseAlert(event, core.SeverityCritical,
+			"Malicious CI/CD Install Hook Detected",
+			fmt.Sprintf("Pipeline %q contains an obfuscated preinstall/postinstall execution chain capable of downloading and running remote code.",
+				pipelineName),
+			"malicious_build_artifact")
+	} else if result.SuspiciousStep || contentResult.SuspiciousStep {
 		s.raiseAlert(event, core.SeverityHigh,
 			"Suspicious CI/CD Step Detected",
 			fmt.Sprintf("Pipeline %q contains suspicious step: %s", pipelineName, action),
 			"suspicious_cicd_step")
 	}
 
-	if result.SecretExposure {
+	if result.SecretExposure || contentResult.SecretExposure {
 		s.raiseAlert(event, core.SeverityCritical,
 			"Secret Exposure in CI/CD",
 			fmt.Sprintf("Pipeline %q may be exposing secrets in logs or artifacts.", pipelineName),
 			"cicd_secret_exposure")
 	}
 
-	for _, finding := range s.codeScanner.Scan(strings.Join([]string{
-		action,
-		getStringDetail(event, "pipeline_config"),
-		getStringDetail(event, "script"),
-		getStringDetail(event, "diff"),
-		getStringDetail(event, "build_log"),
-		event.Summary,
-	}, "\n")) {
+	for _, finding := range s.codeScanner.Scan(pipelineContext) {
 		s.raiseAlert(event, finding.Severity, finding.Title,
 			fmt.Sprintf("Pipeline %q contains insecure code or config defaults: %s", pipelineName, finding.Description),
 			finding.AlertType)
@@ -387,34 +411,29 @@ func (pt *PackageTracker) IsKnownMalicious(name string) bool {
 type CICDMonitor struct {
 	mu              sync.RWMutex
 	authorizedUsers map[string]bool
+	installHookRX   *regexp.Regexp
 	suspiciousSteps *regexp.Regexp
 	secretPatterns  *regexp.Regexp
 }
 
 type CICDResult struct {
-	UnauthorizedChange bool
-	SuspiciousStep     bool
-	SecretExposure     bool
+	UnauthorizedChange   bool
+	MaliciousInstallHook bool
+	SuspiciousStep       bool
+	SecretExposure       bool
 }
 
 func NewCICDMonitor() *CICDMonitor {
 	return &CICDMonitor{
 		authorizedUsers: make(map[string]bool),
-		suspiciousSteps: regexp.MustCompile(`(?i)(curl\s+.*\|\s*sh|wget\s+.*\|\s*bash|eval\s*\(|base64\s+-d|nc\s+-[elp]|reverse.?shell|crypto.?min)`),
+		installHookRX:   regexp.MustCompile(`(?i)(preinstall|postinstall).*?(curl|wget|base64|eval).*?(\|\s*bash|\|\s*sh|\.sh)`),
+		suspiciousSteps: regexp.MustCompile(`(?i)(curl\s+.*\|\s*sh|wget\s+.*\|\s*bash|eval\s*\(|base64\s+-d|nc\s+-[elp]|reverse.?shell|crypto.?min|curl\s+https?://|wget\s+https?://)`),
 		secretPatterns:  regexp.MustCompile(`(?i)(echo\s+\$\{?[A-Z_]*SECRET|echo\s+\$\{?[A-Z_]*TOKEN|echo\s+\$\{?[A-Z_]*PASSWORD|echo\s+\$\{?[A-Z_]*KEY|printenv|env\s*$|set\s*$)`),
 	}
 }
 
 func (cm *CICDMonitor) Analyze(action, pipeline, user, ip string) CICDResult {
-	result := CICDResult{}
-
-	if cm.suspiciousSteps.MatchString(action) {
-		result.SuspiciousStep = true
-	}
-
-	if cm.secretPatterns.MatchString(action) {
-		result.SecretExposure = true
-	}
+	result := cm.analyzeContent(action)
 
 	cm.mu.RLock()
 	if len(cm.authorizedUsers) > 0 && !cm.authorizedUsers[user] {
@@ -422,6 +441,24 @@ func (cm *CICDMonitor) Analyze(action, pipeline, user, ip string) CICDResult {
 	}
 	cm.mu.RUnlock()
 
+	return result
+}
+
+func (cm *CICDMonitor) AnalyzeContent(content string) CICDResult {
+	return cm.analyzeContent(content)
+}
+
+func (cm *CICDMonitor) analyzeContent(content string) CICDResult {
+	result := CICDResult{}
+	if cm.suspiciousSteps.MatchString(content) {
+		result.SuspiciousStep = true
+	}
+	if cm.installHookRX.MatchString(content) {
+		result.MaliciousInstallHook = true
+	}
+	if cm.secretPatterns.MatchString(content) {
+		result.SecretExposure = true
+	}
 	return result
 }
 
@@ -439,16 +476,26 @@ func NewTyposquatDetector() *TyposquatDetector {
 				"jquery", "chalk", "commander", "debug", "request",
 				"dotenv", "cors", "uuid", "jsonwebtoken", "bcrypt",
 				"mongoose", "sequelize", "prisma", "socket.io",
+				"react-dom", "tailwindcss", "vite", "eslint", "prettier",
+				"jest", "zod", "rxjs", "dayjs", "date-fns",
+				"nanoid", "node-fetch", "undici", "esbuild", "tslib",
+				"yaml", "cross-env", "rimraf", "postcss", "autoprefixer",
+				"@types/node", "@types/react", "@types/react-dom", "pnpm", "npm",
 			},
 			"pypi": {
 				"requests", "numpy", "pandas", "flask", "django",
 				"boto3", "tensorflow", "torch", "scikit-learn", "pillow",
 				"matplotlib", "sqlalchemy", "celery", "fastapi", "pydantic",
 				"cryptography", "paramiko", "beautifulsoup4", "selenium",
+				"urllib3", "jinja2", "pyyaml", "pytest", "setuptools",
+				"wheel", "pip", "click", "aiohttp", "starlette",
+				"uvicorn", "redis", "psycopg2", "psycopg", "mysqlclient",
+				"transformers", "openai", "anthropic", "httpx", "orjson",
 			},
 			"public": {
 				"lodash", "express", "react", "requests", "numpy",
 				"pandas", "flask", "django", "axios", "webpack",
+				"fastapi", "typescript", "tailwindcss", "urllib3", "pydantic",
 			},
 		},
 	}
@@ -572,12 +619,19 @@ func getSupplyChainMitigations(alertType string) []string {
 			"Register placeholder packages on public registries for private package names",
 			"Implement registry allowlisting in your package manager configuration",
 		}
-	case "known_malicious_package":
+	case "known_malicious_package", "malicious_package":
 		return []string{
 			"Remove the package immediately from all environments",
 			"Audit systems where the package was installed for compromise indicators",
 			"Rotate any credentials that may have been exposed",
 			"Report the package to the registry maintainers",
+		}
+	case "malicious_build_artifact":
+		return []string{
+			"Block the build output and quarantine the artifact until the install hook is reviewed",
+			"Remove preinstall/postinstall hooks that fetch or execute remote code",
+			"Pin dependency versions and hashes so install-time drift is visible in CI/CD",
+			"Treat obfuscated base64, eval, curl|sh, and wget|bash chains as high-risk by default",
 		}
 	case "unsigned_artifact":
 		return []string{

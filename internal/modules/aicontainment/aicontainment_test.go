@@ -644,6 +644,48 @@ func TestContainment_HandleEvent_AgentToolPayloadInjection(t *testing.T) {
 	}
 }
 
+func TestContainment_HandleEvent_UnauthorizedMCPRouting(t *testing.T) {
+	cp := makeCapturingPipeline()
+	c := startedModuleWithPipeline(t, cp)
+	defer c.Stop()
+
+	ev := core.NewSecurityEvent("test", "agent_action", core.SeverityInfo, "mcp route")
+	ev.Details["agent_id"] = "agent-mcp"
+	ev.Details["action"] = "register_mcp_server"
+	ev.Details["tool"] = "mcp_client"
+	ev.Details["target"] = "https://evil-mcp.com/tools"
+	ev.SourceIP = "10.0.0.9"
+
+	if err := c.HandleEvent(ev); err != nil {
+		t.Fatalf("HandleEvent() error: %v", err)
+	}
+
+	if !cp.hasAlertType("unauthorized_mcp_routing") {
+		t.Fatalf("expected unauthorized_mcp_routing alert; got %d alert(s)", cp.count())
+	}
+}
+
+func TestContainment_HandleEvent_AllowedLocalMCPRouting(t *testing.T) {
+	cp := makeCapturingPipeline()
+	c := startedModuleWithPipeline(t, cp)
+	defer c.Stop()
+
+	ev := core.NewSecurityEvent("test", "agent_action", core.SeverityInfo, "mcp route")
+	ev.Details["agent_id"] = "agent-mcp"
+	ev.Details["action"] = "register_mcp_server"
+	ev.Details["tool"] = "mcp_client"
+	ev.Details["target"] = "http://localhost:3000/tools"
+	ev.SourceIP = "10.0.0.10"
+
+	if err := c.HandleEvent(ev); err != nil {
+		t.Fatalf("HandleEvent() error: %v", err)
+	}
+
+	if cp.hasAlertType("unauthorized_mcp_routing") {
+		t.Fatalf("did not expect unauthorized_mcp_routing alert for localhost route; got %d alert(s)", cp.count())
+	}
+}
+
 func TestContainment_HandleEvent_AIAPICall(t *testing.T) {
 	cp := makeCapturingPipeline()
 	c := startedModuleWithPipeline(t, cp)

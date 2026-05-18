@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -215,6 +216,15 @@ func (c *Containment) handleAgentAction(event *core.SecurityEvent) {
 
 	if agentID == "" {
 		agentID = "unknown"
+	}
+
+	if route := extractUnauthorizedMCPRoute(event, action, tool, target); route != "" {
+		c.raiseAlert(event, core.SeverityCritical,
+			"Unauthorized MCP Routing Detected (ASI04)",
+			fmt.Sprintf("Agent %s attempted to route MCP activity via %s (action: %s, tool: %s). "+
+				"Only localhost, 127.0.0.1, ::1, and internal-mcp.svc.cluster.local are allowed for MCP server routing.",
+				agentID, truncate(route, 200), action, tool),
+			"unauthorized_mcp_routing")
 	}
 
 	// Policy enforcement
@@ -969,6 +979,13 @@ func getContainmentMitigations(alertType string) []string {
 			"Implement tool namespace isolation per MCP server",
 			"Alert when new tools share names with existing trusted tools",
 			"Use an MCP gateway to deduplicate and prioritize trusted tool sources",
+		}
+	case "unauthorized_mcp_routing":
+		return []string{
+			"Allow MCP routing only to localhost or explicitly approved internal MCP gateways",
+			"Bind MCP server changes to authenticated admin workflows instead of free-form agent actions",
+			"Record and review every external MCP server URI an agent attempts to use",
+			"Terminate or pause agents that attempt to bypass approved MCP routing paths",
 		}
 	case "goal_hijack", "goal_external_influence":
 		return []string{
@@ -2407,6 +2424,93 @@ func isHighValueAction(action, tool, target string) bool {
 		}
 	}
 	return false
+}
+
+func extractUnauthorizedMCPRoute(event *core.SecurityEvent, action, tool, target string) string {
+	if !looksLikeMCPRouting(action, tool, target, event) {
+		return ""
+	}
+
+	for _, candidate := range collectMCPRouteCandidates(event, target) {
+		if !strings.HasPrefix(strings.ToLower(candidate), "http://") &&
+			!strings.HasPrefix(strings.ToLower(candidate), "https://") {
+			continue
+		}
+		if !isAllowedMCPRoute(candidate) {
+			return candidate
+		}
+	}
+
+	return ""
+}
+
+func looksLikeMCPRouting(action, tool, target string, event *core.SecurityEvent) bool {
+	hints := []string{
+		action, tool, target,
+		getStringDetail(event, "server_url"),
+		getStringDetail(event, "mcp_server_url"),
+		getStringDetail(event, "route_uri"),
+		getStringDetail(event, "target_url"),
+		getStringDetail(event, "endpoint"),
+		getStringDetail(event, "body"),
+	}
+	for _, hint := range hints {
+		lower := strings.ToLower(hint)
+		if strings.Contains(lower, "mcp") || strings.Contains(lower, "model context protocol") {
+			return true
+		}
+		if strings.Contains(lower, "server register") || strings.Contains(lower, "server connect") {
+			return true
+		}
+	}
+	return false
+}
+
+func collectMCPRouteCandidates(event *core.SecurityEvent, target string) []string {
+	seen := make(map[string]struct{})
+	var candidates []string
+
+	add := func(blob string) {
+		for _, match := range extractHTTPURLs(blob) {
+			if _, ok := seen[match]; ok {
+				continue
+			}
+			seen[match] = struct{}{}
+			candidates = append(candidates, match)
+		}
+	}
+
+	add(target)
+	for _, key := range []string{
+		"server_url", "mcp_server_url", "route_uri", "target_url",
+		"url", "endpoint", "remote_url", "body", "arguments", "parameters",
+	} {
+		add(getStringDetail(event, key))
+	}
+
+	return candidates
+}
+
+func extractHTTPURLs(blob string) []string {
+	if strings.TrimSpace(blob) == "" {
+		return nil
+	}
+	urlRX := regexp.MustCompile(`https?://[^\s"'<>]+`)
+	return urlRX.FindAllString(blob, -1)
+}
+
+func isAllowedMCPRoute(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Hostname() == "" {
+		return false
+	}
+
+	switch strings.ToLower(parsed.Hostname()) {
+	case "localhost", "127.0.0.1", "::1", "internal-mcp.svc.cluster.local":
+		return parsed.Scheme == "http" || parsed.Scheme == "https"
+	default:
+		return false
+	}
 }
 
 func getStringDetail(event *core.SecurityEvent, key string) string {
