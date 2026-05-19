@@ -18,6 +18,7 @@ vendor/
 
 # Web directory (private — lives in separate repo)
 web/
+1-SEC-WEB/
 
 # Terraform / Infrastructure
 .terraform/
@@ -38,6 +39,9 @@ Thumbs.db
 
 # Local scripts / tooling
 scripts/
+.claude/
+package-lock.json
+*.exe.old
 
 # Temporary
 tmp/

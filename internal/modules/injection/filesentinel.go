@@ -43,7 +43,22 @@ var knownMagic = map[string][]byte{
 	"class": {0xCA, 0xFE, 0xBA, 0xBE}, // Java class
 }
 
-const deepHeaderWindow = 2048
+const (
+	deepHeaderWindow = 2048
+	deepScanChunk    = 64 * 1024
+	deepScanOverlap  = 4096
+)
+
+var embeddedExecutableMagics = []struct {
+	magic []byte
+	name  string
+}{
+	{[]byte{0x4D, 0x5A}, "PE/MZ executable"},
+	{[]byte{0x7F, 0x45, 0x4C, 0x46}, "ELF binary"},
+	{[]byte{0xCA, 0xFE, 0xBA, 0xBE}, "Java class / Mach-O fat binary"},
+	{[]byte{0xFE, 0xED, 0xFA, 0xCE}, "Mach-O 32-bit"},
+	{[]byte{0xFE, 0xED, 0xFA, 0xCF}, "Mach-O 64-bit"},
+}
 
 // shellcodeSignatures are byte patterns commonly found in shellcode payloads.
 var shellcodeSignatures = []struct {
@@ -97,6 +112,8 @@ func (fs *FileSentinel) Analyze(data []byte, declaredExt, contentType string) []
 	if f := fs.checkDeepHeaderConsistency(headerWindow, declaredExt); f != nil {
 		findings = append(findings, *f)
 	}
+
+	findings = append(findings, fs.checkDeepPayloads(data, declaredExt)...)
 
 	// 6. Archive entry path traversal — Zip Slip detection (CVE-2025-69770)
 	if f := fs.checkArchiveTraversal(data, declaredExt); f != nil {
@@ -205,52 +222,70 @@ func (fs *FileSentinel) checkMagicMismatch(data []byte, declaredExt, contentType
 // checkEmbeddedExecutable looks for executable signatures embedded within
 // non-executable files (e.g., MZ/ELF headers inside a PNG).
 func (fs *FileSentinel) checkEmbeddedExecutable(data []byte, declaredExt string) *FileFinding {
+	name, offset, ok := embeddedExecutableAt(data, declaredExt, 16)
+	if !ok {
+		return nil
+	}
 	ext := strings.ToLower(strings.TrimPrefix(declaredExt, "."))
-	// Skip if the file is supposed to be an executable
-	if ext == "exe" || ext == "dll" || ext == "elf" || ext == "so" || ext == "class" || ext == "jar" {
+	return &FileFinding{
+		Type: "embedded_executable",
+		Description: name + " signature found embedded inside " + ext +
+			" file at offset " + itoa(offset),
+		Severity: core.SeverityCritical,
+	}
+}
+
+func (fs *FileSentinel) checkDeepPayloads(data []byte, declaredExt string) []FileFinding {
+	if len(data) <= deepHeaderWindow {
 		return nil
 	}
 
-	execMagics := []struct {
-		magic []byte
-		name  string
-	}{
-		{[]byte{0x4D, 0x5A}, "PE/MZ executable"},
-		{[]byte{0x7F, 0x45, 0x4C, 0x46}, "ELF binary"},
-		{[]byte{0xCA, 0xFE, 0xBA, 0xBE}, "Java class / Mach-O fat binary"},
-		{[]byte{0xFE, 0xED, 0xFA, 0xCE}, "Mach-O 32-bit"},
-		{[]byte{0xFE, 0xED, 0xFA, 0xCF}, "Mach-O 64-bit"},
-	}
-
-	// Search beyond the first 16 bytes (skip the legitimate header)
-	searchStart := 16
-	if len(data) <= searchStart {
-		return nil
-	}
-
-	for _, em := range execMagics {
-		idx := bytesIndex(data[searchStart:], em.magic)
-		if idx >= 0 {
-			return &FileFinding{
-				Type: "embedded_executable",
-				Description: em.name + " signature found embedded inside " + ext +
-					" file at offset " + itoa(searchStart+idx),
-				Severity: core.SeverityCritical,
-			}
+	var findings []FileFinding
+	seen := make(map[string]bool)
+	for start := deepHeaderWindow; start < len(data); {
+		end := start + deepScanChunk
+		if end > len(data) {
+			end = len(data)
 		}
-	}
+		chunk := data[start:end]
 
-	return nil
+		if name, offset, ok := embeddedExecutableAt(chunk, declaredExt, 0); ok {
+			ext := strings.ToLower(strings.TrimPrefix(declaredExt, "."))
+			appendUniqueFinding(&findings, seen, FileFinding{
+				Type: "embedded_executable",
+				Description: name + " signature found embedded inside " + ext +
+					" file at offset " + itoa(start+offset),
+				Severity: core.SeverityCritical,
+			})
+		}
+		for _, finding := range fs.checkShellcodeAt(chunk, start) {
+			appendUniqueFinding(&findings, seen, finding)
+		}
+
+		if len(findings) >= 8 || end == len(data) {
+			break
+		}
+		next := end - deepScanOverlap
+		if next <= start {
+			next = start + 1
+		}
+		start = next
+	}
+	return findings
 }
 
 // checkShellcode scans for known shellcode byte patterns in file content.
 func (fs *FileSentinel) checkShellcode(data []byte) []FileFinding {
+	return fs.checkShellcodeAt(data, 0)
+}
+
+func (fs *FileSentinel) checkShellcodeAt(data []byte, baseOffset int) []FileFinding {
 	var findings []FileFinding
 	for _, sig := range shellcodeSignatures {
 		if idx := bytesIndex(data, sig.pattern); idx >= 0 {
 			findings = append(findings, FileFinding{
 				Type:        "shellcode_signature",
-				Description: sig.name + " detected at offset " + itoa(idx),
+				Description: sig.name + " detected at offset " + itoa(baseOffset+idx),
 				Severity:    core.SeverityCritical,
 			})
 		}
@@ -427,6 +462,55 @@ func (fs *FileSentinel) checkJP2HeaderConsistency(data []byte) *FileFinding {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+func embeddedExecutableAt(data []byte, declaredExt string, searchStart int) (string, int, bool) {
+	ext := strings.ToLower(strings.TrimPrefix(declaredExt, "."))
+	if ext == "exe" || ext == "dll" || ext == "elf" || ext == "so" || ext == "class" || ext == "jar" {
+		return "", 0, false
+	}
+	if searchStart < 0 {
+		searchStart = 0
+	}
+	if len(data) <= searchStart {
+		return "", 0, false
+	}
+
+	for _, em := range embeddedExecutableMagics {
+		idx := bytesIndex(data[searchStart:], em.magic)
+		if idx < 0 {
+			continue
+		}
+		offset := searchStart + idx
+		if em.name == "PE/MZ executable" && !looksLikePEAt(data, offset) {
+			continue
+		}
+		return em.name, offset, true
+	}
+	return "", 0, false
+}
+
+func looksLikePEAt(data []byte, offset int) bool {
+	if offset < 0 || offset+64 > len(data) {
+		return false
+	}
+	peOffset := int(binary.LittleEndian.Uint32(data[offset+0x3c : offset+0x40]))
+	if peOffset <= 0 || peOffset > 4096 || offset+peOffset+4 > len(data) {
+		return false
+	}
+	return data[offset+peOffset] == 'P' &&
+		data[offset+peOffset+1] == 'E' &&
+		data[offset+peOffset+2] == 0x00 &&
+		data[offset+peOffset+3] == 0x00
+}
+
+func appendUniqueFinding(findings *[]FileFinding, seen map[string]bool, finding FileFinding) {
+	key := finding.Type + ":" + finding.Description
+	if seen[key] {
+		return
+	}
+	seen[key] = true
+	*findings = append(*findings, finding)
+}
 
 func identifyByMagic(data []byte) string {
 	for ext, magic := range knownMagic {

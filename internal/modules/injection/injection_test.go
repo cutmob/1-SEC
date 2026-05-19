@@ -2,6 +2,7 @@ package injection
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -762,6 +763,76 @@ func TestFileSentinel_CheckJP2HeaderConsistency(t *testing.T) {
 }
 
 // ─── Canary Token / Leaked Credential Detection ──────────────────────────────
+
+func TestFileSentinel_DeepEmbeddedExecutable(t *testing.T) {
+	fs := &FileSentinel{}
+	data := testPNGBuffer(96 * 1024)
+	peOffset := deepHeaderWindow + 8192
+	writeMinimalPE(data, peOffset)
+
+	findings := fs.Analyze(data, ".png", "image/png")
+	found := false
+	for _, f := range findings {
+		if f.Type == "embedded_executable" {
+			found = true
+			if !strings.Contains(f.Description, itoa(peOffset)) {
+				t.Fatalf("expected embedded executable offset %d, got %q", peOffset, f.Description)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected embedded_executable for PE payload beyond header window")
+	}
+}
+
+func TestFileSentinel_DeepShellcodeSignature(t *testing.T) {
+	fs := &FileSentinel{}
+	data := testPNGBuffer(96 * 1024)
+	shellcodeOffset := deepHeaderWindow + 12000
+	copy(data[shellcodeOffset:], []byte{0x6A, 0x3B, 0x58, 0x99})
+
+	findings := fs.Analyze(data, ".png", "image/png")
+	found := false
+	for _, f := range findings {
+		if f.Type == "shellcode_signature" {
+			found = true
+			if !strings.Contains(f.Description, itoa(shellcodeOffset)) {
+				t.Fatalf("expected shellcode offset %d, got %q", shellcodeOffset, f.Description)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected shellcode_signature beyond header window")
+	}
+}
+
+func TestFileSentinel_DeepRandomMZDoesNotTriggerPE(t *testing.T) {
+	fs := &FileSentinel{}
+	data := testPNGBuffer(96 * 1024)
+	copy(data[deepHeaderWindow+4096:], []byte("MZnot-a-pe-file"))
+
+	findings := fs.Analyze(data, ".png", "image/png")
+	for _, f := range findings {
+		if f.Type == "embedded_executable" {
+			t.Fatalf("did not expect embedded_executable for random MZ bytes: %q", f.Description)
+		}
+	}
+}
+
+func testPNGBuffer(size int) []byte {
+	data := make([]byte, size)
+	copy(data, knownMagic["png"])
+	return data
+}
+
+func writeMinimalPE(data []byte, offset int) {
+	copy(data[offset:], []byte{'M', 'Z'})
+	peOffset := 0x80
+	data[offset+0x3c] = byte(peOffset)
+	copy(data[offset+peOffset:], []byte{'P', 'E', 0x00, 0x00})
+}
 
 func TestAnalyzeInput_Canary_AWSKey(t *testing.T) {
 	s := startedShield(t)
