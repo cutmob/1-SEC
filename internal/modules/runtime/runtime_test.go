@@ -45,6 +45,17 @@ func (cp *capturingPipeline) alertTitles() []string {
 	return titles
 }
 
+func (cp *capturingPipeline) hasAlertType(alertType string) bool {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	for _, alert := range cp.alerts {
+		if alert.Type == alertType {
+			return true
+		}
+	}
+	return false
+}
+
 func startedModule(t *testing.T) *Watcher {
 	t.Helper()
 	w := New()
@@ -930,6 +941,37 @@ func TestWatcher_HandleEvent_LuaShellcodeLoader(t *testing.T) {
 }
 
 // ─── isSensitiveCmdTarget Tests ───────────────────────────────────────────────
+
+func TestClassifyRealtimeFileChange_FilelessLPE(t *testing.T) {
+	finding := classifyRealtimeFileChange(FileChange{
+		Path: "/dev/shm/cve-2026-overlayfs-setuid.sh",
+		Type: "created",
+	})
+	if finding == nil {
+		t.Fatal("expected real-time fileless LPE finding")
+	}
+	if finding.AlertType != "realtime_fileless_lpe" {
+		t.Fatalf("AlertType = %q, want realtime_fileless_lpe", finding.AlertType)
+	}
+	if finding.Severity != core.SeverityCritical {
+		t.Fatalf("Severity = %v, want critical", finding.Severity)
+	}
+}
+
+func TestWatcher_EmitFileChange_RealtimeTransientExec(t *testing.T) {
+	cp := makeCapturingPipeline()
+	w := startedModuleWithPipeline(t, cp)
+	defer w.Stop()
+
+	w.emitFileChange(FileChange{
+		Path: "/tmp/payload.sh",
+		Type: "close_write",
+	}, "realtime")
+
+	if !cp.hasAlertType("realtime_transient_exec") {
+		t.Fatalf("expected realtime_transient_exec alert, got titles: %v", cp.alertTitles())
+	}
+}
 
 func TestIsSensitiveCmdTarget(t *testing.T) {
 	cases := []struct {

@@ -80,6 +80,13 @@ data:
         enabled: true
         settings:
           scan_interval_seconds: 300
+          realtime_enabled: true
+          realtime_watch_paths:
+            - /dev/shm
+            - /tmp
+            - /var/tmp
+            - /run
+            - /run/user
       cloud_posture:
         enabled: true
       ai_analysis_engine:

@@ -30,6 +30,7 @@ type Watcher struct {
 	cancel   context.CancelFunc
 	fim      *FileIntegrityMonitor
 	procMon  *ProcessMonitor
+	rtMon    realtimeFileMonitor
 }
 
 func New() *Watcher { return &Watcher{} }
@@ -62,6 +63,8 @@ func (w *Watcher) Start(ctx context.Context, bus *core.EventBus, pipeline *core.
 
 	settings := cfg.GetModuleSettings(ModuleName)
 	watchPaths := getStringSliceSetting(settings, "watch_paths", []string{})
+	realtimeEnabled := getBoolSetting(settings, "realtime_enabled", true)
+	realtimeWatchPaths := getStringSliceSetting(settings, "realtime_watch_paths", defaultEphemeralWatchPaths())
 	scanInterval := getIntSetting(settings, "scan_interval_seconds", 300)
 	w.fim = NewFileIntegrityMonitor(watchPaths, time.Duration(scanInterval)*time.Second)
 	w.procMon = NewProcessMonitor()
@@ -69,9 +72,18 @@ func (w *Watcher) Start(ctx context.Context, bus *core.EventBus, pipeline *core.
 	if len(watchPaths) > 0 {
 		go w.fimLoop()
 	}
+	if realtimeEnabled && len(realtimeWatchPaths) > 0 {
+		w.rtMon = newRealtimeFileMonitor(realtimeWatchPaths)
+		if err := w.rtMon.Start(w.ctx, func(change FileChange) {
+			w.emitFileChange(change, "realtime")
+		}); err != nil {
+			w.logger.Debug().Err(err).Msg("real-time runtime file monitor unavailable")
+		}
+	}
 
 	w.logger.Info().
 		Int("watch_paths", len(watchPaths)).
+		Int("realtime_watch_paths", len(realtimeWatchPaths)).
 		Int("scan_interval", scanInterval).
 		Msg("runtime watcher started")
 	return nil
@@ -80,6 +92,9 @@ func (w *Watcher) Start(ctx context.Context, bus *core.EventBus, pipeline *core.
 func (w *Watcher) Stop() error {
 	if w.cancel != nil {
 		w.cancel()
+	}
+	if w.rtMon != nil {
+		return w.rtMon.Close()
 	}
 	return nil
 }
@@ -608,28 +623,52 @@ func (w *Watcher) fimLoop() {
 		case <-ticker.C:
 			changes := w.fim.Scan()
 			for _, change := range changes {
-				severity := core.SeverityMedium
-				if isSensitivePath(change.Path) {
-					severity = core.SeverityCritical
-				}
-				event := core.NewSecurityEvent(ModuleName, "file_integrity_violation", severity,
-					fmt.Sprintf("File integrity change: %s (%s)", change.Path, change.Type))
-				event.Details["path"] = change.Path
-				event.Details["change_type"] = change.Type
-				event.Details["old_hash"] = change.OldHash
-				event.Details["new_hash"] = change.NewHash
-				if w.bus != nil {
-					_ = w.bus.PublishEvent(event)
-				}
-				alert := core.NewAlert(event,
-					fmt.Sprintf("File Integrity Violation: %s", change.Type),
-					fmt.Sprintf("File %s was %s. Old hash: %s, New hash: %s",
-						change.Path, change.Type, truncate(change.OldHash, 16), truncate(change.NewHash, 16)))
-				if w.pipeline != nil {
-					w.pipeline.Process(alert)
-				}
+				w.emitFileChange(change, "polling")
 			}
 		}
+	}
+}
+
+func (w *Watcher) emitFileChange(change FileChange, source string) {
+	if finding := classifyRealtimeFileChange(change); source == "realtime" && finding != nil {
+		event := core.NewSecurityEvent(ModuleName, finding.AlertType, finding.Severity,
+			fmt.Sprintf("%s: %s (%s)", finding.Title, change.Path, change.Type))
+		event.Details["path"] = change.Path
+		event.Details["change_type"] = change.Type
+		event.Details["monitor_source"] = source
+		if w.bus != nil {
+			_ = w.bus.PublishEvent(event)
+		}
+		alert := core.NewAlert(event, finding.Title,
+			fmt.Sprintf("%s Path: %s. Change: %s.", finding.Description, change.Path, change.Type))
+		alert.Mitigations = getRuntimeMitigations(finding.AlertType)
+		if w.pipeline != nil {
+			w.pipeline.Process(alert)
+		}
+		return
+	}
+
+	severity := core.SeverityMedium
+	if isSensitivePath(change.Path) {
+		severity = core.SeverityCritical
+	}
+	event := core.NewSecurityEvent(ModuleName, "file_integrity_violation", severity,
+		fmt.Sprintf("File integrity change: %s (%s)", change.Path, change.Type))
+	event.Details["path"] = change.Path
+	event.Details["change_type"] = change.Type
+	event.Details["old_hash"] = change.OldHash
+	event.Details["new_hash"] = change.NewHash
+	event.Details["monitor_source"] = source
+	if w.bus != nil {
+		_ = w.bus.PublishEvent(event)
+	}
+	alert := core.NewAlert(event,
+		fmt.Sprintf("File Integrity Violation: %s", change.Type),
+		fmt.Sprintf("File %s was %s. Old hash: %s, New hash: %s",
+			change.Path, change.Type, truncate(change.OldHash, 16), truncate(change.NewHash, 16)))
+	alert.Mitigations = getRuntimeMitigations("file_integrity_violation")
+	if w.pipeline != nil {
+		w.pipeline.Process(alert)
 	}
 }
 
@@ -663,6 +702,18 @@ type FileChange struct {
 	Type    string
 	OldHash string
 	NewHash string
+}
+
+type realtimeFileMonitor interface {
+	Start(context.Context, func(FileChange)) error
+	Close() error
+}
+
+type runtimeFileFinding struct {
+	Title       string
+	Description string
+	AlertType   string
+	Severity    core.Severity
 }
 
 func NewFileIntegrityMonitor(paths []string, interval time.Duration) *FileIntegrityMonitor {
@@ -1068,6 +1119,63 @@ func isSuspiciousFile(path string) bool {
 	return false
 }
 
+func defaultEphemeralWatchPaths() []string {
+	return []string{"/dev/shm", "/tmp", "/var/tmp", "/run", "/run/user"}
+}
+
+func classifyRealtimeFileChange(change FileChange) *runtimeFileFinding {
+	if !isEphemeralExecutionPath(change.Path) {
+		return nil
+	}
+	changeType := strings.ToLower(change.Type)
+	if changeType != "created" && changeType != "modified" && changeType != "moved_to" &&
+		changeType != "close_write" && changeType != "attrib" {
+		return nil
+	}
+
+	pathLower := strings.ToLower(filepath.ToSlash(change.Path))
+	criticalMarkers := []string{
+		"setuid", "suid", "cap_", "capability", "ld.so.preload", "pkexec",
+		"sudo", "dirty", "overlayfs", "cve-", "exploit", "rootkit",
+	}
+	for _, marker := range criticalMarkers {
+		if strings.Contains(pathLower, marker) {
+			return &runtimeFileFinding{
+				Title:       "Real-Time Fileless LPE Artifact Detected",
+				Description: "Runtime Watcher saw a transient privilege-escalation artifact land in an executable memory or temp-backed path before polling could miss it.",
+				AlertType:   "realtime_fileless_lpe",
+				Severity:    core.SeverityCritical,
+			}
+		}
+	}
+	if isSuspiciousFile(change.Path) || strings.Contains(pathLower, ".so") {
+		return &runtimeFileFinding{
+			Title:       "Real-Time Transient Execution Artifact Detected",
+			Description: "Runtime Watcher saw a suspicious executable or script artifact in a short-lived runtime path through the real-time file monitor.",
+			AlertType:   "realtime_transient_exec",
+			Severity:    core.SeverityHigh,
+		}
+	}
+	return nil
+}
+
+func isEphemeralExecutionPath(path string) bool {
+	pathLower := strings.ToLower(filepath.ToSlash(path))
+	ephemeralPaths := []string{
+		"/dev/shm/",
+		"/tmp/",
+		"/var/tmp/",
+		"/run/user/",
+		"/run/lock/",
+	}
+	for _, prefix := range ephemeralPaths {
+		if strings.HasPrefix(pathLower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func getStringDetail(event *core.SecurityEvent, key string) string {
 	if event.Details == nil {
 		return ""
@@ -1085,6 +1193,18 @@ func getIntSetting(settings map[string]interface{}, key string, defaultVal int) 
 			return v
 		case float64:
 			return int(v)
+		}
+	}
+	return defaultVal
+}
+
+func getBoolSetting(settings map[string]interface{}, key string, defaultVal bool) bool {
+	if val, ok := settings[key]; ok {
+		switch v := val.(type) {
+		case bool:
+			return v
+		case string:
+			return strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "yes")
 		}
 	}
 	return defaultVal
@@ -1124,6 +1244,13 @@ func getRuntimeMitigations(alertType string) []string {
 			"Restore the file from a verified backup if tampering is confirmed",
 			"Implement file integrity monitoring with real-time alerting",
 			"Review access logs for the modified file",
+		}
+	case "realtime_fileless_lpe", "realtime_transient_exec":
+		return []string{
+			"Isolate the host if the artifact is unauthorized",
+			"Capture process ancestry and command-line telemetry around the file event",
+			"Review /dev/shm, /tmp, /var/tmp, and /run activity for short-lived loaders",
+			"Patch the affected privilege-escalation or sandbox-escape path",
 		}
 	case "lolbin_execution":
 		return []string{
