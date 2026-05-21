@@ -1101,7 +1101,7 @@ func TestHandleDriverLoad_BlockedDriver(t *testing.T) {
 		w.HandleEvent(ev)
 		time.Sleep(10 * time.Millisecond)
 
-		if cp.count() == 0 {
+		if !cp.hasAlertType("byovd_driver_load") {
 			t.Errorf("expected BYOVD alert for driver %q, got none", driver)
 		}
 	}
@@ -1117,7 +1117,7 @@ func TestHandleDriverLoad_SafeDriver(t *testing.T) {
 	w.HandleEvent(ev)
 	time.Sleep(10 * time.Millisecond)
 
-	if cp.count() > 0 {
+	if cp.hasAlertType("byovd_driver_load") {
 		t.Error("should NOT alert for legitimate driver ntfs.sys")
 	}
 }
@@ -1132,7 +1132,7 @@ func TestHandleDriverLoad_PathExtraction(t *testing.T) {
 	w.HandleEvent(ev)
 	time.Sleep(10 * time.Millisecond)
 
-	if cp.count() == 0 {
+	if !cp.hasAlertType("byovd_driver_load") {
 		t.Error("expected BYOVD alert when driver name extracted from path")
 	}
 }
