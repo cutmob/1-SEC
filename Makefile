@@ -9,7 +9,17 @@
 #   make build         Build all binaries
 #   make check         Full CI check (fmt + lint + test)
 
-.PHONY: test test-go test-rust lint lint-go lint-rust fmt fmt-go fmt-rust build build-go build-rust check
+.PHONY: test test-go test-rust lint lint-go lint-rust staticcheck fmt fmt-go fmt-rust fmt-check fmt-check-go fmt-check-rust build build-go build-rust check audit audit-go audit-rust vuln
+
+GO_PACKAGE_PATTERNS := ./cmd/... ./internal/...
+GO_PACKAGES := $(shell go list $(GO_PACKAGE_PATTERNS))
+GO_PACKAGE_DIRS := $(shell go list -f '{{.Dir}}' $(GO_PACKAGES))
+
+ifeq ($(OS),Windows_NT)
+FMT_CHECK_GO = powershell -NoProfile -Command "$$files = gofmt -l $(GO_PACKAGE_DIRS); if ($$files) { Write-Host 'Files not formatted:'; $$files; exit 1 }"
+else
+FMT_CHECK_GO = test -z "$$(gofmt -l $(GO_PACKAGE_DIRS))" || (echo "Files not formatted:"; gofmt -l $(GO_PACKAGE_DIRS); exit 1)
+endif
 
 # ─── Test ─────────────────────────────────────────────────────────────────────
 
@@ -17,11 +27,11 @@ test: test-go test-rust
 
 test-go:
 	@echo "==> Running Go tests..."
-	go test -timeout 120s ./...
+	go test -timeout 120s $(GO_PACKAGES)
 
 test-go-race:
 	@echo "==> Running Go tests with race detector..."
-	CGO_ENABLED=1 go test -race -timeout 120s ./...
+	CGO_ENABLED=1 go test -race -timeout 120s $(GO_PACKAGES)
 
 test-rust:
 	@echo "==> Running Rust tests..."
@@ -37,7 +47,11 @@ lint: lint-go lint-rust
 
 lint-go:
 	@echo "==> Go vet..."
-	go vet ./...
+	go vet $(GO_PACKAGES)
+
+staticcheck:
+	@echo "==> Staticcheck..."
+	staticcheck $(GO_PACKAGES)
 
 lint-rust:
 	@echo "==> Rust clippy..."
@@ -49,7 +63,7 @@ fmt: fmt-go fmt-rust
 
 fmt-go:
 	@echo "==> Formatting Go..."
-	gofmt -w .
+	gofmt -w $(GO_PACKAGE_DIRS)
 
 fmt-rust:
 	@echo "==> Formatting Rust..."
@@ -59,7 +73,7 @@ fmt-check: fmt-check-go fmt-check-rust
 
 fmt-check-go:
 	@echo "==> Checking Go formatting..."
-	@test -z "$$(gofmt -l .)" || (echo "Files not formatted:"; gofmt -l .; exit 1)
+	$(FMT_CHECK_GO)
 
 fmt-check-rust:
 	@echo "==> Checking Rust formatting..."
@@ -71,7 +85,7 @@ build: build-go build-rust
 
 build-go:
 	@echo "==> Building Go..."
-	go build ./...
+	go build $(GO_PACKAGES)
 
 build-rust:
 	@echo "==> Building Rust engine..."
@@ -79,13 +93,20 @@ build-rust:
 
 # ─── Full CI Check ───────────────────────────────────────────────────────────
 
-check: fmt-check lint test
+check: fmt-check lint test audit
 	@echo ""
 	@echo "==> All checks passed."
 
 # ─── Vulnerability Scan ──────────────────────────────────────────────────────
 
-vuln:
+audit: audit-go audit-rust
+
+audit-go:
 	@echo "==> Running Go vulnerability check..."
-	go install golang.org/x/vuln/cmd/govulncheck@latest
-	govulncheck ./...
+	govulncheck $(GO_PACKAGES)
+
+audit-rust:
+	@echo "==> Running Rust dependency audit..."
+	cd rust/1sec-engine && cargo audit
+
+vuln: audit-go

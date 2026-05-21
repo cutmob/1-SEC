@@ -1,6 +1,7 @@
 # Rust build artifacts
 target/
 Cargo.lock
+!1sec-engine/Cargo.lock
 
 # IDE
 .idea/

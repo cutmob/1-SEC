@@ -24,23 +24,28 @@ type CloudReporter struct {
 
 // CloudEnforcementRecord is the shape expected by the cloud dashboard's ingest API.
 type CloudEnforcementRecord struct {
-	ID             string `json:"id"`
-	Timestamp      string `json:"timestamp"`
-	Module         string `json:"module"`
-	Action         string `json:"action"`
-	Target         string `json:"target"`
-	Severity       string `json:"severity"`
-	AlertID        string `json:"alertId"`
-	Status         string `json:"status"`
-	DurationMs     int64  `json:"durationMs,omitempty"`
-	DryRun         bool   `json:"dryRun"`
-	Preset         string `json:"preset,omitempty"`
-	Reversible     bool   `json:"reversible,omitempty"`
-	RolledBack     bool   `json:"rolledBack,omitempty"`
-	MitreTactic    string `json:"mitreTactic,omitempty"`
-	MitreTechnique string `json:"mitreTechnique,omitempty"`
-	InstanceID     string `json:"instanceId,omitempty"`
-	Hostname       string `json:"hostname,omitempty"`
+	ID               string `json:"id"`
+	Timestamp        string `json:"timestamp"`
+	Module           string `json:"module"`
+	Action           string `json:"action"`
+	Target           string `json:"target"`
+	Severity         string `json:"severity"`
+	AlertID          string `json:"alertId"`
+	Status           string `json:"status"`
+	DurationMs       int64  `json:"durationMs,omitempty"`
+	DryRun           bool   `json:"dryRun"`
+	Preset           string `json:"preset,omitempty"`
+	Details          string `json:"details,omitempty"`
+	Error            string `json:"error,omitempty"`
+	Reversible       bool   `json:"reversible,omitempty"`
+	RolledBack       bool   `json:"rolledBack,omitempty"`
+	ApprovalID       string `json:"approvalId,omitempty"`
+	ApprovalRequired bool   `json:"approvalRequired,omitempty"`
+	ApprovalStatus   string `json:"approvalStatus,omitempty"`
+	MitreTactic      string `json:"mitreTactic,omitempty"`
+	MitreTechnique   string `json:"mitreTechnique,omitempty"`
+	InstanceID       string `json:"instanceId,omitempty"`
+	Hostname         string `json:"hostname,omitempty"`
 }
 
 // CloudCorrelationRecord is the shape expected by the cloud dashboard's ingest API.
@@ -209,7 +214,7 @@ func (cr *CloudReporter) enforcementReporter() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	lastSent := 0
+	sent := make(map[string]bool)
 
 	for {
 		select {
@@ -221,13 +226,17 @@ func (cr *CloudReporter) enforcementReporter() {
 			}
 
 			records := cr.engine.ResponseEngine.GetRecords(100, "")
-			if len(records) <= lastSent {
+			newRecords := make([]*ResponseRecord, 0, len(records))
+			for _, r := range records {
+				if sent[r.ID] {
+					continue
+				}
+				sent[r.ID] = true
+				newRecords = append(newRecords, r)
+			}
+			if len(newRecords) == 0 {
 				continue
 			}
-
-			// Send only new records
-			newRecords := records[:len(records)-lastSent]
-			lastSent = len(records)
 
 			hostname, _ := os.Hostname()
 			instanceID := fmt.Sprintf("i-%s-%s", hostname, runtime.GOARCH)
@@ -239,22 +248,36 @@ func (cr *CloudReporter) enforcementReporter() {
 				if severity == "" {
 					severity = "medium"
 				}
-				// Map Go-side uppercase status to dashboard lowercase
+				// Map Go-side uppercase status to dashboard lowercase.
 				status := strings.ToLower(string(r.Status))
 				dryRun := r.Status == ActionStatusDryRun
+				approvalID := ""
+				approvalRequired := false
+				approvalStatus := ""
+				if r.Status == ActionStatusSkipped && strings.HasPrefix(r.Details, "held for approval:") {
+					approvalID = strings.TrimSpace(strings.TrimPrefix(r.Details, "held for approval:"))
+					approvalRequired = true
+					approvalStatus = "pending"
+					status = "allowed"
+				}
 				cloudRecords = append(cloudRecords, CloudEnforcementRecord{
-					ID:         r.ID,
-					Timestamp:  r.Timestamp.Format(time.RFC3339),
-					Module:     r.Module,
-					Action:     string(r.Action),
-					Target:     r.Target,
-					Severity:   severity,
-					AlertID:    r.AlertID,
-					Status:     status,
-					DurationMs: r.DurationMs,
-					DryRun:     dryRun,
-					InstanceID: instanceID,
-					Hostname:   hostname,
+					ID:               r.ID,
+					Timestamp:        r.Timestamp.Format(time.RFC3339),
+					Module:           r.Module,
+					Action:           string(r.Action),
+					Target:           r.Target,
+					Severity:         severity,
+					AlertID:          r.AlertID,
+					Status:           status,
+					DurationMs:       r.DurationMs,
+					DryRun:           dryRun,
+					Details:          r.Details,
+					Error:            r.Error,
+					ApprovalID:       approvalID,
+					ApprovalRequired: approvalRequired,
+					ApprovalStatus:   approvalStatus,
+					InstanceID:       instanceID,
+					Hostname:         hostname,
 				})
 			}
 
@@ -281,7 +304,7 @@ func (cr *CloudReporter) reportCorrelation(alert *Alert, chainName string) {
 		SourceIP:       sourceIP,
 		Modules:        modules,
 		AlertIDs:       alert.EventIDs,
-		Severity:       alert.Severity.String(),
+		Severity:       strings.ToLower(alert.Severity.String()),
 		Summary:        alert.Description,
 		WindowSeconds:  900, // 15 min default
 		IncidentStatus: "new",

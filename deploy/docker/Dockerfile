@@ -1,5 +1,5 @@
 # ── Stage 1: Build Go binary ─────────────────────────────────────────────────
-FROM golang:1.26.1-alpine AS go-builder
+FROM golang:1.26.3-alpine AS go-builder
 
 RUN apk add --no-cache git ca-certificates tzdata
 
@@ -20,7 +20,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     ./cmd/1sec
 
 # ── Stage 2: Build Rust engine (optional) ────────────────────────────────────
-FROM rust:1.84-alpine AS rust-builder
+FROM rust:1.94-alpine AS rust-builder
 
 RUN apk add --no-cache musl-dev libpcap-dev
 

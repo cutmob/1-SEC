@@ -14,7 +14,7 @@ path = "src/main.rs"
 tokio = { version = "1", features = ["full"] }
 
 # NATS client
-async-nats = "0.38"
+async-nats = "0.48"
 
 # High-performance regex
 regex = "1"
