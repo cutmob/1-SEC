@@ -31,6 +31,7 @@ type Firewall struct {
 	tokenBudgets *lru.Cache[string, *TokenBudget]
 	multiTurn    *MultiTurnTracker
 	toolChainMon *ToolChainMonitor
+	sessionTaints *lru.Cache[string, map[string]bool]
 	mu           sync.RWMutex
 }
 
@@ -61,10 +62,12 @@ type TokenBudget struct {
 
 func New() *Firewall {
 	tCache, _ := lru.New[string, *TokenBudget](50000)
+	sCache, _ := lru.New[string, map[string]bool](50000)
 	return &Firewall{
-		tokenBudgets: tCache,
-		multiTurn:    NewMultiTurnTracker(),
-		toolChainMon: NewToolChainMonitor(),
+		tokenBudgets:  tCache,
+		sessionTaints: sCache,
+		multiTurn:     NewMultiTurnTracker(),
+		toolChainMon:  NewToolChainMonitor(),
 	}
 }
 
@@ -82,6 +85,7 @@ func (f *Firewall) EventTypes() []string {
 		"rag_retrieval", "embedding_query",
 		"llm_citation", "llm_factual_claim",
 		"document_upload", "file_attachment", "image_input",
+		"agent_web_fetch", "agent_markdown_ingest", "llms_txt_access",
 	}
 }
 
@@ -128,6 +132,8 @@ func (f *Firewall) HandleEvent(event *core.SecurityEvent) error {
 		f.analyzeMisinformation(event)
 	case "document_upload", "file_attachment", "image_input":
 		f.analyzeMultimodal(event)
+	case "agent_web_fetch", "agent_markdown_ingest", "llms_txt_access":
+		f.recordWebTaint(event)
 	}
 	return nil
 }
@@ -265,6 +271,31 @@ func (f *Firewall) analyzeInput(event *core.SecurityEvent) {
 	}
 }
 
+func (f *Firewall) recordWebTaint(event *core.SecurityEvent) {
+	sessionID := getStringDetail(event, "session_id")
+	if sessionID == "" {
+		sessionID = event.SourceIP
+	}
+	if sessionID == "" {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	taints, ok := f.sessionTaints.Get(sessionID)
+	if !ok || taints == nil {
+		taints = make(map[string]bool)
+	}
+	taints["WebContextFetch"] = true
+	f.sessionTaints.Add(sessionID, taints)
+}
+
+// markdownLinkRX detects markdown image/link syntax.
+// Ref: ChatGPhish / Third-Party Markdown Poisoning (weekly intel 2026-05-29).
+var markdownLinkRX = regexp.MustCompile(`(?i)(?:\[[^\]]*\]|\!\[[^\]]*\])\((https?://[^\)]+)\)`)
+
+// localHostRX matches localhost/private addresses to exclude from markdown poisoning alerts.
+var localHostRX = regexp.MustCompile(`(?i)^https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|::1|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)`)
+
 func (f *Firewall) analyzeOutput(event *core.SecurityEvent) {
 	output := getStringDetail(event, "output")
 	if output == "" {
@@ -272,6 +303,48 @@ func (f *Firewall) analyzeOutput(event *core.SecurityEvent) {
 	}
 	if output == "" {
 		return
+	}
+
+	// Check for markdown poisoning when session is tainted by web fetch
+	sessionID := getStringDetail(event, "session_id")
+	if sessionID == "" {
+		sessionID = event.SourceIP
+	}
+	if sessionID != "" {
+		f.mu.RLock()
+		taints, _ := f.sessionTaints.Get(sessionID)
+		f.mu.RUnlock()
+		if taints != nil && taints["WebContextFetch"] {
+			for _, match := range markdownLinkRX.FindAllString(output, -1) {
+				// Extract the URL from the markdown link
+				if sub := markdownLinkRX.FindStringSubmatch(match); len(sub) > 1 {
+					url := sub[1]
+					if !localHostRX.MatchString(url) {
+						newEvent := core.NewSecurityEvent(ModuleName, "asi_markdown_poisoning", core.SeverityCritical,
+							fmt.Sprintf("Tainted session produced external markdown link after web fetch: %s", truncate(match, 200)))
+						newEvent.Details["original_event_id"] = event.ID
+						newEvent.Details["session_id"] = sessionID
+						newEvent.Details["matched_text"] = match
+						newEvent.Details["external_url"] = url
+
+						if f.bus != nil {
+							_ = f.bus.PublishEvent(newEvent)
+						}
+
+						alert := core.NewAlert(newEvent,
+							"ASI-Markdown-Poisoning: Tainted Web Context",
+							"Agent fetched external web content and subsequently generated markdown containing remote image/link URLs. This is the ChatGPhish zero-click exfiltration pattern.")
+						alert.Mitigations = []string{"Block the agent session", "Sanitize all markdown from untrusted web sources", "Review fetched URLs against denylist"}
+
+						if f.pipeline != nil {
+							f.pipeline.Process(alert)
+						}
+						// Only alert once per output
+						break
+					}
+				}
+			}
+		}
 	}
 
 	for _, rule := range f.outputRules {

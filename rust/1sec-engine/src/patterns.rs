@@ -19,7 +19,7 @@ pub struct PatternDef {
 
 /// Returns all pattern definitions across all categories.
 pub fn all_patterns() -> Vec<PatternDef> {
-    let mut patterns = Vec::with_capacity(144);
+    let mut patterns = Vec::with_capacity(150);
     patterns.extend(sqli_patterns());
     patterns.extend(xss_patterns());
     patterns.extend(cmdi_patterns());
@@ -39,6 +39,7 @@ pub fn all_patterns() -> Vec<PatternDef> {
     patterns.extend(zipslip_patterns());
     patterns.extend(argbased_rce_patterns());
     patterns.extend(ssrf_evasion_patterns());
+    patterns.extend(binary_payload_patterns());
     patterns
 }
 
@@ -901,6 +902,35 @@ fn ssrf_evasion_patterns() -> Vec<PatternDef> {
             severity: Severity::High,
             regex: r"(?i)(https?://)?0[0-7]{1,3}\.0[0-7]{1,3}\.0[0-7]{1,3}\.0[0-7]{1,3}",
             literals: &["://0"],
+        },
+    ]
+}
+
+/// Binary payload patterns for deep-buffer/streaming inspection.
+/// Detects embedded executables buried deep inside large files/datastreams.
+/// Ref: weekly intel 2026-05-29 (deep-file memory corruption RCEs).
+fn binary_payload_patterns() -> Vec<PatternDef> {
+    vec![
+        PatternDef {
+            name: "embedded_elf",
+            category: "binary_payload",
+            severity: Severity::Critical,
+            regex: r"\x7FELF",
+            literals: &["\x7FELF"],
+        },
+        PatternDef {
+            name: "embedded_mz_pe",
+            category: "binary_payload",
+            severity: Severity::Critical,
+            regex: r"MZ",
+            literals: &["MZ"],
+        },
+        PatternDef {
+            name: "embedded_7xz",
+            category: "binary_payload",
+            severity: Severity::High,
+            regex: r"\xFD7zXZ\x00",
+            literals: &["\xFD7zXZ"],
         },
     ]
 }

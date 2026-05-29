@@ -17,6 +17,9 @@ use uuid::Uuid;
 const SUSPICIOUS_PORT_SCAN_THRESHOLD: usize = 20;
 const MAX_PAYLOAD_PREVIEW: usize = 2048;
 const STATS_INTERVAL_SECS: u64 = 60;
+const SSH_MAX_PAYLOAD_SIZE: usize = 262_144;
+const SSH_MAX_CHANNEL_OPENS_PER_SEC: usize = 50;
+const SSH_TRACKER_WINDOW_SECS: u64 = 1;
 
 /// Per-source tracking for anomaly detection.
 struct SourceTracker {
@@ -66,6 +69,74 @@ impl SourceTracker {
     }
 }
 
+/// Per-flow SSH tracking for resource exhaustion detection.
+struct SSHTracker {
+    /// Per-flow: (src_ip, dst_ip, dst_port) -> accumulated payload size
+    flow_payloads: std::collections::HashMap<String, usize>,
+    /// Per-flow: packet timestamps for rate tracking
+    flow_packets: std::collections::HashMap<String, Vec<std::time::Instant>>,
+    last_reset: std::time::Instant,
+}
+
+impl SSHTracker {
+    fn new() -> Self {
+        Self {
+            flow_payloads: std::collections::HashMap::new(),
+            flow_packets: std::collections::HashMap::new(),
+            last_reset: std::time::Instant::now(),
+        }
+    }
+
+    fn flow_key(src_ip: &str, dst_ip: &str, dst_port: u16) -> String {
+        format!("{}:{}:{}", src_ip, dst_ip, dst_port)
+    }
+
+    fn track(&mut self, src_ip: &str, dst_ip: &str, dst_port: u16, payload_len: usize) -> Vec<String> {
+        let mut anomalies = Vec::new();
+
+        // Reset periodically
+        if self.last_reset.elapsed().as_secs() > STATS_INTERVAL_SECS {
+            self.flow_payloads.clear();
+            self.flow_packets.clear();
+            self.last_reset = std::time::Instant::now();
+        }
+
+        if dst_port != 22 {
+            return anomalies;
+        }
+
+        let key = Self::flow_key(src_ip, dst_ip, dst_port);
+
+        // Accumulate payload size
+        let total_payload = self.flow_payloads.entry(key.clone()).or_insert(0);
+        *total_payload += payload_len;
+        if *total_payload > SSH_MAX_PAYLOAD_SIZE {
+            anomalies.push(format!(
+                "ssh_oversized_frame: flow {} exceeded {} bytes (total: {})",
+                key, SSH_MAX_PAYLOAD_SIZE, *total_payload
+            ));
+        }
+
+        // Track packet rate for channel-open exhaustion heuristics
+        let now = std::time::Instant::now();
+        let timestamps = self.flow_packets.entry(key.clone()).or_default();
+        timestamps.push(now);
+        // Remove packets outside the 1-second window
+        let window_start = now - std::time::Duration::from_secs(SSH_TRACKER_WINDOW_SECS);
+        timestamps.retain(|t| *t >= window_start);
+        if timestamps.len() > SSH_MAX_CHANNEL_OPENS_PER_SEC {
+            anomalies.push(format!(
+                "ssh_channel_exhaustion: flow {} sent {} packets in {}s (threshold: {})",
+                key, timestamps.len(), SSH_TRACKER_WINDOW_SECS, SSH_MAX_CHANNEL_OPENS_PER_SEC
+            ));
+            // Clear to avoid spam
+            timestamps.clear();
+        }
+
+        anomalies
+    }
+}
+
 /// Main packet capture loop. Runs until an error occurs or the process is killed.
 pub async fn capture_loop(
     interface: &str,
@@ -88,6 +159,7 @@ pub async fn capture_loop(
     }
 
     let mut tracker = SourceTracker::new();
+    let mut ssh_tracker = SSHTracker::new();
     let mut total_packets: u64 = 0;
     let mut published_events: u64 = 0;
     let stats_start = std::time::Instant::now();
@@ -210,18 +282,31 @@ pub async fn capture_loop(
             anomalies.push("null_scan: no TCP flags set".to_string());
         }
 
-        // Extract payload preview (for pattern matching by Go modules)
-        let payload_preview = match &parsed.transport {
+        // Extract payload and preview
+        let (payload_len, payload_preview) = match &parsed.transport {
             Some(TransportSlice::Tcp(tcp)) => {
                 let payload = tcp.payload();
-                extract_text_preview(payload)
+                (payload.len(), extract_text_preview(payload))
             }
             Some(TransportSlice::Udp(udp)) => {
                 let payload = udp.payload();
-                extract_text_preview(payload)
+                (payload.len(), extract_text_preview(payload))
             }
-            _ => String::new(),
+            _ => (0, String::new()),
         };
+
+        // SSH protocol exhaustion tracking (port 22)
+        let ssh_anomalies = ssh_tracker.track(&src_ip, &dst_ip, dst_port, payload_len);
+        anomalies.extend(ssh_anomalies);
+
+        // Deep-buffer binary signature scan for large payloads (>2KB)
+        if payload_len > MAX_PAYLOAD_PREVIEW {
+            if let Some(TransportSlice::Tcp(tcp)) = &parsed.transport {
+                let payload = tcp.payload();
+                let binary_anomalies = scan_deep_binary_signatures(payload);
+                anomalies.extend(binary_anomalies);
+            }
+        }
 
         // Only publish events that have anomalies, interesting flags, or text payloads
         let should_publish = !anomalies.is_empty()
@@ -252,6 +337,51 @@ pub async fn capture_loop(
             published_events += 1;
         }
     }
+}
+
+/// Deep-buffer binary signature scanner for embedded executables in large payloads.
+/// Scans the entire payload (not just the 2KB preview) for ELF, PE, and 7zXZ headers.
+/// Ref: weekly intel 2026-05-29 — deep-file memory corruption RCE detection.
+fn scan_deep_binary_signatures(data: &[u8]) -> Vec<String> {
+    let mut anomalies = Vec::new();
+    const CHUNK_SIZE: usize = 16_384;
+    const OVERLAP: usize = 16;
+
+    if data.len() <= CHUNK_SIZE {
+        if data.windows(4).any(|w| w == b"\x7FELF") {
+            anomalies.push("embedded_elf: ELF header found in payload".to_string());
+        }
+        if data.windows(2).any(|w| w == b"MZ") {
+            anomalies.push("embedded_mz_pe: PE header found in payload".to_string());
+        }
+        if data.windows(6).any(|w| w == b"\xFD7zXZ\x00") {
+            anomalies.push("embedded_7xz: 7zXZ header found in payload".to_string());
+        }
+        return anomalies;
+    }
+
+    let mut start = 0;
+    while start < data.len() {
+        let end = (start + CHUNK_SIZE).min(data.len());
+        let chunk = &data[start..end];
+
+        if chunk.windows(4).any(|w| w == b"\x7FELF") {
+            anomalies.push(format!("embedded_elf: ELF header found at offset {}", start));
+        }
+        if chunk.windows(2).any(|w| w == b"MZ") {
+            anomalies.push(format!("embedded_mz_pe: PE header found at offset {}", start));
+        }
+        if chunk.windows(6).any(|w| w == b"\xFD7zXZ\x00") {
+            anomalies.push(format!("embedded_7xz: 7zXZ header found at offset {}", start));
+        }
+
+        if end == data.len() {
+            break;
+        }
+        start = end.saturating_sub(OVERLAP);
+    }
+
+    anomalies
 }
 
 /// Validate file magic bytes against declared extension to detect polyglot files.

@@ -1067,7 +1067,7 @@ func analyzePDFStream(pdfData []byte, streamOffset int, streamData []byte) []Mul
 }
 
 func isPDFFlateDecodeStream(pdfData []byte, streamOffset int) bool {
-	start := streamOffset - 512
+	start := streamOffset - 2048
 	if start < 0 {
 		start = 0
 	}
