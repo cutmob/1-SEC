@@ -33,6 +33,9 @@ func (m *Monitor) Name() string { return ModuleName }
 func (m *Monitor) EventTypes() []string {
 	return []string{
 		"user_created", "identity_created", "account_created",
+		"user_updated", "account_updated", "profile_updated",
+		"email_changed", "account_email_changed",
+		"password_changed", "password_reset", "account_recovery",
 		"role_change", "privilege_change", "permission_grant",
 		"service_account_activity", "api_key_usage",
 		"identity_verification", "kyc_check",
@@ -71,6 +74,10 @@ func (m *Monitor) HandleEvent(event *core.SecurityEvent) error {
 	switch event.Type {
 	case "user_created", "identity_created", "account_created":
 		m.handleIdentityCreation(event)
+	case "user_updated", "account_updated", "profile_updated",
+		"email_changed", "account_email_changed",
+		"password_changed", "password_reset", "account_recovery":
+		m.handleAccountMutation(event)
 	case "privilege_change", "role_change", "permission_grant":
 		m.handlePrivilegeChange(event)
 	case "service_account_activity", "api_key_usage":
@@ -79,6 +86,35 @@ func (m *Monitor) HandleEvent(event *core.SecurityEvent) error {
 		m.handleVerification(event)
 	}
 	return nil
+}
+
+func (m *Monitor) handleAccountMutation(event *core.SecurityEvent) {
+	userID := getStringDetail(event, "user_id")
+	if userID == "" {
+		userID = getStringDetail(event, "account_id")
+	}
+
+	mutation := classifyAccountMutation(event)
+	if mutation == "" {
+		return
+	}
+
+	newEmail := getStringDetail(event, "new_email")
+	if newEmail == "" {
+		newEmail = getStringDetail(event, "email")
+	}
+
+	severity := core.SeverityHigh
+	if event.Type == "account_recovery" || event.Type == "password_reset" || isDisposableDomain(newEmail) {
+		severity = core.SeverityCritical
+	}
+
+	m.raiseAlert(event, severity,
+		"Sensitive Identity Mutation Detected",
+		fmt.Sprintf("Sensitive account mutation %q detected for user %s from %s. "+
+			"Email/password recovery changes are high-risk when preceded by AI support-bot prompt anomalies.",
+			mutation, userID, event.SourceIP),
+		"account_mutation")
 }
 
 func (m *Monitor) handleIdentityCreation(event *core.SecurityEvent) {
@@ -199,12 +235,30 @@ func (m *Monitor) raiseAlert(event *core.SecurityEvent, severity core.Severity, 
 	newEvent := core.NewSecurityEvent(ModuleName, alertType, severity, description)
 	newEvent.SourceIP = event.SourceIP
 	newEvent.Details["original_event_id"] = event.ID
+	for _, key := range []string{
+		"user_id", "account_id", "session_id", "mutation_type",
+		"email", "old_email", "new_email", "actor", "initiated_by",
+	} {
+		if val := getStringDetail(event, key); val != "" {
+			newEvent.Details[key] = val
+		}
+	}
+	if alertType == "account_mutation" {
+		if mutation := classifyAccountMutation(event); mutation != "" {
+			newEvent.Details["mutation_type"] = mutation
+		}
+	}
 
 	if m.bus != nil {
 		_ = m.bus.PublishEvent(newEvent)
 	}
 
 	alert := core.NewAlert(newEvent, title, description)
+	for _, key := range []string{"user_id", "account_id", "session_id", "mutation_type"} {
+		if val, ok := newEvent.Details[key].(string); ok && val != "" {
+			alert.Metadata[key] = val
+		}
+	}
 	alert.Mitigations = getIdentityMitigations(alertType)
 	if m.pipeline != nil {
 		m.pipeline.Process(alert)
@@ -519,6 +573,46 @@ func looksGenerated(name string) bool {
 	return false
 }
 
+func classifyAccountMutation(event *core.SecurityEvent) string {
+	switch event.Type {
+	case "email_changed", "account_email_changed":
+		return "email_change"
+	case "password_changed", "password_reset":
+		return "password_change"
+	case "account_recovery":
+		return "account_recovery"
+	}
+
+	mutation := strings.ToLower(getStringDetail(event, "mutation_type"))
+	if mutation == "" {
+		mutation = strings.ToLower(getStringDetail(event, "action"))
+	}
+	if mutation != "" {
+		switch {
+		case strings.Contains(mutation, "email"):
+			return "email_change"
+		case strings.Contains(mutation, "password") || strings.Contains(mutation, "credential"):
+			return "password_change"
+		case strings.Contains(mutation, "recover"):
+			return "account_recovery"
+		}
+	}
+
+	changed := strings.ToLower(strings.Join([]string{
+		getStringDetail(event, "changed_fields"),
+		getStringDetail(event, "fields"),
+		getStringDetail(event, "new_email"),
+		getStringDetail(event, "email"),
+	}, " "))
+	switch {
+	case strings.Contains(changed, "email"):
+		return "email_change"
+	case strings.Contains(changed, "password") || strings.Contains(changed, "credential"):
+		return "password_change"
+	}
+	return ""
+}
+
 func getStringDetail(event *core.SecurityEvent, key string) string {
 	if event.Details == nil {
 		return ""
@@ -591,6 +685,13 @@ func getIdentityMitigations(alertType string) []string {
 			"Lock the account pending manual identity verification",
 			"Investigate for stolen or synthetic identity indicators",
 			"Require step-up authentication before allowing access",
+		}
+	case "account_mutation":
+		return []string{
+			"Require step-up authentication for email, password, and recovery changes",
+			"Temporarily lock the account when mutation follows support-bot or LLM anomalies",
+			"Notify the previous email address before finalizing identity changes",
+			"Review actor, session, and source IP telemetry for account takeover indicators",
 		}
 	default:
 		return []string{

@@ -409,6 +409,9 @@ var pageMethodPattern = regexp.MustCompile(`(?i)/[^/]+\.aspx/([a-zA-Z0-9_]+)`)
 
 var (
 	mcpProvisioningPathPattern = regexp.MustCompile(`(?i)(?:^|/)(?:mcp|model-context-protocol)(?:/|[-_])(?:servers?|registry|register|provision)(?:/|$)`)
+	mcpServersConfigPattern    = regexp.MustCompile(`(?is)"mcpServers"\s*:\s*\{.*?"command"\s*:\s*"[^"]+".*?"args"\s*:\s*\[`)
+	mcpServerCommandPattern    = regexp.MustCompile(`(?is)"command"\s*:\s*"([^"]+)".{0,512}?"args"\s*:\s*\[([^\]]*)\]`)
+	mcpDangerousCommandPattern = regexp.MustCompile(`(?is)(?:^|[^\w])(?:bash|sh|zsh|dash|powershell|pwsh|cmd\.exe|curl|wget|nc|netcat|socat|python(?:3)?\s+-c|node\s+-e|perl\s+-e|ruby\s+-e|base64|eval)(?:[^\w]|$)|[;&|]{1,2}`)
 	httpURLPattern             = regexp.MustCompile(`https?://[^\s"'<>]+`)
 	authorizationBearerPattern = regexp.MustCompile(`(?i)authorization\s*:\s*bearer\s+([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)|bearer\s+([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)`)
 )
@@ -477,7 +480,9 @@ func (f *Fortress) checkPageMethodBypass(event *core.SecurityEvent, path, userRo
 }
 
 func (f *Fortress) checkMCPServerProvisioning(event *core.SecurityEvent, path, method, userRole, body, headers string) {
-	if !mcpProvisioningPathPattern.MatchString(path) {
+	hasProvisioningPath := mcpProvisioningPathPattern.MatchString(path)
+	hasDynamicConfig := mcpServersConfigPattern.MatchString(body)
+	if !hasProvisioningPath && !hasDynamicConfig {
 		return
 	}
 	if method != "POST" && method != "PUT" && method != "PATCH" {
@@ -490,12 +495,32 @@ func (f *Fortress) checkMCPServerProvisioning(event *core.SecurityEvent, path, m
 	}
 
 	if !isPrivilegedMCPRole(role) {
-		f.raiseAlert(event, core.SeverityCritical,
-			"Unauthorized MCP Server Registration Attempt",
-			fmt.Sprintf("Request %s %s attempted MCP server provisioning without an admin-equivalent role. "+
-				"Resolved role: %q. Dynamic MCP server registration must be limited to trusted operators.",
-				method, path, role),
-			"mcp_server_registration_unauthorized")
+		if hasDynamicConfig {
+			f.raiseAlert(event, core.SeverityCritical,
+				"Dynamic MCP Server Injection Attempt",
+				fmt.Sprintf("Request %s %s attempted to submit an mcpServers configuration without an admin-equivalent role. "+
+					"Resolved role: %q. Dynamic MCP server registration must be limited to trusted operators.",
+					method, path, role),
+				"mcp_server_dynamic_injection")
+		} else {
+			f.raiseAlert(event, core.SeverityCritical,
+				"Unauthorized MCP Server Registration Attempt",
+				fmt.Sprintf("Request %s %s attempted MCP server provisioning without an admin-equivalent role. "+
+					"Resolved role: %q. Dynamic MCP server registration must be limited to trusted operators.",
+					method, path, role),
+				"mcp_server_registration_unauthorized")
+		}
+	}
+
+	for _, command := range extractMCPServerCommands(body) {
+		if mcpDangerousCommandPattern.MatchString(command) {
+			f.raiseAlert(event, core.SeverityCritical,
+				"Dangerous MCP Server Command Registration",
+				fmt.Sprintf("Request %s %s attempted to register an MCP server command with shell or downloader primitives: %s",
+					method, path, truncateStr(command, 200)),
+				"mcp_server_dynamic_injection")
+			break
+		}
 	}
 
 	for _, serverURL := range extractMCPServerURLs(event, body) {
@@ -585,7 +610,7 @@ func getAPIMitigations(alertType string) []string {
 			"Implement automated API discovery and compare against documentation",
 			"Remove or restrict access to debug, test, and legacy endpoints",
 		}
-	case "mcp_server_registration_unauthorized":
+	case "mcp_server_registration_unauthorized", "mcp_server_dynamic_injection":
 		return []string{
 			"Require admin-equivalent roles for all MCP server registration or update endpoints",
 			"Bind MCP server provisioning to authenticated control-plane workflows instead of general API sessions",
@@ -2483,6 +2508,21 @@ func extractMCPServerURLs(event *core.SecurityEvent, body string) []string {
 		}
 	}
 	return urls
+}
+
+func extractMCPServerCommands(body string) []string {
+	if strings.TrimSpace(body) == "" {
+		return nil
+	}
+	matches := mcpServerCommandPattern.FindAllStringSubmatch(body, -1)
+	commands := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if len(match) < 3 {
+			continue
+		}
+		commands = append(commands, strings.TrimSpace(match[1]+" "+match[2]))
+	}
+	return commands
 }
 
 func isAllowedMCPServerURL(raw string) bool {

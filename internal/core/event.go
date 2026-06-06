@@ -146,6 +146,14 @@ func CanonicalEventSchemas() []EventSchema {
 
 		// ── Identity ────────────────────────────────────────────────────
 		{Type: "user_created", Category: "identity", RequiredKeys: []string{"user_id"}, OptionalKeys: []string{"email", "name", "source", "created_by"}, Description: "New user/identity created"},
+		{Type: "user_updated", Category: "identity", RequiredKeys: []string{"user_id"}, OptionalKeys: []string{"changed_fields", "mutation_type", "session_id", "actor", "new_email", "old_email"}, Description: "User identity/profile updated"},
+		{Type: "account_updated", Category: "identity", RequiredKeys: []string{"user_id"}, OptionalKeys: []string{"changed_fields", "mutation_type", "session_id", "actor", "new_email", "old_email"}, Description: "Alias for user identity/profile update"},
+		{Type: "profile_updated", Category: "identity", RequiredKeys: []string{"user_id"}, OptionalKeys: []string{"changed_fields", "mutation_type", "session_id", "actor", "new_email", "old_email"}, Description: "Alias for user identity/profile update"},
+		{Type: "email_changed", Category: "identity", RequiredKeys: []string{"user_id"}, OptionalKeys: []string{"old_email", "new_email", "session_id", "actor", "initiated_by"}, Description: "User account email changed"},
+		{Type: "account_email_changed", Category: "identity", RequiredKeys: []string{"user_id"}, OptionalKeys: []string{"old_email", "new_email", "session_id", "actor", "initiated_by"}, Description: "Alias for user account email change"},
+		{Type: "password_changed", Category: "identity", RequiredKeys: []string{"user_id"}, OptionalKeys: []string{"session_id", "actor", "initiated_by"}, Description: "User account password changed"},
+		{Type: "password_reset", Category: "identity", RequiredKeys: []string{"user_id"}, OptionalKeys: []string{"session_id", "actor", "initiated_by", "recovery_channel"}, Description: "Password reset or recovery flow completed"},
+		{Type: "account_recovery", Category: "identity", RequiredKeys: []string{"user_id"}, OptionalKeys: []string{"session_id", "actor", "initiated_by", "recovery_channel", "new_email"}, Description: "Account recovery or ownership transfer event"},
 		{Type: "role_change", Category: "identity", RequiredKeys: []string{"new_role"}, OptionalKeys: []string{"old_role", "granted_by", "permission"}, Description: "Role or privilege change"},
 		{Type: "service_account_activity", Category: "identity", RequiredKeys: []string{"account_id", "action"}, OptionalKeys: []string{"resource"}, Description: "Service account action"},
 		{Type: "identity_verification", Category: "identity", RequiredKeys: []string{"user_id"}, OptionalKeys: []string{"method", "result"}, Description: "Identity verification event"},
@@ -171,7 +179,7 @@ func CanonicalEventSchemas() []EventSchema {
 
 		// ── Process & Runtime ───────────────────────────────────────────
 		{Type: "process_start", Category: "runtime", RequiredKeys: []string{"process_name"}, OptionalKeys: []string{"command_line", "parent_process", "pid", "user"}, Description: "Process started"},
-		{Type: "process_exec", Category: "runtime", RequiredKeys: []string{"process_name"}, OptionalKeys: []string{"command_line", "parent_process"}, Description: "Process execution"},
+		{Type: "process_exec", Category: "runtime", RequiredKeys: []string{"process_name"}, OptionalKeys: []string{"command_line", "parent_process", "path", "executable_path", "hash", "expected_hash", "validated_hash", "executed_hash", "validated_path", "executed_path"}, Description: "Process execution"},
 		{Type: "file_change", Category: "runtime", RequiredKeys: []string{"path"}, OptionalKeys: []string{"action", "hash", "old_hash"}, Description: "File modification detected"},
 		{Type: "file_modified", Category: "runtime", RequiredKeys: []string{"path"}, OptionalKeys: []string{"process_name", "entropy"}, Description: "File modified (with optional entropy for ransomware)"},
 		{Type: "file_created", Category: "runtime", RequiredKeys: []string{"path"}, OptionalKeys: []string{"process_name"}, Description: "File created"},

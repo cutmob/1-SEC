@@ -494,5 +494,37 @@ func TestMonitor_HandleEvent_VerificationFailed(t *testing.T) {
 	}
 }
 
+func TestMonitor_HandleEvent_AccountMutation(t *testing.T) {
+	cp := newCapPipeline()
+	m := startedMonitor(t, cp.pipeline)
+
+	ev := core.NewSecurityEvent("test", "email_changed", core.SeverityInfo, "email changed")
+	ev.Details["user_id"] = "user-ato"
+	ev.Details["session_id"] = "sess-ato"
+	ev.Details["old_email"] = "victim@example.com"
+	ev.Details["new_email"] = "attacker@mailinator.com"
+	ev.SourceIP = "10.0.0.9"
+
+	if err := m.HandleEvent(ev); err != nil {
+		t.Fatalf("HandleEvent() error: %v", err)
+	}
+
+	if !cp.hasAlertType("account_mutation") {
+		t.Fatal("expected account_mutation alert type")
+	}
+	foundMetadata := false
+	for _, alert := range cp.alerts {
+		if alert.Type == "account_mutation" &&
+			alert.Metadata["user_id"] == "user-ato" &&
+			alert.Metadata["session_id"] == "sess-ato" &&
+			alert.Metadata["mutation_type"] == "email_change" {
+			foundMetadata = true
+		}
+	}
+	if !foundMetadata {
+		t.Fatalf("expected account_mutation alert metadata to include user/session/mutation, got %#v", cp.alerts)
+	}
+}
+
 // Suppress unused import warnings
 var _ = time.Second

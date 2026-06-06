@@ -240,6 +240,78 @@ func TestThreatCorrelator_InjectionPlusRuntime_Chain(t *testing.T) {
 	}
 }
 
+func TestThreatCorrelator_LLMJailbreakToAccountMutation_SamePrincipal(t *testing.T) {
+	logger := testLogger()
+	pipeline := NewAlertPipeline(logger, 1000)
+	tc := NewThreatCorrelator(logger, pipeline, nil)
+
+	now := time.Now()
+	tc.Ingest(&Alert{
+		ID:        "llm1",
+		Timestamp: now,
+		Module:    "llm_firewall",
+		Type:      "llm_threat_detected",
+		Severity:  SeverityCritical,
+		Metadata:  map[string]interface{}{"source_ip": "10.0.0.77", "user_id": "user-ato", "session_id": "sess-1"},
+		EventIDs:  []string{"e1"},
+	})
+	tc.Ingest(&Alert{
+		ID:        "id1",
+		Timestamp: now.Add(3 * time.Minute),
+		Module:    "identity_monitor",
+		Type:      "account_mutation",
+		Severity:  SeverityHigh,
+		Metadata:  map[string]interface{}{"source_ip": "10.0.0.77", "user_id": "user-ato", "session_id": "sess-1"},
+		EventIDs:  []string{"e2"},
+	})
+
+	found := false
+	for _, a := range pipeline.GetAlerts(SeverityCritical, 100) {
+		if a.Module == "threat_correlator" && a.Metadata["chain_name"] == "AI Support Bot Jailbreak to Account Takeover Mutation" {
+			found = true
+			actions, _ := a.Metadata["recommended_actions"].([]string)
+			if len(actions) != 2 {
+				t.Fatalf("expected disable_user/block_ip recommended actions, got %#v", a.Metadata["recommended_actions"])
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected AI support bot jailbreak to account mutation correlation")
+	}
+}
+
+func TestThreatCorrelator_LLMJailbreakToAccountMutation_DifferentPrincipalIgnored(t *testing.T) {
+	logger := testLogger()
+	pipeline := NewAlertPipeline(logger, 1000)
+	tc := NewThreatCorrelator(logger, pipeline, nil)
+
+	now := time.Now()
+	tc.Ingest(&Alert{
+		ID:        "llm1",
+		Timestamp: now,
+		Module:    "llm_firewall",
+		Type:      "llm_threat_detected",
+		Severity:  SeverityCritical,
+		Metadata:  map[string]interface{}{"source_ip": "10.0.0.88", "user_id": "user-a"},
+		EventIDs:  []string{"e1"},
+	})
+	tc.Ingest(&Alert{
+		ID:        "id1",
+		Timestamp: now.Add(time.Minute),
+		Module:    "identity_monitor",
+		Type:      "account_mutation",
+		Severity:  SeverityHigh,
+		Metadata:  map[string]interface{}{"source_ip": "10.0.0.88", "user_id": "user-b"},
+		EventIDs:  []string{"e2"},
+	})
+
+	for _, a := range pipeline.GetAlerts(SeverityCritical, 100) {
+		if a.Module == "threat_correlator" && a.Metadata["chain_name"] == "AI Support Bot Jailbreak to Account Takeover Mutation" {
+			t.Fatal("should not correlate account mutation across different user principals")
+		}
+	}
+}
+
 func TestNewAlert_CarriesSourceIP(t *testing.T) {
 	event := NewSecurityEvent("test_module", "test_type", SeverityHigh, "test")
 	event.SourceIP = "10.0.0.42"

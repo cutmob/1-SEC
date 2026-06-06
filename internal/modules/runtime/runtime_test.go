@@ -769,6 +769,60 @@ func TestWatcher_HandleEvent_ContainerEscape_AllIndicators(t *testing.T) {
 
 // ─── Helper functions ─────────────────────────────────────────────────────────
 
+func TestWatcher_HandleEvent_ExecutionIntegrityMismatch(t *testing.T) {
+	cp := makeCapturingPipeline()
+	w := startedModuleWithPipeline(t, cp)
+	defer w.Stop()
+
+	ev := core.NewSecurityEvent("test", "process_exec", core.SeverityInfo, "exec")
+	ev.Details["process_name"] = "agent-tool"
+	ev.Details["executable_path"] = "/tmp/agent-tool"
+	ev.Details["expected_hash"] = "aaaaaaaaaaaaaaaa"
+	ev.Details["executed_hash"] = "bbbbbbbbbbbbbbbb"
+	ev.Details["command_line"] = "/tmp/agent-tool --run"
+
+	w.HandleEvent(ev)
+
+	if !cp.hasAlertType("exec_integrity_mismatch") {
+		t.Fatalf("expected exec_integrity_mismatch alert, got titles: %v", cp.alertTitles())
+	}
+}
+
+func TestWatcher_HandleEvent_ExecutionPathSwap(t *testing.T) {
+	cp := makeCapturingPipeline()
+	w := startedModuleWithPipeline(t, cp)
+	defer w.Stop()
+
+	ev := core.NewSecurityEvent("test", "process_exec", core.SeverityInfo, "exec")
+	ev.Details["process_name"] = "agent-tool"
+	ev.Details["validated_path"] = "/opt/agents/bin/tool"
+	ev.Details["executed_path"] = "/tmp/tool"
+	ev.Details["command_line"] = "/tmp/tool"
+
+	w.HandleEvent(ev)
+
+	if !cp.hasAlertType("exec_path_swap") {
+		t.Fatalf("expected exec_path_swap alert, got titles: %v", cp.alertTitles())
+	}
+}
+
+func TestWatcher_HandleEvent_TransientExecPath(t *testing.T) {
+	cp := makeCapturingPipeline()
+	w := startedModuleWithPipeline(t, cp)
+	defer w.Stop()
+
+	ev := core.NewSecurityEvent("test", "process_exec", core.SeverityInfo, "exec")
+	ev.Details["process_name"] = "loader"
+	ev.Details["executed_path"] = "memfd:agent-loader (deleted)"
+	ev.Details["command_line"] = "/proc/self/fd/9"
+
+	w.HandleEvent(ev)
+
+	if !cp.hasAlertType("exec_transient_path") {
+		t.Fatalf("expected exec_transient_path alert, got titles: %v", cp.alertTitles())
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	if truncate("hello", 10) != "hello" {
 		t.Error("short string should not be truncated")

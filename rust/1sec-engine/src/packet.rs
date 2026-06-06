@@ -4,13 +4,21 @@
 //! detects anomalies, and publishes structured events to the NATS bus for the Go
 //! modules to consume.
 
+#[cfg(feature = "pcap-capture")]
 use crate::config::CaptureConfig;
+#[cfg(feature = "pcap-capture")]
 use crate::events::PacketEvent;
+#[cfg(feature = "pcap-capture")]
 use crate::nats_bridge::EventPublisher;
+#[cfg(feature = "pcap-capture")]
 use anyhow::{Context, Result};
+#[cfg(feature = "pcap-capture")]
 use etherparse::{NetSlice, SlicedPacket, TransportSlice};
+#[cfg(feature = "pcap-capture")]
 use pcap::Capture;
+#[cfg(feature = "pcap-capture")]
 use tracing::{debug, info, warn};
+#[cfg(feature = "pcap-capture")]
 use uuid::Uuid;
 
 /// Anomaly detection thresholds
@@ -71,18 +79,15 @@ impl SourceTracker {
 
 /// Per-flow SSH tracking for resource exhaustion detection.
 struct SSHTracker {
-    /// Per-flow: (src_ip, dst_ip, dst_port) -> accumulated payload size
-    flow_payloads: std::collections::HashMap<String, usize>,
-    /// Per-flow: packet timestamps for rate tracking
-    flow_packets: std::collections::HashMap<String, Vec<std::time::Instant>>,
+    /// Per-flow: visible channel-open timestamps for rate tracking
+    flow_channel_opens: std::collections::HashMap<String, Vec<std::time::Instant>>,
     last_reset: std::time::Instant,
 }
 
 impl SSHTracker {
     fn new() -> Self {
         Self {
-            flow_payloads: std::collections::HashMap::new(),
-            flow_packets: std::collections::HashMap::new(),
+            flow_channel_opens: std::collections::HashMap::new(),
             last_reset: std::time::Instant::now(),
         }
     }
@@ -91,13 +96,12 @@ impl SSHTracker {
         format!("{}:{}:{}", src_ip, dst_ip, dst_port)
     }
 
-    fn track(&mut self, src_ip: &str, dst_ip: &str, dst_port: u16, payload_len: usize) -> Vec<String> {
+    fn track(&mut self, src_ip: &str, dst_ip: &str, dst_port: u16, payload: &[u8]) -> Vec<String> {
         let mut anomalies = Vec::new();
 
         // Reset periodically
         if self.last_reset.elapsed().as_secs() > STATS_INTERVAL_SECS {
-            self.flow_payloads.clear();
-            self.flow_packets.clear();
+            self.flow_channel_opens.clear();
             self.last_reset = std::time::Instant::now();
         }
 
@@ -107,29 +111,29 @@ impl SSHTracker {
 
         let key = Self::flow_key(src_ip, dst_ip, dst_port);
 
-        // Accumulate payload size
-        let total_payload = self.flow_payloads.entry(key.clone()).or_insert(0);
-        *total_payload += payload_len;
-        if *total_payload > SSH_MAX_PAYLOAD_SIZE {
+        if payload.len() > SSH_MAX_PAYLOAD_SIZE {
             anomalies.push(format!(
-                "ssh_oversized_frame: flow {} exceeded {} bytes (total: {})",
-                key, SSH_MAX_PAYLOAD_SIZE, *total_payload
+                "ssh_oversized_frame: flow {} sent {} byte payload (threshold: {})",
+                key,
+                payload.len(),
+                SSH_MAX_PAYLOAD_SIZE
             ));
         }
 
-        // Track packet rate for channel-open exhaustion heuristics
+        if !is_ssh_channel_open_payload(payload) {
+            return anomalies;
+        }
+
         let now = std::time::Instant::now();
-        let timestamps = self.flow_packets.entry(key.clone()).or_default();
+        let timestamps = self.flow_channel_opens.entry(key.clone()).or_default();
         timestamps.push(now);
-        // Remove packets outside the 1-second window
         let window_start = now - std::time::Duration::from_secs(SSH_TRACKER_WINDOW_SECS);
         timestamps.retain(|t| *t >= window_start);
         if timestamps.len() > SSH_MAX_CHANNEL_OPENS_PER_SEC {
             anomalies.push(format!(
-                "ssh_channel_exhaustion: flow {} sent {} packets in {}s (threshold: {})",
+                "ssh_channel_exhaustion: flow {} sent {} visible channel-open requests in {}s (threshold: {})",
                 key, timestamps.len(), SSH_TRACKER_WINDOW_SECS, SSH_MAX_CHANNEL_OPENS_PER_SEC
             ));
-            // Clear to avoid spam
             timestamps.clear();
         }
 
@@ -137,7 +141,28 @@ impl SSHTracker {
     }
 }
 
+fn is_ssh_channel_open_payload(payload: &[u8]) -> bool {
+    const SSH_MSG_CHANNEL_OPEN: u8 = 90;
+
+    if payload.is_empty() {
+        return false;
+    }
+
+    // Some tests/adapters pass decoded SSH messages where the first byte is
+    // the message number. On the wire, SSH binary packets place it after the
+    // 4-byte packet_length and 1-byte padding_length fields.
+    if payload[0] == SSH_MSG_CHANNEL_OPEN {
+        return true;
+    }
+    if payload.len() > 5 && payload[5] == SSH_MSG_CHANNEL_OPEN {
+        return true;
+    }
+
+    false
+}
+
 /// Main packet capture loop. Runs until an error occurs or the process is killed.
+#[cfg(feature = "pcap-capture")]
 pub async fn capture_loop(
     interface: &str,
     publisher: EventPublisher,
@@ -296,7 +321,12 @@ pub async fn capture_loop(
         };
 
         // SSH protocol exhaustion tracking (port 22)
-        let ssh_anomalies = ssh_tracker.track(&src_ip, &dst_ip, dst_port, payload_len);
+        let ssh_anomalies = match &parsed.transport {
+            Some(TransportSlice::Tcp(tcp)) => {
+                ssh_tracker.track(&src_ip, &dst_ip, dst_port, tcp.payload())
+            }
+            _ => Vec::new(),
+        };
         anomalies.extend(ssh_anomalies);
 
         // Deep-buffer binary signature scan for large payloads (>2KB)
@@ -348,14 +378,23 @@ fn scan_deep_binary_signatures(data: &[u8]) -> Vec<String> {
     const OVERLAP: usize = 16;
 
     if data.len() <= CHUNK_SIZE {
-        if data.windows(4).any(|w| w == b"\x7FELF") {
-            anomalies.push("embedded_elf: ELF header found in payload".to_string());
+        if let Some(offset) = find_signature_offset(data, b"\x7FELF") {
+            anomalies.push(format!(
+                "embedded_elf: ELF header found at offset {}",
+                offset
+            ));
         }
-        if data.windows(2).any(|w| w == b"MZ") {
-            anomalies.push("embedded_mz_pe: PE header found in payload".to_string());
+        if let Some(offset) = find_signature_offset(data, b"MZ") {
+            anomalies.push(format!(
+                "embedded_mz_pe: PE header found at offset {}",
+                offset
+            ));
         }
-        if data.windows(6).any(|w| w == b"\xFD7zXZ\x00") {
-            anomalies.push("embedded_7xz: 7zXZ header found in payload".to_string());
+        if let Some(offset) = find_signature_offset(data, b"\xFD7zXZ\x00") {
+            anomalies.push(format!(
+                "embedded_7xz: 7zXZ header found at offset {}",
+                offset
+            ));
         }
         return anomalies;
     }
@@ -365,14 +404,23 @@ fn scan_deep_binary_signatures(data: &[u8]) -> Vec<String> {
         let end = (start + CHUNK_SIZE).min(data.len());
         let chunk = &data[start..end];
 
-        if chunk.windows(4).any(|w| w == b"\x7FELF") {
-            anomalies.push(format!("embedded_elf: ELF header found at offset {}", start));
+        if let Some(offset) = find_signature_offset(chunk, b"\x7FELF") {
+            anomalies.push(format!(
+                "embedded_elf: ELF header found at offset {}",
+                start + offset
+            ));
         }
-        if chunk.windows(2).any(|w| w == b"MZ") {
-            anomalies.push(format!("embedded_mz_pe: PE header found at offset {}", start));
+        if let Some(offset) = find_signature_offset(chunk, b"MZ") {
+            anomalies.push(format!(
+                "embedded_mz_pe: PE header found at offset {}",
+                start + offset
+            ));
         }
-        if chunk.windows(6).any(|w| w == b"\xFD7zXZ\x00") {
-            anomalies.push(format!("embedded_7xz: 7zXZ header found at offset {}", start));
+        if let Some(offset) = find_signature_offset(chunk, b"\xFD7zXZ\x00") {
+            anomalies.push(format!(
+                "embedded_7xz: 7zXZ header found at offset {}",
+                start + offset
+            ));
         }
 
         if end == data.len() {
@@ -382,6 +430,13 @@ fn scan_deep_binary_signatures(data: &[u8]) -> Vec<String> {
     }
 
     anomalies
+}
+
+fn find_signature_offset(data: &[u8], signature: &[u8]) -> Option<usize> {
+    if signature.is_empty() || data.len() < signature.len() {
+        return None;
+    }
+    data.windows(signature.len()).position(|w| w == signature)
 }
 
 /// Validate file magic bytes against declared extension to detect polyglot files.
@@ -740,6 +795,69 @@ mod packet_util_tests {
         assert!(
             validate_magic(data, "gif").is_none(),
             "Valid GIF89a should pass"
+        );
+    }
+
+    #[test]
+    fn test_ssh_tracker_detects_visible_channel_open_burst() {
+        let mut tracker = SSHTracker::new();
+        let payload = [0, 0, 0, 12, 4, 90, 0, 0, 0, 0, b's', b'e', b's', b's'];
+        let mut anomalies = Vec::new();
+
+        for _ in 0..=SSH_MAX_CHANNEL_OPENS_PER_SEC {
+            anomalies.extend(tracker.track("10.0.0.1", "10.0.0.2", 22, &payload));
+        }
+
+        assert!(
+            anomalies
+                .iter()
+                .any(|a| a.contains("ssh_channel_exhaustion")),
+            "expected visible channel-open burst detection, got {anomalies:?}"
+        );
+    }
+
+    #[test]
+    fn test_ssh_tracker_ignores_non_channel_burst() {
+        let mut tracker = SSHTracker::new();
+        let payload = b"encrypted-or-banner-data";
+        let mut anomalies = Vec::new();
+
+        for _ in 0..=SSH_MAX_CHANNEL_OPENS_PER_SEC {
+            anomalies.extend(tracker.track("10.0.0.1", "10.0.0.2", 22, payload));
+        }
+
+        assert!(
+            !anomalies
+                .iter()
+                .any(|a| a.contains("ssh_channel_exhaustion")),
+            "non-channel SSH payloads should not count as channel opens: {anomalies:?}"
+        );
+    }
+
+    #[test]
+    fn test_ssh_tracker_detects_oversized_payload() {
+        let mut tracker = SSHTracker::new();
+        let payload = vec![0u8; SSH_MAX_PAYLOAD_SIZE + 1];
+        let anomalies = tracker.track("10.0.0.1", "10.0.0.2", 22, &payload);
+
+        assert!(
+            anomalies.iter().any(|a| a.contains("ssh_oversized_frame")),
+            "expected oversized SSH payload detection, got {anomalies:?}"
+        );
+    }
+
+    #[test]
+    fn test_scan_deep_binary_signatures_exact_boundary_offset() {
+        let mut data = vec![b'A'; 16_384 - 1];
+        data.extend_from_slice(b"MZ");
+        data.extend_from_slice(&vec![b'B'; 64]);
+
+        let anomalies = scan_deep_binary_signatures(&data);
+        assert!(
+            anomalies
+                .iter()
+                .any(|a| a.contains("embedded_mz_pe") && a.contains("offset 16383")),
+            "expected exact MZ offset across chunk boundary, got {anomalies:?}"
         );
     }
 }

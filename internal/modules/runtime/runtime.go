@@ -152,6 +152,8 @@ func (w *Watcher) handleProcessEvent(event *core.SecurityEvent) {
 		return
 	}
 
+	w.checkExecutionIntegrity(event, processName, cmdLine)
+
 	cmdLower := strings.ToLower(cmdLine)
 
 	// LOLBin detection — Living Off the Land Binaries
@@ -256,6 +258,42 @@ func (w *Watcher) handleProcessEvent(event *core.SecurityEvent) {
 			"Reverse Shell Detected",
 			fmt.Sprintf("Possible reverse shell: %s", truncate(cmdLine, 200)),
 			"reverse_shell")
+	}
+}
+
+func (w *Watcher) checkExecutionIntegrity(event *core.SecurityEvent, processName, cmdLine string) {
+	executedPath := firstStringDetail(event, "executed_path", "executable_path", "path")
+	validatedPath := firstStringDetail(event, "validated_path", "checked_path")
+	executedHash := firstStringDetail(event, "executed_hash", "hash")
+	expectedHash := firstStringDetail(event, "expected_hash", "validated_hash")
+
+	if executedPath != "" && validatedPath != "" && !sameNormalizedPath(executedPath, validatedPath) {
+		w.raiseAlert(event, core.SeverityCritical,
+			"TOCTOU Execution Path Swap Detected",
+			fmt.Sprintf("Process %s executed %s after validation covered %s. "+
+				"This indicates a time-of-check/time-of-use swap in an agent workspace. Command: %s.",
+				processName, truncate(executedPath, 200), truncate(validatedPath, 200), truncate(cmdLine, 200)),
+			"exec_path_swap")
+	}
+
+	if executedHash != "" && expectedHash != "" && !strings.EqualFold(executedHash, expectedHash) {
+		w.raiseAlert(event, core.SeverityCritical,
+			"Execution-Time File Integrity Mismatch",
+			fmt.Sprintf("Process %s hash mismatch immediately before execution. Expected %s, got %s. "+
+				"This catches TOCTOU swaps where an allowed tool is replaced after validation.",
+				processName, truncate(expectedHash, 16), truncate(executedHash, 16)),
+			"exec_integrity_mismatch")
+	}
+
+	lowerPath := strings.ToLower(filepath.ToSlash(executedPath + " " + cmdLine))
+	if strings.Contains(lowerPath, "memfd:") || strings.Contains(lowerPath, "/proc/self/fd/") ||
+		strings.Contains(lowerPath, "/proc/") && strings.Contains(lowerPath, "/fd/") ||
+		strings.Contains(lowerPath, "(deleted)") || strings.Contains(lowerPath, "o_tmpfile") {
+		w.raiseAlert(event, core.SeverityHigh,
+			"Transient Fileless Execution Path Detected",
+			fmt.Sprintf("Process %s executed from a transient or anonymous file path: %s. Command: %s.",
+				processName, truncate(executedPath, 200), truncate(cmdLine, 200)),
+			"exec_transient_path")
 	}
 }
 
@@ -1186,6 +1224,24 @@ func getStringDetail(event *core.SecurityEvent, key string) string {
 	return ""
 }
 
+func firstStringDetail(event *core.SecurityEvent, keys ...string) string {
+	for _, key := range keys {
+		if val := getStringDetail(event, key); val != "" {
+			return val
+		}
+	}
+	return ""
+}
+
+func sameNormalizedPath(a, b string) bool {
+	normalize := func(path string) string {
+		path = strings.TrimSpace(strings.ToLower(filepath.ToSlash(path)))
+		path = strings.TrimSuffix(path, "/")
+		return path
+	}
+	return normalize(a) == normalize(b)
+}
+
 func getIntSetting(settings map[string]interface{}, key string, defaultVal int) int {
 	if val, ok := settings[key]; ok {
 		switch v := val.(type) {
@@ -1251,6 +1307,13 @@ func getRuntimeMitigations(alertType string) []string {
 			"Capture process ancestry and command-line telemetry around the file event",
 			"Review /dev/shm, /tmp, /var/tmp, and /run activity for short-lived loaders",
 			"Patch the affected privilege-escalation or sandbox-escape path",
+		}
+	case "exec_integrity_mismatch", "exec_path_swap", "exec_transient_path":
+		return []string{
+			"Kill or suspend the process until the executable path and hash are verified",
+			"Recompute the binary hash from disk and compare it to the allowlisted validation hash",
+			"Inspect symlink, hardlink, memfd, and /proc/fd activity around the execution timestamp",
+			"Require execution-time hash validation for agent-managed tools and workspace binaries",
 		}
 	case "lolbin_execution":
 		return []string{

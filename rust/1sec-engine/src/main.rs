@@ -12,7 +12,6 @@ mod events;
 mod matcher;
 mod nats_bridge;
 mod normalize;
-#[cfg(feature = "pcap-capture")]
 #[allow(dead_code)]
 mod packet;
 mod patterns;

@@ -46,11 +46,15 @@ type sourceAlertWindow struct {
 }
 
 type attackChain struct {
-	Name        string
-	Description string
-	Modules     []string // required modules (all must fire)
-	Severity    Severity
-	MitreIDs    []string
+	Name               string
+	Description        string
+	Modules            []string // required modules (all must fire)
+	Severity           Severity
+	MitreIDs           []string
+	MaxDuration        time.Duration
+	RequiredTypes      map[string][]string
+	RequirePrincipal   bool
+	RecommendedActions []string
 }
 
 // NewThreatCorrelator creates a correlator that watches the alert pipeline.
@@ -147,6 +151,23 @@ func (tc *ThreatCorrelator) buildChainDefinitions() []attackChain {
 			MitreIDs:    []string{"T1195", "TA0010"},
 		},
 		{
+			Name:        "AI Support Bot Jailbreak to Account Takeover Mutation",
+			Description: "Prompt anomaly in an AI support flow followed by a sensitive email, password, or recovery mutation for the same user/session. This matches modern support-bot jailbreak account takeover tradecraft.",
+			Modules:     []string{"llm_firewall", "identity_monitor"},
+			Severity:    SeverityCritical,
+			MitreIDs:    []string{"T1059", "T1098", "TA0006"},
+			MaxDuration: 5 * time.Minute,
+			RequiredTypes: map[string][]string{
+				"llm_firewall":     {"llm_threat_detected"},
+				"identity_monitor": {"account_mutation"},
+			},
+			RequirePrincipal: true,
+			RecommendedActions: []string{
+				"disable_user",
+				"block_ip",
+			},
+		},
+		{
 			Name:        "Multi-Vector Assault",
 			Description: "Three or more distinct security modules triggered by the same source. This indicates a sophisticated, multi-vector attack campaign.",
 			Modules:     []string{}, // special case: any 3+ modules
@@ -200,21 +221,118 @@ func (tc *ThreatCorrelator) checkChains(sourceIP string, window *sourceAlertWind
 			continue
 		}
 
-		// Check if all required modules in the chain have fired
 		if len(chain.Modules) == 0 {
 			continue
 		}
-		allPresent := true
-		for _, reqModule := range chain.Modules {
-			if window.modules[reqModule] == 0 {
-				allPresent = false
-				break
-			}
-		}
-		if allPresent {
+		if tc.chainMatches(window, chain) {
 			tc.fireCorrelatedAlert(sourceIP, window, chain)
 		}
 	}
+}
+
+func (tc *ThreatCorrelator) chainMatches(window *sourceAlertWindow, chain attackChain) bool {
+	var candidateSets [][]*Alert
+
+	for _, reqModule := range chain.Modules {
+		var moduleAlerts []*Alert
+		for _, alert := range window.alerts {
+			if alert.Module != reqModule {
+				continue
+			}
+			if !alertTypeAllowed(alert, chain.RequiredTypes[reqModule]) {
+				continue
+			}
+			moduleAlerts = append(moduleAlerts, alert)
+		}
+		if len(moduleAlerts) == 0 {
+			return false
+		}
+		candidateSets = append(candidateSets, moduleAlerts)
+	}
+
+	if chain.MaxDuration == 0 && !chain.RequirePrincipal {
+		return true
+	}
+
+	return candidateSelectionMatches(candidateSets, 0, nil, chain)
+}
+
+func candidateSelectionMatches(candidateSets [][]*Alert, idx int, selected []*Alert, chain attackChain) bool {
+	if idx == len(candidateSets) {
+		return selectedAlertsMeetConstraints(selected, chain)
+	}
+	for _, alert := range candidateSets[idx] {
+		next := append(selected, alert)
+		if candidateSelectionMatches(candidateSets, idx+1, next, chain) {
+			return true
+		}
+	}
+	return false
+}
+
+func selectedAlertsMeetConstraints(matched []*Alert, chain attackChain) bool {
+	if chain.MaxDuration > 0 && len(matched) > 1 {
+		first, last := matched[0].Timestamp, matched[0].Timestamp
+		for _, alert := range matched[1:] {
+			if alert.Timestamp.Before(first) {
+				first = alert.Timestamp
+			}
+			if alert.Timestamp.After(last) {
+				last = alert.Timestamp
+			}
+		}
+		if last.Sub(first) > chain.MaxDuration {
+			return false
+		}
+	}
+
+	if chain.RequirePrincipal && !alertsSharePrincipal(matched) {
+		return false
+	}
+
+	return true
+}
+
+func alertTypeAllowed(alert *Alert, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	for _, typ := range allowed {
+		if alert.Type == typ {
+			return true
+		}
+	}
+	return false
+}
+
+func alertsSharePrincipal(alerts []*Alert) bool {
+	if len(alerts) == 0 {
+		return false
+	}
+
+	common := alertPrincipals(alerts[0])
+	for _, alert := range alerts[1:] {
+		next := alertPrincipals(alert)
+		for principal := range common {
+			if !next[principal] {
+				delete(common, principal)
+			}
+		}
+		if len(common) == 0 {
+			return false
+		}
+	}
+	return len(common) > 0
+}
+
+func alertPrincipals(alert *Alert) map[string]bool {
+	principals := make(map[string]bool)
+	for _, key := range []string{"user_id", "account_id", "session_id"} {
+		if val, ok := alert.Metadata[key].(string); ok && strings.TrimSpace(val) != "" {
+			principals[key+":"+strings.TrimSpace(val)] = true
+		}
+	}
+	return principals
 }
 
 func (tc *ThreatCorrelator) fireCorrelatedAlert(sourceIP string, window *sourceAlertWindow, chain attackChain) {
@@ -252,6 +370,9 @@ func (tc *ThreatCorrelator) fireCorrelatedAlert(sourceIP string, window *sourceA
 	event.Details["mitre_ids"] = chain.MitreIDs
 	event.Details["window_duration"] = duration.String()
 	event.Details["constituent_event_ids"] = eventIDs
+	if len(chain.RecommendedActions) > 0 {
+		event.Details["recommended_actions"] = chain.RecommendedActions
+	}
 
 	if tc.bus != nil {
 		_ = tc.bus.PublishEvent(event)
@@ -271,6 +392,17 @@ func (tc *ThreatCorrelator) fireCorrelatedAlert(sourceIP string, window *sourceA
 	alert.Metadata["source_ip"] = sourceIP
 	alert.Metadata["chain_name"] = chain.Name
 	alert.Metadata["modules"] = modules
+	if len(chain.RecommendedActions) > 0 {
+		alert.Metadata["recommended_actions"] = chain.RecommendedActions
+		for _, action := range chain.RecommendedActions {
+			switch action {
+			case "disable_user":
+				alert.Mitigations = append(alert.Mitigations, "Disable or lock the affected user account until ownership is verified")
+			case "block_ip":
+				alert.Mitigations = append(alert.Mitigations, "Block source IP "+sourceIP+" while account takeover triage is active")
+			}
+		}
+	}
 
 	if tc.pipeline != nil {
 		tc.pipeline.Process(alert)

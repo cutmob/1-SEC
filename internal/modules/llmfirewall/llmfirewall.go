@@ -20,19 +20,19 @@ const ModuleName = "llm_firewall"
 // output filtering, jailbreak detection, token budget monitoring,
 // multi-turn attack tracking, encoding evasion detection, and tool-chain abuse detection.
 type Firewall struct {
-	logger       zerolog.Logger
-	bus          *core.EventBus
-	pipeline     *core.AlertPipeline
-	cfg          *core.Config
-	ctx          context.Context
-	cancel       context.CancelFunc
-	patterns     []DetectionPattern
-	outputRules  []OutputRule
-	tokenBudgets *lru.Cache[string, *TokenBudget]
-	multiTurn    *MultiTurnTracker
-	toolChainMon *ToolChainMonitor
+	logger        zerolog.Logger
+	bus           *core.EventBus
+	pipeline      *core.AlertPipeline
+	cfg           *core.Config
+	ctx           context.Context
+	cancel        context.CancelFunc
+	patterns      []DetectionPattern
+	outputRules   []OutputRule
+	tokenBudgets  *lru.Cache[string, *TokenBudget]
+	multiTurn     *MultiTurnTracker
+	toolChainMon  *ToolChainMonitor
 	sessionTaints *lru.Cache[string, map[string]bool]
-	mu           sync.RWMutex
+	mu            sync.RWMutex
 }
 
 // DetectionPattern represents a compiled prompt injection/jailbreak pattern.
@@ -151,6 +151,7 @@ func (f *Firewall) analyzeInput(event *core.SecurityEvent) {
 	}
 
 	systemPrompt := getStringDetail(event, "system_prompt")
+	userID := getStringDetail(event, "user_id")
 	sessionID := getStringDetail(event, "session_id")
 	if sessionID == "" {
 		sessionID = event.SourceIP
@@ -255,6 +256,9 @@ func (f *Firewall) analyzeInput(event *core.SecurityEvent) {
 	newEvent.Details["detection_count"] = len(detections)
 	newEvent.Details["has_system_prompt"] = systemPrompt != ""
 	newEvent.Details["session_id"] = sessionID
+	if userID != "" {
+		newEvent.Details["user_id"] = userID
+	}
 
 	if f.bus != nil {
 		_ = f.bus.PublishEvent(newEvent)
@@ -265,6 +269,12 @@ func (f *Firewall) analyzeInput(event *core.SecurityEvent) {
 		fmt.Sprintf("Detected %d threat pattern(s) in LLM input. Categories: %s. Severity: %s.",
 			len(detections), strings.Join(catList, ", "), maxSeverity.String()))
 	alert.Mitigations = getLLMInputMitigations(catList)
+	if sessionID != "" {
+		alert.Metadata["session_id"] = sessionID
+	}
+	if userID != "" {
+		alert.Metadata["user_id"] = userID
+	}
 
 	if f.pipeline != nil {
 		f.pipeline.Process(alert)

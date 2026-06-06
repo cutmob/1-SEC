@@ -930,7 +930,7 @@ fn binary_payload_patterns() -> Vec<PatternDef> {
             category: "binary_payload",
             severity: Severity::High,
             regex: r"\xFD7zXZ\x00",
-            literals: &["\xFD7zXZ"],
+            literals: &["7zXZ"],
         },
     ]
 }
