@@ -4,10 +4,12 @@
 # Run '1sec init' to generate a fresh config, or '1sec modules' to list all modules.
 
 server:
-  host: "0.0.0.0"
+  host: "127.0.0.1"
   port: 1780
+  allow_unauthenticated_read: false
   # API key authentication — set one or more keys to secure the REST API.
-  # If empty, the API runs in open mode (no auth required).
+  # If empty, read endpoints are open only on loopback binds. Non-loopback
+  # binds serve only /health unless allow_unauthenticated_read is true.
   # Can also be set via ONESEC_API_KEY environment variable.
   # api_keys:
   #   - "your-secret-api-key-here"

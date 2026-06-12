@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/1sec-project/1sec/internal/core"
 )
 
 func cmdInit(args []string) {
@@ -41,7 +43,7 @@ func cmdInit(args []string) {
 		content = fullConfig()
 	}
 
-	if err := os.WriteFile(*output, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(*output, []byte(content), core.ConfigFileMode); err != nil {
 		errorf("writing config: %v", err)
 	}
 
@@ -74,7 +76,7 @@ func minimalConfig() string {
 # See 'configs/default.yaml' for all options or run '1sec init' without --minimal.
 
 server:
-  host: "0.0.0.0"
+  host: "127.0.0.1"
   port: 1780
   # api_keys:
   #   - "your-secret-key-here"
@@ -97,10 +99,10 @@ func fullConfig() string {
 # Docs: https://github.com/1sec-project/1sec
 
 server:
-  host: "0.0.0.0"
+  host: "127.0.0.1"
   port: 1780
   # API key authentication — set one or more keys to secure the REST API.
-  # If empty, the API runs in open mode (no auth required).
+  # If empty, read endpoints are open only on loopback binds.
   # Can also be set via ONESEC_API_KEY environment variable.
   # api_keys:
   #   - "your-secret-api-key-here"

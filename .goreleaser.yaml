@@ -44,6 +44,30 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+sboms:
+  - id: archives
+    artifacts: archive
+    documents:
+      - "${artifact}.sbom.json"
+    args:
+      - "$artifact"
+      - "--output"
+      - "spdx-json=$document"
+      - "--enrich"
+      - "all"
+    disable: false
+
+signs:
+  - id: checksums
+    cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - "sign-blob"
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+
 changelog:
   sort: asc
   filters:

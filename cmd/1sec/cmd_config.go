@@ -31,6 +31,7 @@ func cmdConfig(args []string) {
 	format := fs.String("format", "table", "Output format: table, json")
 	jsonOut := fs.Bool("json", false, "Output as JSON")
 	output := fs.String("output", "", "Write output to file")
+	showSecrets := fs.Bool("show-secrets", false, "Show secret values instead of redacting them")
 	profileFlag := fs.String("profile", "", "Named profile to use")
 	fs.Parse(args)
 
@@ -99,7 +100,11 @@ func cmdConfig(args []string) {
 	defer cleanup()
 
 	if parseFormat(*format) == FormatJSON {
-		data, err := json.MarshalIndent(cfg, "", "  ")
+		var rendered interface{} = core.RedactSecrets(cfg)
+		if *showSecrets {
+			rendered = cfg
+		}
+		data, err := json.MarshalIndent(rendered, "", "  ")
 		if err != nil {
 			errorf("marshaling config: %v", err)
 		}
@@ -107,7 +112,11 @@ func cmdConfig(args []string) {
 		return
 	}
 
-	data, err := yaml.Marshal(cfg)
+	var rendered interface{} = core.RedactSecrets(cfg)
+	if *showSecrets {
+		rendered = cfg
+	}
+	data, err := yaml.Marshal(rendered)
 	if err != nil {
 		errorf("marshaling config: %v", err)
 	}
@@ -150,7 +159,7 @@ func cmdConfigSet(args []string) {
 		errorf("marshaling config: %v", err)
 	}
 
-	if err := os.WriteFile(*configPath, out, 0644); err != nil {
+	if err := os.WriteFile(*configPath, out, core.ConfigFileMode); err != nil {
 		errorf("writing config: %v", err)
 	}
 

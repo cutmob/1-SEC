@@ -167,7 +167,7 @@ func writeAIKeysToConfig(configPath string, keys []string) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		// Create new config with keys
-		content := "# 1SEC Configuration\n\nserver:\n  host: \"0.0.0.0\"\n  port: 1780\n\nmodules:\n  ai_analysis_engine:\n    enabled: true\n    settings:\n"
+		content := "# 1SEC Configuration\n\nserver:\n  host: \"127.0.0.1\"\n  port: 1780\n\nmodules:\n  ai_analysis_engine:\n    enabled: true\n    settings:\n"
 		if len(keys) == 1 {
 			content += fmt.Sprintf("      gemini_api_key: %q\n", keys[0])
 		} else {
@@ -176,7 +176,7 @@ func writeAIKeysToConfig(configPath string, keys []string) error {
 				content += fmt.Sprintf("        - %q\n", k)
 			}
 		}
-		return os.WriteFile(configPath, []byte(content), 0644)
+		return os.WriteFile(configPath, []byte(content), core.ConfigFileMode)
 	}
 
 	var raw map[string]interface{}
@@ -219,7 +219,7 @@ func writeAIKeysToConfig(configPath string, keys []string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(configPath, out, 0644)
+	return os.WriteFile(configPath, out, core.ConfigFileMode)
 }
 
 func maskKey(key string) string {

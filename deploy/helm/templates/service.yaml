@@ -11,10 +11,12 @@ spec:
       targetPort: api
       protocol: TCP
       name: api
+    {{- if .Values.service.exposeNats }}
     - port: {{ .Values.service.natsPort }}
       targetPort: nats
       protocol: TCP
       name: nats
+    {{- end }}
     - port: {{ .Values.service.syslogPort }}
       targetPort: syslog-udp
       protocol: UDP

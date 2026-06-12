@@ -78,6 +78,38 @@ type SecurityEvent struct {
 	RequestID string                 `json:"request_id,omitempty"`
 }
 
+// CanonicalizeEventRouting maps hostile routing tokens to deterministic NATS
+// subject tokens while preserving original input in Details.
+func CanonicalizeEventRouting(event *SecurityEvent) {
+	if event == nil {
+		return
+	}
+	if event.Details == nil {
+		event.Details = make(map[string]interface{})
+	}
+	if !validRoutingToken(event.Module) {
+		event.Details["original_module"] = event.Module
+		event.Module = "external"
+	}
+	if !validRoutingToken(event.Type) {
+		event.Details["original_type"] = event.Type
+		event.Type = "unknown"
+	}
+}
+
+func validRoutingToken(s string) bool {
+	if len(s) == 0 || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // NewSecurityEvent creates a new SecurityEvent with a generated ID and current timestamp.
 func NewSecurityEvent(module, eventType string, severity Severity, summary string) *SecurityEvent {
 	return &SecurityEvent{

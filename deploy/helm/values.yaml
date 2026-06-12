@@ -17,7 +17,16 @@ service:
   type: ClusterIP
   apiPort: 1780
   natsPort: 4222
+  exposeNats: false
   syslogPort: 1514
+
+server:
+  allowUnauthenticatedRead: false
+
+networkPolicy:
+  enabled: true
+  ingressFrom: []
+  natsFrom: []
 
 # ── Ingress (optional — expose the REST API externally) ──────────────────────
 ingress:
@@ -121,7 +130,7 @@ affinity: {}
 # ── Health probes ─────────────────────────────────────────────────────────────
 livenessProbe:
   httpGet:
-    path: /api/v1/status
+    path: /health
     port: api
   initialDelaySeconds: 10
   periodSeconds: 30
@@ -130,7 +139,7 @@ livenessProbe:
 
 readinessProbe:
   httpGet:
-    path: /api/v1/status
+    path: /health
     port: api
   initialDelaySeconds: 5
   periodSeconds: 10
@@ -139,7 +148,7 @@ readinessProbe:
 
 startupProbe:
   httpGet:
-    path: /api/v1/status
+    path: /health
     port: api
   initialDelaySeconds: 2
   periodSeconds: 5

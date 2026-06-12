@@ -70,6 +70,7 @@ func cmdUp(args []string) {
 	fs.BoolVar(quiet, "q", false, "Suppress banner and non-essential output")
 	noColor := fs.Bool("no-color", false, "Disable color output")
 	insecure := fs.Bool("insecure", false, "Allow API to run without authentication (open mode)")
+	allowUnknownConfigFields := fs.Bool("allow-unknown-config-fields", false, "Allow unknown config fields for forward-compatible config files")
 	fs.Parse(args)
 
 	*configPath = envConfig(*configPath)
@@ -82,9 +83,20 @@ func cmdUp(args []string) {
 		fmt.Fprint(os.Stderr, bannerText())
 	}
 
-	cfg, err := core.LoadConfig(*configPath)
+	var cfg *core.Config
+	var err error
+	if *allowUnknownConfigFields {
+		cfg, err = core.LoadConfigWithOptions(*configPath, core.LoadConfigOptions{
+			AllowUnknownFields: true,
+		})
+	} else {
+		cfg, err = core.LoadConfig(*configPath)
+	}
 	if err != nil {
 		errorf("loading config: %v", err)
+	}
+	if *insecure {
+		cfg.Server.AllowUnauthenticatedRead = true
 	}
 
 	// Run config validation
@@ -104,11 +116,14 @@ func cmdUp(args []string) {
 	// Block startup without auth unless --insecure is explicitly passed
 	if !cfg.AuthEnabled() && !*insecure {
 		if !*quiet {
-			fmt.Fprintf(os.Stderr, "%s No API keys configured. Mutating endpoints (events, shutdown, enforcement) will be blocked.\n", yellow("⚠"))
-			fmt.Fprintf(os.Stderr, "    Set api_keys in config, ONESEC_API_KEY env var, or pass --insecure to acknowledge.\n")
+			if cfg.OpenReadAllowed() {
+				fmt.Fprintf(os.Stderr, "%s No API keys configured. Read endpoints are unauthenticated; mutating endpoints are blocked.\n", yellow("!"))
+			} else {
+				fmt.Fprintf(os.Stderr, "%s No API keys configured on a non-loopback API bind. Only /health will be accessible.\n", yellow("!"))
+			}
+			fmt.Fprintf(os.Stderr, "    Set api_keys/read_only_keys, ONESEC_API_KEY env var, or pass --insecure to acknowledge.\n")
 		}
 	}
-
 	if *logLevel != "" {
 		cfg.Logging.Level = *logLevel
 	}

@@ -2,13 +2,13 @@
 
 Get the API address:
 {{- if .Values.ingress.enabled }}
-  https://{{ (index .Values.ingress.hosts 0).host }}/api/v1/status
+  https://{{ (index .Values.ingress.hosts 0).host }}/health
 {{- else if eq .Values.service.type "LoadBalancer" }}
   export SVC_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "1sec.fullname" . }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-  curl http://$SVC_IP:{{ .Values.service.apiPort }}/api/v1/status
+  curl http://$SVC_IP:{{ .Values.service.apiPort }}/health
 {{- else }}
   kubectl port-forward --namespace {{ .Release.Namespace }} svc/{{ include "1sec.fullname" . }} {{ .Values.service.apiPort }}:{{ .Values.service.apiPort }}
-  curl http://localhost:{{ .Values.service.apiPort }}/api/v1/status
+  curl http://localhost:{{ .Values.service.apiPort }}/health
 {{- end }}
 
 Check engine status:

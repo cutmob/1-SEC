@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/1sec-project/1sec/internal/core"
@@ -135,6 +136,53 @@ func TestAuthMiddleware_NoKeysConfigured(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_NoKeysNonLoopbackBlocksRead(t *testing.T) {
+	cfg := core.DefaultConfig()
+	cfg.Server.Host = "0.0.0.0"
+	cfg.Server.APIKeys = nil
+	cfg.Server.ReadOnlyKeys = nil
+	logger := zerolog.Nop()
+	openEngine := &core.Engine{
+		Config:   cfg,
+		Registry: core.NewModuleRegistry(logger),
+		Pipeline: core.NewAlertPipeline(logger, 1000),
+		Logger:   logger,
+	}
+
+	s := newTestServer(openEngine)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("non-loopback no-key read should return 403, got %d", w.Code)
+	}
+}
+
+func TestAuthMiddleware_NoKeysNonLoopbackExplicitAllowRead(t *testing.T) {
+	cfg := core.DefaultConfig()
+	cfg.Server.Host = "0.0.0.0"
+	cfg.Server.AllowUnauthenticatedRead = true
+	cfg.Server.APIKeys = nil
+	cfg.Server.ReadOnlyKeys = nil
+	logger := zerolog.Nop()
+	openEngine := &core.Engine{
+		Config:   cfg,
+		Registry: core.NewModuleRegistry(logger),
+		Pipeline: core.NewAlertPipeline(logger, 1000),
+		Logger:   logger,
+	}
+
+	s := newTestServer(openEngine)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("explicit allow should permit read-only open mode, got %d", w.Code)
+	}
+}
+
 func TestAuthMiddleware_MissingKey(t *testing.T) {
 	s := newTestServer(testEngineWithAuth("my-secret"))
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
@@ -182,6 +230,29 @@ func TestAuthMiddleware_XAPIKeyHeader(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_ReadOnlyOnlyDeployment(t *testing.T) {
+	engine := testEngineWithAuth()
+	engine.Config.Server.APIKeys = nil
+	engine.Config.Server.ReadOnlyKeys = []string{"read-secret"}
+	s := newTestServer(engine)
+
+	readReq := httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
+	readReq.Header.Set("Authorization", "Bearer read-secret")
+	readW := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(readW, readReq)
+	if readW.Code != http.StatusOK {
+		t.Fatalf("read-only key should read config, got %d", readW.Code)
+	}
+
+	writeReq := httptest.NewRequest(http.MethodPost, "/api/v1/alerts/clear", nil)
+	writeReq.Header.Set("Authorization", "Bearer read-secret")
+	writeW := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(writeW, writeReq)
+	if writeW.Code != http.StatusForbidden {
+		t.Fatalf("read-only key should not mutate, got %d", writeW.Code)
+	}
+}
+
 func TestAuthMiddleware_InvalidXAPIKey(t *testing.T) {
 	s := newTestServer(testEngineWithAuth("my-secret"))
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
@@ -197,7 +268,18 @@ func TestAuthMiddleware_InvalidXAPIKey(t *testing.T) {
 // ─── Config endpoint ──────────────────────────────────────────────────────────
 
 func TestHandleConfig_GET(t *testing.T) {
-	s := newTestServer(testEngine())
+	engine := testEngine()
+	engine.Config.Server.APIKeys = []string{"test-key", "write-secret"}
+	engine.Config.Server.ReadOnlyKeys = []string{"read-secret"}
+	engine.Config.Cloud.APIKey = "cloud-secret"
+	engine.Config.TokenVault.Auth0ClientSecret = "auth0-secret"
+	engine.Config.Modules["ai_analysis_engine"] = core.ModuleConfig{
+		Enabled: true,
+		Settings: map[string]interface{}{
+			"gemini_api_key": "gemini-secret",
+		},
+	}
+	s := newTestServer(engine)
 	req := authedReq(httptest.NewRequest(http.MethodGet, "/api/v1/config", nil))
 	w := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(w, req)
@@ -205,13 +287,14 @@ func TestHandleConfig_GET(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
-	// Should not contain API keys (redacted)
-	var body map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&body)
-	if server, ok := body["server"].(map[string]interface{}); ok {
-		if server["api_keys"] != nil {
-			t.Error("API keys should be redacted from config response")
+	body := w.Body.String()
+	for _, secret := range []string{"test-key", "write-secret", "read-secret", "cloud-secret", "auth0-secret", "gemini-secret"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("config response leaked secret %q in body: %s", secret, body)
 		}
+	}
+	if !strings.Contains(body, core.RedactedValue) {
+		t.Fatalf("config response should contain redaction marker, body: %s", body)
 	}
 }
 

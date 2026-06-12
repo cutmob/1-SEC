@@ -7,6 +7,9 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
+  security-events: write
 
 jobs:
   quality:
@@ -26,14 +29,29 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck -checks='all,-U1000,-ST1000,-ST1005,-S1007,-S1009,-S1039,-SA1019,-SA5011' ./...
+
+      - name: Gosec
+        continue-on-error: true
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -exclude=G101 ./...
+
       - name: Test
         run: go test -race -timeout 120s ./...
 
       - name: Vulnerability check
-        continue-on-error: true
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
+
+      - name: OSV dependency scan
+        run: |
+          go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest
+          osv-scanner scan source -r .
 
   rust-build:
     needs: quality
@@ -96,6 +114,12 @@ jobs:
         working-directory: rust/1sec-engine
         run: cargo test --no-default-features --target ${{ matrix.target }}
 
+      - name: Rust dependency audit
+        working-directory: rust/1sec-engine
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+
       - name: Rename artifact
         shell: bash
         run: |
@@ -125,6 +149,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install release trust tools
+        run: |
+          go install github.com/sigstore/cosign/v2/cmd/cosign@latest
+          go install github.com/anchore/syft/cmd/syft@latest
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -132,6 +161,11 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate Go artifact attestations
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*
 
       - name: Download Rust artifacts
         uses: actions/download-artifact@v4
@@ -147,6 +181,15 @@ jobs:
           cp rust-artifacts/1sec-engine-darwin-arm64/1sec-engine-darwin-arm64 upload/
           cp rust-artifacts/1sec-engine-windows-amd64.exe/1sec-engine-windows-amd64.exe upload/
           cd upload && sha256sum * > rust-checksums.txt
+
+      - name: Sign Rust checksums
+        run: |
+          cosign sign-blob --bundle upload/rust-checksums.txt.sigstore.json upload/rust-checksums.txt --yes
+
+      - name: Generate Rust artifact attestations
+        uses: actions/attest@v4
+        with:
+          subject-path: upload/*
 
       - name: Attach Rust binaries to release
         env:

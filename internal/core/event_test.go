@@ -197,3 +197,36 @@ func TestSecurityEvent_EmptyDetails(t *testing.T) {
 		t.Error("marshaled event should contain 'id' field")
 	}
 }
+
+func TestCanonicalizeEventRouting_ValidTokensUnchanged(t *testing.T) {
+	ev := NewSecurityEvent("network_guardian", "dns_query", SeverityInfo, "dns")
+	CanonicalizeEventRouting(ev)
+
+	if ev.Module != "network_guardian" {
+		t.Fatalf("Module = %q, want network_guardian", ev.Module)
+	}
+	if ev.Type != "dns_query" {
+		t.Fatalf("Type = %q, want dns_query", ev.Type)
+	}
+	if _, ok := ev.Details["original_module"]; ok {
+		t.Fatal("valid module should not be copied to original_module")
+	}
+}
+
+func TestCanonicalizeEventRouting_InvalidTokensMapped(t *testing.T) {
+	ev := NewSecurityEvent("bad.module", "type.with.dots", SeverityInfo, "bad")
+	CanonicalizeEventRouting(ev)
+
+	if ev.Module != "external" {
+		t.Fatalf("Module = %q, want external", ev.Module)
+	}
+	if ev.Type != "unknown" {
+		t.Fatalf("Type = %q, want unknown", ev.Type)
+	}
+	if ev.Details["original_module"] != "bad.module" {
+		t.Fatalf("original_module = %v", ev.Details["original_module"])
+	}
+	if ev.Details["original_type"] != "type.with.dots" {
+		t.Fatalf("original_type = %v", ev.Details["original_type"])
+	}
+}

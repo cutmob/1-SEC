@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/subtle"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -95,13 +96,14 @@ type ResponseRuleYAML struct {
 
 // ServerConfig holds API server settings.
 type ServerConfig struct {
-	Host         string   `yaml:"host"`
-	Port         int      `yaml:"port"`
-	APIKeys      []string `yaml:"api_keys"`
-	ReadOnlyKeys []string `yaml:"read_only_keys"`
-	CORSOrigins  []string `yaml:"cors_origins"`
-	TLSCert      string   `yaml:"tls_cert"` // path to TLS certificate file
-	TLSKey       string   `yaml:"tls_key"`  // path to TLS private key file
+	Host                     string   `yaml:"host"`
+	Port                     int      `yaml:"port"`
+	APIKeys                  []string `yaml:"api_keys"`
+	ReadOnlyKeys             []string `yaml:"read_only_keys"`
+	AllowUnauthenticatedRead bool     `yaml:"allow_unauthenticated_read"`
+	CORSOrigins              []string `yaml:"cors_origins"`
+	TLSCert                  string   `yaml:"tls_cert"` // path to TLS certificate file
+	TLSKey                   string   `yaml:"tls_key"`  // path to TLS private key file
 }
 
 // SyslogConfig holds syslog ingestion settings.
@@ -163,7 +165,7 @@ type RustCaptureConfig struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Host: "0.0.0.0",
+			Host: "127.0.0.1",
 			Port: 1780,
 		},
 		Bus: BusConfig{
@@ -229,8 +231,25 @@ func DefaultConfig() *Config {
 	}
 }
 
+// ConfigFileMode is used for config writes because config files can contain
+// API keys, cloud tokens, webhook credentials, and model provider keys.
+const ConfigFileMode os.FileMode = 0600
+
+// LoadConfigOptions controls compatibility behavior for config parsing.
+type LoadConfigOptions struct {
+	AllowUnknownFields bool
+}
+
 // LoadConfig loads configuration from a YAML file, falling back to defaults.
 func LoadConfig(path string) (*Config, error) {
+	return LoadConfigWithOptions(path, LoadConfigOptions{
+		AllowUnknownFields: envBool("ONESEC_ALLOW_UNKNOWN_CONFIG_FIELDS"),
+	})
+}
+
+// LoadConfigWithOptions loads configuration from a YAML file with explicit
+// compatibility options.
+func LoadConfigWithOptions(path string, opts LoadConfigOptions) (*Config, error) {
 	cfg := DefaultConfig()
 
 	if path == "" {
@@ -244,16 +263,23 @@ func LoadConfig(path string) (*Config, error) {
 		}
 		return nil, fmt.Errorf("reading config file: %w", err)
 	}
+	if strings.TrimSpace(string(data)) == "" {
+		data = nil
+	}
 
 	// Use strict YAML decoding to reject unknown fields that could indicate
 	// injection of unexpected execution tags (CVE-2026-4292 prevention).
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(cfg); err != nil {
-		// Fall back to lenient parsing if strict mode fails — this allows
-		// forward-compatible configs with fields added in newer versions.
-		if errLenient := yaml.Unmarshal(data, cfg); errLenient != nil {
-			return nil, fmt.Errorf("parsing config file: %w", errLenient)
+	if data == nil {
+		// Keep defaults for empty config files.
+	} else if opts.AllowUnknownFields {
+		if err := yaml.Unmarshal(data, cfg); err != nil {
+			return nil, fmt.Errorf("parsing config file: %w", err)
+		}
+	} else {
+		decoder := yaml.NewDecoder(bytes.NewReader(data))
+		decoder.KnownFields(true)
+		if err := decoder.Decode(cfg); err != nil {
+			return nil, fmt.Errorf("parsing config file: %w", err)
 		}
 	}
 
@@ -316,7 +342,7 @@ func SaveConfig(cfg *Config, path string) error {
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, ConfigFileMode)
 }
 
 // IsModuleEnabled checks if a module is enabled in the configuration.
@@ -369,7 +395,18 @@ func (c *Config) LogLevel() string {
 
 // AuthEnabled returns true if API key authentication is configured.
 func (c *Config) AuthEnabled() bool {
-	return len(c.Server.APIKeys) > 0
+	return len(c.Server.APIKeys) > 0 || len(c.Server.ReadOnlyKeys) > 0
+}
+
+// ServerHostIsLoopback returns true when the REST API bind host is loopback.
+func (c *Config) ServerHostIsLoopback() bool {
+	return isLoopbackHost(c.Server.Host)
+}
+
+// OpenReadAllowed returns true when unauthenticated read-only endpoints may be
+// served in no-key mode.
+func (c *Config) OpenReadAllowed() bool {
+	return c.Server.AllowUnauthenticatedRead || c.ServerHostIsLoopback()
 }
 
 // TLSEnabled returns true if TLS certificate and key are configured.
@@ -440,9 +477,12 @@ func (c *Config) Validate() (warnings []string, errs []string) {
 
 	// Auth warning
 	if !c.AuthEnabled() {
-		warnings = append(warnings, "no api_keys configured — API runs in open mode (mutating endpoints blocked)")
+		if c.OpenReadAllowed() {
+			warnings = append(warnings, "no api_keys or read_only_keys configured - API read endpoints run in open mode on a loopback or explicitly allowed bind; mutating endpoints are blocked")
+		} else {
+			warnings = append(warnings, "no api_keys or read_only_keys configured and API is bound to a non-loopback host - only /health is accessible until keys are configured or server.allow_unauthenticated_read is set")
+		}
 	}
-
 	// Enforcement policy validation
 	if c.Enforcement != nil && c.Enforcement.Enabled {
 		validActions := map[string]bool{
@@ -472,4 +512,22 @@ func (c *Config) Validate() (warnings []string, errs []string) {
 	}
 
 	return warnings, errs
+}
+
+func envBool(name string) bool {
+	v := strings.TrimSpace(os.Getenv(name))
+	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

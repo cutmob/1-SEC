@@ -103,11 +103,15 @@ func NewServer(engine *core.Engine) *Server {
 func (s *Server) Start() error {
 	s.logger.Info().Str("addr", s.server.Addr).Msg("API server starting")
 	if s.engine.Config.AuthEnabled() {
-		s.logger.Info().Int("keys", len(s.engine.Config.Server.APIKeys)).Msg("API authentication enabled")
+		s.logger.Info().
+			Int("write_keys", len(s.engine.Config.Server.APIKeys)).
+			Int("read_only_keys", len(s.engine.Config.Server.ReadOnlyKeys)).
+			Msg("API authentication enabled")
+	} else if s.engine.Config.OpenReadAllowed() {
+		s.logger.Warn().Msg("API running in open read mode - mutating endpoints are blocked; set api_keys/read_only_keys before exposing beyond trusted local access")
 	} else {
-		s.logger.Warn().Msg("⚠ API running in OPEN MODE — no authentication required. Set api_keys in config or ONESEC_API_KEY env var to secure the API")
+		s.logger.Warn().Msg("API has no keys and is bound to a non-loopback host - only /health is accessible until api_keys/read_only_keys are configured or allow_unauthenticated_read is enabled")
 	}
-
 	if s.engine.Config.TLSEnabled() {
 		// Validate TLS files exist and are readable before starting
 		if _, err := os.Stat(s.engine.Config.Server.TLSCert); err != nil {
@@ -322,10 +326,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
-	// Redact API keys from the response
-	safeCfg := *s.engine.Config
-	safeCfg.Server.APIKeys = nil
-	writeJSON(w, http.StatusOK, safeCfg)
+	writeJSON(w, http.StatusOK, core.RedactConfig(s.engine.Config))
 }
 
 func (s *Server) handleIngestEvent(w http.ResponseWriter, r *http.Request) {
@@ -510,7 +511,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	entries := s.engine.GetLogEntries(limit)
+	entries := core.RedactLogEntries(s.engine.GetLogEntries(limit), s.engine.Config)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"logs":  entries,
 		"total": len(entries),
@@ -762,6 +763,13 @@ func authMiddleware(next http.Handler, cfg *core.Config, logger zerolog.Logger) 
 
 		// If no API keys configured, allow read-only access but block mutating endpoints
 		if !cfg.AuthEnabled() {
+			if !cfg.OpenReadAllowed() {
+				logger.Warn().Str("path", r.URL.Path).Str("ip", r.RemoteAddr).Msg("blocked unauthenticated request on non-loopback API bind")
+				writeJSON(w, http.StatusForbidden, map[string]string{
+					"error": "unauthenticated read access is disabled on non-loopback binds - configure api_keys/read_only_keys or set server.allow_unauthenticated_read",
+				})
+				return
+			}
 			if isMutatingPath(r.URL.Path, r.Method) {
 				logger.Warn().Str("path", r.URL.Path).Str("ip", r.RemoteAddr).Msg("blocked mutating request in open mode — configure api_keys to enable")
 				writeJSON(w, http.StatusForbidden, map[string]string{

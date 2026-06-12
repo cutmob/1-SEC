@@ -3,8 +3,11 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // ─── DefaultConfig ──────────────────────────────────────────────────────────
@@ -12,8 +15,8 @@ import (
 func TestDefaultConfig_Values(t *testing.T) {
 	cfg := DefaultConfig()
 
-	if cfg.Server.Host != "0.0.0.0" {
-		t.Errorf("default Host = %q, want 0.0.0.0", cfg.Server.Host)
+	if cfg.Server.Host != "127.0.0.1" {
+		t.Errorf("default Host = %q, want 127.0.0.1", cfg.Server.Host)
 	}
 	if cfg.Server.Port != 1780 {
 		t.Errorf("default Port = %d, want 1780", cfg.Server.Port)
@@ -186,6 +189,28 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveConfig_SecretSafePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file permission bits are not reliable on Windows")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	cfg := DefaultConfig()
+	cfg.Server.APIKeys = []string{"secret"}
+	if err := SaveConfig(cfg, path); err != nil {
+		t.Fatalf("SaveConfig error: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat config: %v", err)
+	}
+	if got := info.Mode().Perm(); got != ConfigFileMode {
+		t.Fatalf("config mode = %v, want %v", got, ConfigFileMode)
+	}
+}
+
 // ─── IsModuleEnabled ────────────────────────────────────────────────────────
 
 func TestIsModuleEnabled(t *testing.T) {
@@ -271,7 +296,12 @@ func TestAuthEnabled(t *testing.T) {
 	}
 	cfg.Server.APIKeys = []string{"key1"}
 	if !cfg.AuthEnabled() {
-		t.Error("AuthEnabled should be true with keys")
+		t.Error("AuthEnabled should be true with write keys")
+	}
+	cfg.Server.APIKeys = nil
+	cfg.Server.ReadOnlyKeys = []string{"readonly"}
+	if !cfg.AuthEnabled() {
+		t.Error("AuthEnabled should be true with read-only keys")
 	}
 }
 
@@ -339,8 +369,7 @@ logging:
 	}
 }
 
-func TestLoadConfig_StrictYAML_UnknownFieldFallsBack(t *testing.T) {
-	// Unknown fields should not cause a hard failure — lenient fallback kicks in
+func TestLoadConfig_StrictYAML_UnknownFieldFails(t *testing.T) {
 	content := `
 server:
   host: "127.0.0.1"
@@ -348,12 +377,26 @@ server:
 some_future_field: "value"
 `
 	path := writeTempConfig(t, content)
-	cfg, err := LoadConfig(path)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("LoadConfig() should reject unknown fields by default")
+	}
+}
+
+func TestLoadConfig_StrictYAML_AllowUnknownFields(t *testing.T) {
+	content := `
+server:
+  host: "127.0.0.1"
+  port: 9090
+some_future_field: "value"
+`
+	path := writeTempConfig(t, content)
+	cfg, err := LoadConfigWithOptions(path, LoadConfigOptions{AllowUnknownFields: true})
 	if err != nil {
-		t.Fatalf("LoadConfig() should fall back to lenient parsing, got error: %v", err)
+		t.Fatalf("LoadConfigWithOptions() should allow unknown fields: %v", err)
 	}
 	if cfg.Server.Port != 9090 {
-		t.Errorf("Server.Port = %d, want %d after lenient fallback", cfg.Server.Port, 9090)
+		t.Errorf("Server.Port = %d, want %d after lenient parse", cfg.Server.Port, 9090)
 	}
 }
 
@@ -364,4 +407,60 @@ func TestLoadConfig_StrictYAML_InvalidYAMLFails(t *testing.T) {
 	if err == nil {
 		t.Error("LoadConfig() should fail for completely invalid YAML")
 	}
+}
+
+func TestRedactConfig_RecursiveSecrets(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Server.APIKeys = []string{"write-secret"}
+	cfg.Server.ReadOnlyKeys = []string{"read-secret"}
+	cfg.Cloud.APIKey = "cloud-secret"
+	cfg.TokenVault.Auth0ClientSecret = "auth0-secret"
+	cfg.Modules["ai_analysis_engine"] = ModuleConfig{
+		Enabled: true,
+		Settings: map[string]interface{}{
+			"gemini_api_key": "gemini-secret",
+			"nested": map[string]interface{}{
+				"authorization": "Bearer nested-secret",
+			},
+		},
+	}
+
+	rendered := RedactConfig(cfg)
+	data := mustYAML(t, rendered)
+	for _, secret := range []string{"write-secret", "read-secret", "cloud-secret", "auth0-secret", "gemini-secret", "nested-secret"} {
+		if strings.Contains(data, secret) {
+			t.Fatalf("redacted config leaked %q in:\n%s", secret, data)
+		}
+	}
+	if !strings.Contains(data, RedactedValue) {
+		t.Fatalf("redacted config should contain redaction marker, got:\n%s", data)
+	}
+}
+
+func TestRedactLogEntries_ConfiguredSecrets(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Server.APIKeys = []string{"log-secret"}
+	cfg.Cloud.APIKey = "cloud-log-secret"
+
+	entries := []LogEntry{{
+		Raw:     "api key log-secret cloud cloud-log-secret",
+		Message: "using log-secret",
+	}}
+	redacted := RedactLogEntries(entries, cfg)
+
+	if strings.Contains(redacted[0].Raw, "log-secret") || strings.Contains(redacted[0].Raw, "cloud-log-secret") {
+		t.Fatalf("raw log leaked secret: %s", redacted[0].Raw)
+	}
+	if strings.Contains(redacted[0].Message, "log-secret") {
+		t.Fatalf("message leaked secret: %s", redacted[0].Message)
+	}
+}
+
+func mustYAML(t *testing.T, v interface{}) string {
+	t.Helper()
+	data, err := yaml.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal yaml: %v", err)
+	}
+	return string(data)
 }

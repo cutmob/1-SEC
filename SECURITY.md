@@ -26,7 +26,7 @@ We will acknowledge receipt within 48 hours and aim to provide a fix or mitigati
 
 1SEC is a security product. We hold ourselves to a high standard:
 
-- All modules run in-process with no external dependencies required
+- All modules run in-process with no required external runtime services
 - The API server supports key-based authentication (set `ONESEC_API_KEY` or `server.api_keys` in config)
 - Docker images run as non-root (UID 65534) with read-only root filesystem
 - Helm chart enforces `seccompProfile: RuntimeDefault`, drops all capabilities, and disallows privilege escalation

@@ -13,6 +13,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/1sec-project/1sec/internal/core"
 )
 
 func cmdExport(args []string) {
@@ -76,6 +78,9 @@ func exportAlerts(w *os.File, base, apiKey string, timeout time.Duration, outFmt
 	if err := json.Unmarshal(body, &resp); err != nil {
 		errorf("parsing response: %v", err)
 	}
+	if redacted, ok := core.RedactSecrets(resp).(map[string]interface{}); ok {
+		resp = redacted
+	}
 
 	alerts, _ := resp["alerts"].([]interface{})
 
@@ -138,10 +143,19 @@ func exportEvents(w *os.File, base, apiKey string, timeout time.Duration, outFmt
 	if err := json.Unmarshal(body, &resp); err != nil {
 		// If events endpoint returns raw array or different shape
 		if outFmt == FormatJSON {
+			var raw interface{}
+			if err := json.Unmarshal(body, &raw); err == nil {
+				data, _ := json.MarshalIndent(core.RedactSecrets(raw), "", "  ")
+				fmt.Fprintln(w, string(data))
+				return
+			}
 			fmt.Fprintln(w, string(body))
 			return
 		}
 		errorf("parsing response: %v", err)
+	}
+	if redacted, ok := core.RedactSecrets(resp).(map[string]interface{}); ok {
+		resp = redacted
 	}
 
 	events, _ := resp["events"].([]interface{})

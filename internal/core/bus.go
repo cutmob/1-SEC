@@ -160,6 +160,8 @@ func NewEventBus(cfg *BusConfig, logger zerolog.Logger) (*EventBus, error) {
 
 // PublishEvent publishes a SecurityEvent to the event bus.
 func (b *EventBus) PublishEvent(event *SecurityEvent) error {
+	CanonicalizeEventRouting(event)
+
 	data, err := event.Marshal()
 	if err != nil {
 		return fmt.Errorf("marshaling event: %w", err)

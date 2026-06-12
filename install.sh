@@ -1,15 +1,20 @@
 #!/bin/sh
 # 1-SEC Installer
-# Usage: curl -fsSL https://1-sec.dev/get | sh
+# Usage:
+#   curl -fsSL https://1-sec.dev/get | sh
+#   curl -fsSL https://1-sec.dev/get | sh -s -- --version v1.2.3
 #
-# Detects OS/arch, downloads the latest release from GitHub, and installs
-# the 1sec binary to /usr/local/bin (or ~/.local/bin if no root access).
+# Detects OS/arch, downloads a signed GitHub release artifact, verifies the
+# checksum bundle with Sigstore/cosign, and installs the 1sec binary to
+# /usr/local/bin (or ~/.local/bin if no root access).
 
 set -e
 
 REPO="cutmob/1-SEC"
 BINARY="1sec"
 INSTALL_DIR="/usr/local/bin"
+VERSION="${ONESEC_VERSION:-}"
+VERIFY="1"
 
 # Colors (if terminal supports it)
 RED='\033[0;31m'
@@ -22,6 +27,20 @@ info()  { printf "${CYAN}[1sec]${NC} %s\n" "$1"; }
 ok()    { printf "${GREEN}[1sec]${NC} %s\n" "$1"; }
 warn()  { printf "${YELLOW}[1sec]${NC} %s\n" "$1"; }
 fail()  { printf "${RED}[1sec]${NC} %s\n" "$1" >&2; exit 1; }
+
+usage() {
+    cat <<EOF
+1SEC installer
+
+Options:
+  --version <tag>   Install an explicit release tag, e.g. v1.2.3.
+  --no-verify       Skip cosign/checksum verification (not recommended).
+  --help            Show this help.
+
+Environment:
+  ONESEC_VERSION    Install an explicit release tag.
+EOF
+}
 
 # Detect OS
 detect_os() {
@@ -61,17 +80,95 @@ download() {
         curl -fsSL "$url" -o "$dest"
     elif command -v wget >/dev/null 2>&1; then
         wget -qO "$dest" "$url"
+    else
+        fail "Neither curl nor wget found. Please install one and try again."
+    fi
+}
+
+parse_args() {
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --version)
+                [ "$#" -ge 2 ] || fail "--version requires a value"
+                VERSION="$2"
+                shift 2
+                ;;
+            --no-verify)
+                VERIFY="0"
+                shift
+                ;;
+            --help|-h)
+                usage
+                exit 0
+                ;;
+            *)
+                fail "Unknown option: $1"
+                ;;
+        esac
+    done
+}
+
+normalize_version() {
+    v="$1"
+    case "$v" in
+        v*) echo "$v" ;;
+        *)  echo "v$v" ;;
+    esac
+}
+
+verify_release_artifact() {
+    archive="$1"
+    tmp_dir="$2"
+    checksums="${tmp_dir}/checksums.txt"
+    bundle="${tmp_dir}/checksums.txt.sigstore.json"
+
+    if [ "$VERIFY" = "0" ]; then
+        warn "Skipping release verification because --no-verify was provided."
+        return
+    fi
+
+    command -v cosign >/dev/null 2>&1 || fail "cosign is required to verify releases. Install cosign or rerun with --no-verify only if you trust this network and release."
+
+    info "Downloading signed checksums..."
+    download "https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt" "$checksums"
+    download "https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt.sigstore.json" "$bundle"
+
+    info "Verifying checksum signature..."
+    cosign verify-blob \
+        --bundle "$bundle" \
+        --certificate-identity-regexp "https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/.*" \
+        --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+        "$checksums" >/dev/null
+
+    info "Verifying archive checksum..."
+    checksum_line=$(grep "[[:space:]]${archive}$" "$checksums" || true)
+    [ -n "$checksum_line" ] || fail "Archive ${archive} not found in checksums.txt"
+    if command -v sha256sum >/dev/null 2>&1; then
+        (cd "$tmp_dir" && printf "%s\n" "$checksum_line" | sha256sum -c - >/dev/null)
+    elif command -v shasum >/dev/null 2>&1; then
+        expected=$(printf "%s\n" "$checksum_line" | awk '{print $1}')
+        actual=$(shasum -a 256 "${tmp_dir}/${archive}" | awk '{print $1}')
+        [ "$expected" = "$actual" ] || fail "Checksum verification failed for ${archive}"
+    else
+        fail "Neither sha256sum nor shasum found. Cannot verify ${archive}."
     fi
 }
 
 main() {
+    parse_args "$@"
+
     info "Detecting system..."
     OS=$(detect_os)
     ARCH=$(detect_arch)
     info "OS: ${OS}, Arch: ${ARCH}"
 
-    info "Fetching latest release..."
-    VERSION=$(get_latest_version)
+    if [ -z "$VERSION" ]; then
+        info "Fetching latest release..."
+        VERSION=$(get_latest_version)
+    else
+        VERSION=$(normalize_version "$VERSION")
+        info "Requested version: ${VERSION}"
+    fi
     if [ -z "$VERSION" ]; then
         fail "Could not determine latest version. Check https://github.com/${REPO}/releases"
     fi
@@ -93,6 +190,8 @@ main() {
 
     info "Downloading ${ARCHIVE}..."
     download "$URL" "${TMP_DIR}/${ARCHIVE}"
+
+    verify_release_artifact "$ARCHIVE" "$TMP_DIR"
 
     info "Extracting..."
     if [ "$OS" = "windows" ]; then
@@ -130,4 +229,4 @@ main() {
     ok "Done. Stay secure."
 }
 
-main
+main "$@"

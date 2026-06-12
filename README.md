@@ -27,7 +27,7 @@
 1-SEC is an open-source (AGPLv3) all-in-one cybersecurity platform. Instead of running 10+ separate agents — WAF, IDS, log shipper, compliance scanner, LLM firewall — you run **one binary** that covers every attack surface through a shared NATS JetStream event bus.
 
 - **Zero config by default** — secure out of the box, tune later
-- **Single binary** — no containers, no JVM, no Python env required for core operation
+- **One default operational binary** — no required external runtime services for core operation
 - **Privacy first** — your data stays on your server; cloud features are opt-in
 - **AI is additive** — all 16 modules work standalone; the AI analysis layer adds cross-module correlation on top
 
@@ -38,6 +38,8 @@
 ```bash
 # Install
 curl -fsSL https://1-sec.dev/get | sh
+# Production installs should pin a release:
+# curl -fsSL https://1-sec.dev/get | sh -s -- --version v1.2.3
 
 # Guided setup (config + AI keys + API auth)
 1sec setup
@@ -189,8 +191,9 @@ Zero-config works out of the box. All settings have sane defaults. Override via 
 
 ```yaml
 server:
-  host: "0.0.0.0"
+  host: "127.0.0.1"
   port: 1780
+  allow_unauthenticated_read: false
 
 bus:
   embedded: true        # NATS JetStream runs inside the binary
@@ -287,6 +290,8 @@ Override individual module policies in `configs/default.yaml` under `enforcement
 
 ```bash
 curl -fsSL https://1-sec.dev/get | sh
+# Or pin a production install:
+# curl -fsSL https://1-sec.dev/get | sh -s -- --version v1.2.3
 1sec up
 ```
 
@@ -340,7 +345,7 @@ kubectl exec deploy/1sec -- 1sec check
 ```
 
 The Helm chart includes:
-- Deployment with liveness/readiness probes on `/api/v1/status`
+- Deployment with liveness/readiness probes on `/health`
 - PersistentVolumeClaim for NATS JetStream data
 - ConfigMap for config override
 - Secret for API keys (or reference an existing secret via `existingSecret`)
@@ -409,7 +414,10 @@ Adding a module = adding one import. No registration boilerplate.
 
 ## REST API
 
-The engine exposes a REST API on port 1780:
+The engine exposes a REST API on port 1780. All endpoints except `/health`
+require an API key when `server.api_keys` or `server.read_only_keys` are
+configured. Without keys, read-only endpoints are served only on loopback binds
+unless `server.allow_unauthenticated_read` is set.
 
 | Method | Path | Description |
 |--------|------|-------------|
